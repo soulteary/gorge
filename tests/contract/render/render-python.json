@@ -1,0 +1,21 @@
+{
+  "name": "render python emits pygments classes",
+  "description": "The canonical case: a Python snippet exercising keywords, a function definition, a builtin call, a double-quoted string, an integer literal and a comment. Each maps to a Pygments CSS class that Phorge's stylesheet already styles.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"source\":\"def hello(name):\\n    print(\\\"Hello, \\\" + name)\\n    x = 42\\n    # a comment\\n    return x\\n\",\"language\":\"python\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.html", "data.language"],
+    "jsonEquals": { "data.language": "python" },
+    "htmlContainsClasses": ["k", "nf", "nb", "s2", "mi", "c1"],
+    "htmlContains": ["<span"],
+    "htmlNotContains": ["<pre>", "<div class=\"highlight\">"]
+  }
+}

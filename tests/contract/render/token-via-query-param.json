@@ -1,0 +1,12 @@
+{
+  "name": "service token may travel in the query string",
+  "description": "The header is the normal channel, but callers that cannot set headers may pass ?token=. Both must be accepted.",
+  "request": {
+    "method": "GET",
+    "path": "/api/highlight/languages?token=contract-token"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data"]
+  }
+}

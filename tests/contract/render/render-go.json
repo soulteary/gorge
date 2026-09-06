@@ -1,0 +1,20 @@
+{
+  "name": "render go emits pygments classes",
+  "description": "A second lexer, to catch a regression that only affects one language table. Go uses a narrower class set than Python: no plain k, but nf, mi and c1 are shared.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"source\":\"package main\\n\\nimport \\\"fmt\\\"\\n\\nfunc main() {\\n\\tfmt.Println(\\\"hi\\\")\\n\\t// a comment\\n\\tn := 7\\n}\\n\",\"language\":\"go\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.html", "data.language"],
+    "jsonEquals": { "data.language": "go" },
+    "htmlContainsClasses": ["nf", "mi", "c1"],
+    "htmlContains": ["Println"]
+  }
+}

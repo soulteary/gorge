@@ -1,0 +1,18 @@
+{
+  "name": "missing service token is rejected",
+  "description": "When the service is configured with a token, a request without one gets 401 and an error envelope. The response must carry no data field, so a caller that ignores the status code still cannot mistake it for a result.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{\"source\":\"x = 1\",\"language\":\"python\"}"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_UNAUTHORIZED" },
+    "jsonAbsent": ["data"]
+  }
+}

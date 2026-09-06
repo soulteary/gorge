@@ -1,0 +1,16 @@
+{
+  "name": "languages endpoint lists supported lexers",
+  "description": "Phorge uses this list to decide which languages it may request. The list is lowercased and must cover the mainstream languages the alias table maps onto.",
+  "request": {
+    "method": "GET",
+    "path": "/api/highlight/languages",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data"],
+    "bodyContains": ["\"python\"", "\"go\"", "\"json\""]
+  }
+}

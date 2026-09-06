@@ -1,0 +1,47 @@
+# Gorge Go service layer.
+#
+#   cd deploy/compose && cp .env.example .env && docker compose up -d --build
+#
+# Build contexts point at ../../go because all binaries share one module and
+# one Dockerfile; each service selects its binary through the SERVICE build arg.
+
+name: gorge
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - gorge
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+
+  # --- render: syntax highlighting (and, later, diff) ---
+  render:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-render
+    image: ghcr.io/soulteary/gorge-render:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8140"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      GORGE_RENDER_MAX_BYTES: ${GORGE_RENDER_MAX_BYTES:-1048576}
+      GORGE_RENDER_TIMEOUT_SEC: ${GORGE_RENDER_TIMEOUT_SEC:-15}
+    ports:
+      - "${GORGE_RENDER_PORT:-8140}:8140"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8140/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+networks:
+  gorge:
+    driver: bridge
