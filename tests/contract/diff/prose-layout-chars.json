@@ -1,0 +1,27 @@
+{
+  "name": "shared layout characters are lifted out of the change",
+  "description": "The trailing period is common to both sides and is punctuation, so it is reported as unchanged instead of being highlighted along with the replaced word. Only whitespace, sentence punctuation and brackets qualify: lifting an arbitrary shared prefix would claim part of a replaced token survived the edit.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/prose",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"hello world.\",\"new\":\"hello there.\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.parts.0.type": "=",
+      "data.parts.0.text": "hello ",
+      "data.parts.1.type": "-",
+      "data.parts.1.text": "world",
+      "data.parts.2.type": "+",
+      "data.parts.2.text": "there",
+      "data.parts.3.type": "=",
+      "data.parts.3.text": "."
+    },
+    "jsonAbsent": ["data.parts.4"]
+  }
+}

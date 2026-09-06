@@ -1,0 +1,20 @@
+{
+  "name": "normalize strips spaces and tabs before comparing",
+  "description": "With normalize set, PhabricatorDifferenceEngine removes every space and tab anywhere in the content, not just leading indentation, so two lines that differ only in whitespace compare equal. Newlines survive, which is why the response is the synthesised identical diff rather than a single merged line.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"hello world\\n\\tindented\\n\",\"new\":\"helloworld\\nindented\\n\",\"oldName\":\"a\",\"newName\":\"b\",\"normalize\":true}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.equal": true,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1,3 +1,3 @@\n helloworld\n indented\n \n"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "identical input follows PHP rather than diff",
+  "description": "The one response in this domain that is deliberately not what `diff -U65535` would print, because diff prints nothing when the files match. PhabricatorDifferenceEngine synthesises its own string instead, so callers can still render the unchanged file, and its quirks are the contract: \"a\\nb\\n\" splits into three elements rather than two, so the count is 3 and the body ends with a context line holding a single space.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"a\\nb\\n\",\"new\":\"a\\nb\\n\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.equal": true,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1,3 +1,3 @@\n a\n b\n \n"
+    }
+  }
+}

@@ -18,6 +18,7 @@ import (
 // are split out of this repository.
 var forbiddenPrefixes = []string{
 	"github.com/soulteary/gorge/go/internal/render",
+	"github.com/soulteary/gorge/go/internal/diff",
 	"github.com/soulteary/gorge/go/internal/contracts",
 }
 

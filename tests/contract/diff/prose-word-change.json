@@ -1,0 +1,28 @@
+{
+  "name": "prose diff isolates the changed word",
+  "description": "One word replaced in a sentence. The engine descends paragraph to sentence to word and stops there, so the surrounding text stays in two unchanged segments rather than being torn into characters. Concatenating the \"=\" and \"-\" segments must rebuild the old text and \"=\" with \"+\" the new one; that invariant, not the exact segmentation, is what callers depend on.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/prose",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"the quick brown fox\",\"new\":\"the slow brown fox\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonAbsent": ["error"],
+    "jsonEquals": {
+      "data.parts.0.type": "=",
+      "data.parts.0.text": "the ",
+      "data.parts.1.type": "-",
+      "data.parts.1.text": "quick",
+      "data.parts.2.type": "+",
+      "data.parts.2.text": "slow",
+      "data.parts.3.type": "=",
+      "data.parts.3.text": " brown fox"
+    },
+    "jsonAbsent": ["error", "data.parts.4"]
+  }
+}

@@ -5,7 +5,7 @@ import (
 )
 
 // Defaults for the render service. The listen address is highlight's original
-// :8140; diff's :8130 is retired when it merges into this binary.
+// :8140, which the whole binary now listens on; diff's former :8130 is retired.
 const (
 	DefaultListenAddr = ":8140"
 	DefaultMaxBytes   = 1048576

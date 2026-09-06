@@ -1,0 +1,20 @@
+{
+  "name": "an empty new side starts at line zero",
+  "description": "The mirror of generate-empty-old: the shape Phorge sees when a file is deleted. Kept as a separate fixture because the two counts are formatted by the same helper and a sign error would only show on one of them.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"x\\ny\\n\",\"new\":\"\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.equal": false,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+    }
+  }
+}

@@ -21,13 +21,17 @@
 | 模块 | 二进制 | 端口 | 文档 | 状态 |
 |---|---|---|---|---|
 | render | `gorge-render` | `:8140` | [`modules/render.md`](modules/render.md) | 已迁入 |
-| diff | `gorge-render`（并入） | `:8140` | — | 计划中，见 [`modules/render.md`](modules/render.md) |
+| diff | `gorge-render`（同进程） | `:8140` | [`modules/diff.md`](modules/diff.md) | 已迁入 |
+
+两个模块共用一个二进制与一个端口：都是无外部依赖的纯计算，拆进程换不来隔离收益。路径按域命名（`/api/highlight/*`、`/api/diff/*`）正是为了让这种合并不需要改动任何一侧。
 
 ## 阅读顺序
 
 第一次接触这个仓库：[`architecture.md`](architecture.md) → [`platform.md`](platform.md) → 你要改的那个模块文档。
 
-**准备改高亮输出、语言别名表、端口或路由**：先读 [`../compat/phorge/README.md`](../compat/phorge/README.md)。那里记录了三件破坏后不会报错、只会静默失效的事，[`modules/render.md`](modules/render.md) 第 5 节是它的概述，但以 compat 文件为准。
+**准备改高亮输出、语言别名表、端口或路由**：先读 [`../compat/phorge/README.md`](../compat/phorge/README.md)。那里记录了几件破坏后不会报错、只会静默失效的事，[`modules/render.md`](modules/render.md) 第 5 节是它的概述，但以 compat 文件为准。
+
+**准备改 unified diff 的输出格式**：同样先读 [`../compat/phorge/README.md`](../compat/phorge/README.md)，第 4 节。那份输出是被 `ArcanistDiffParser` **解析**的，一个错误的 hunk 头不会报错，只会让它之后的每一行都放错位置。
 
 ## 新增一个模块时
 

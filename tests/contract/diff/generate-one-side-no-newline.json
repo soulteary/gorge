@@ -1,0 +1,20 @@
+{
+  "name": "only the new side lacks its newline",
+  "description": "The two sides hold the same characters, \"a\" and \"b\", yet nothing is context beyond the first line: an unterminated \"b\" is a different line from a terminated one. Adding a trailing newline to a file is a real change and has to render as one, with the marker on the side that lacks it.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"a\\nb\\n\",\"new\":\"a\\nb\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.equal": false,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1,2 +1,2 @@\n a\n-b\n+b\n\\ No newline at end of file\n"
+    }
+  }
+}

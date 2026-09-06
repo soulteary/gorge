@@ -1,0 +1,20 @@
+{
+  "name": "both sides unterminated emit the marker twice",
+  "description": "Neither last line ends in a newline and the two differ, so the marker follows each of them. The marker is itself newline-terminated: the diff never lacks a trailing newline, only the content it describes does.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"a\\nb\",\"new\":\"a\\nc\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.equal": false,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"
+    }
+  }
+}

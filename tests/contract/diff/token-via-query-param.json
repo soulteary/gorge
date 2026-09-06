@@ -1,0 +1,18 @@
+{
+  "name": "the token is accepted as a query parameter",
+  "description": "Same fallback the highlight routes offer, and for the same reason: it comes from the shared auth middleware rather than either domain, so a change to it would silently affect both.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate?token=contract-token",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{\"old\":\"a\\n\",\"new\":\"b\\n\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1 +1 @@\n-a\n+b\n"
+    }
+  }
+}
