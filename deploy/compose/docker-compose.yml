@@ -48,6 +48,54 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- gorge-notification: Aphlict-compatible notification server ---
+  #
+  # One process, two listeners. The split is not a choice: Phorge validates
+  # notification.servers by requiring both an "admin" and a "client" entry and
+  # rejecting a duplicate host:port pair, so the two roles cannot be folded
+  # onto one port the way render and diff share :8140.
+  #
+  # This service has no token authentication, unlike render, and that is
+  # deliberate. The client side speaks Aphlict's wire protocol to JX.Aphlict
+  # running in the browser, which has no way to send a service token; adding
+  # one would break wire compatibility. The admin port is therefore guarded by
+  # network isolation only — see GORGE_NOTIFICATION_ADMIN_PORT in .env.example
+  # before exposing it anywhere but a private network.
+  gorge-notification:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-notification
+        # PORT feeds ENV GORGE_HEALTHCHECK_PORT and nothing else; only the
+        # image's built-in HEALTHCHECK reads it. Both listeners answer
+        # /healthz, so point it at the admin port, which is plain HTTP. Left
+        # at its 8140 default the probe would hit a port no listener here
+        # binds and the container would restart in a loop.
+        PORT: 22281
+    image: ghcr.io/soulteary/gorge-notification:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      # Bind address only; the ports below are separate settings. The service
+      # keeps its 22280/22281 defaults because three places have to agree on
+      # them: this mapping, the healthcheck, and the PORT build arg above.
+      GORGE_NOTIFICATION_LISTEN_ADDR: "0.0.0.0"
+      GORGE_NOTIFICATION_CONFIG_FILE: ${GORGE_NOTIFICATION_CONFIG_FILE:-}
+    ports:
+      # Host side is variable, in-container side is not. The client port has
+      # to be published even when everything else stays on the gorge network:
+      # Phorge hands the client URI to the browser, so the address must
+      # resolve from the end user's machine, not just from a sibling
+      # container.
+      - "${GORGE_NOTIFICATION_CLIENT_PORT:-22280}:22280"
+      - "${GORGE_NOTIFICATION_ADMIN_PORT:-22281}:22281"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:22281/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
 networks:
   gorge:
     driver: bridge

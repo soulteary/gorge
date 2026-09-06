@@ -17,6 +17,15 @@ jobs:
   build-and-push:
     # One image per binary under go/cmd. Adding a service means adding one
     # entry here; the Dockerfile and build context stay the same.
+    #
+    # The entry carries a port as well as a name because the shared Dockerfile
+    # bakes ARG PORT into ENV GORGE_HEALTHCHECK_PORT, which its built-in
+    # HEALTHCHECK reads at runtime. Left at the Dockerfile's 8140 default, an
+    # image whose service listens elsewhere probes a port nothing binds and
+    # reports unhealthy forever under plain `docker run`. Compose hides this,
+    # since deploy/compose/docker-compose.yml overrides the healthcheck, so
+    # the port has to be right here or the published image is wrong in a way
+    # local testing will not surface.
     name: Build and Push ${{ matrix.service }}
     runs-on: ubuntu-latest
     permissions:
@@ -26,8 +35,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - gorge-render
+        include:
+          # port is the listener the image's built-in HEALTHCHECK probes.
+          - service: gorge-render
+            port: 8140
+          # gorge-notification listens on two ports; 22281 is the admin one.
+          - service: gorge-notification
+            port: 22281
 
     steps:
       - name: Checkout code
@@ -61,6 +75,7 @@ jobs:
           context: go
           build-args: |
             SERVICE=${{ matrix.service }}
+            PORT=${{ matrix.port }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

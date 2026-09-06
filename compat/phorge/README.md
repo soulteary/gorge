@@ -1,6 +1,6 @@
 # Phorge 兼容契约
 
-本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的四项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
+本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的五项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
 
 | 约定 | 破坏后的表现 |
 |---|---|
@@ -8,8 +8,9 @@
 | 二、Chroma formatter 配置 | 全站高亮静默失效——页面正常渲染，只是没有颜色 |
 | 三、端口与路由 | PHP 侧配置指错地方，表现为 `ERR_NOT_FOUND` |
 | 四、unified diff 输出格式 | 解析器接受错误的 hunk 头，然后**静默地把之后每一行都放错位置**（第 4.6 节写明了保证到哪里为止） |
+| 五、Aphlict 线兼容（通知） | 四条子约束，最坏的一条（5.4）**连错误状态码都不产生**：请求答 200、fingerprint 合法、`messages.in` 照常增长，只有消息内容被静默揉碎 |
 
-第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。
+第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。
 
 改动其中任何一项，都必须同步改动 PHP 侧并在这里更新说明。
 
@@ -286,6 +287,191 @@ diff -U65535 -L 'a 9999-99-99' -L 'b 9999-99-99' a b
 
 ---
 
+## 五、Aphlict 线兼容：通知服务的四条约束
+
+**Go 侧**：`go/internal/notification/{admin.go,client.go,config.go}`、`go/internal/contracts/notification.go`
+**PHP 侧**：`PhabricatorNotificationServerRef`、`PhabricatorNotificationServersConfigType`、`PhabricatorNotificationClient`
+（参考实现见 `phorge-fork/src/applications/notification/`，被替换掉的 Node 实现见 `phorge-fork/support/aphlict/server/`）
+
+替换 Aphlict 与替换 Pygments 的差别，在于 PHP 侧怎么处理失败。高亮失败至少还渲染出一个没有颜色的代码块，是可见的；通知失败什么都不留：
+
+```php
+foreach ($servers as $server) {
+  try {
+    $server->postMessage($data);
+    return;
+  } catch (Exception $ex) {
+    // Just ignore any issues here.
+  }
+}
+```
+
+这就是 `PhabricatorNotificationClient::tryToPostMessage()` 的全部错误处理。**PHP 侧从不读本服务的响应体，也从不上报它的失败**，所以本节的判据不是「PHP 会不会报错」——它不会——而是「破坏之后还有谁能发现」。
+
+按这个判据，下面四条从最容易发现排到最难：
+
+| 约束 | 破坏之后谁会发现 |
+|---|---|
+| 5.1 双端口 | PHP 侧存配置时就抛异常，当场可见 |
+| 5.2 client 口 501 | `testClient()` 抛异常，集群面板报 Connection Error |
+| 5.3 admin 不套信封 | 没人报错；集群面板的 Uptime/Clients/Messages 列变成空白或 0 |
+| 5.4 不能用 binder | **没有任何一处发现。**请求答 200、fingerprint 合法、计数照常增长，只有消息内容被揉碎 |
+
+5.4 甚至连上面那个 catch 都用不上——它没有异常可吞，因为 POST 成功了。
+
+### 5.1 双端口不可合并
+
+`PhabricatorNotificationServersConfigType::validateStoredValue()` 遍历 `notification.servers` 时要求两件事：
+
+- 至少一条未禁用的 `type: "admin"`，至少一条未禁用的 `type: "client"`，缺任一类直接抛异常（第 121-137 行）；
+- `"{$host}:{$port}"` 在列表里不得重复（第 109-118 行）。
+
+所以「一个端口同时当 admin 和 client」这种配置 PHP 侧**根本存不下来**：写两条记录会撞 host:port 检查，写一条记录又凑不齐两个 type。这也是 notification 不能像 diff 并进 `gorge-render` 那样共用一个端口的直接原因。
+
+**这是五项约定里唯一会当场报错的一条**，也因此是最不危险的。真正要记住的是它的推论——两个端口的地址是**不对称**的，不能照 render 域「一个地址走到底」的直觉配：
+
+| 端口 | 谁来连 | `host` 填什么 |
+|---|---|---|
+| admin `:22281` | phorge 容器里的 PHP | compose 内网服务名 |
+| client `:22280` | 用户浏览器里的 `JX.Aphlict` | **浏览器可达的外部地址** |
+
+client 那条填错不算破坏约定，但和 5.4 一样属于「服务端观察不到」的那一类：`getWebsocketURI()` 是把这个地址**发给浏览器**的，所以填成只在内网解析得开的服务名之后，服务端一切正常、`testClient()` 通过、集群面板双绿，只有每个真实用户连不上。
+
+走 Traefik 之类反向代理时，client 条目改填 `path: "/ws/"` + 443 + https。注意 `path` **只对 client 类型合法**，给 admin 条目加 `path` 会被上面那个校验单独拒掉（第 95-104 行）。
+
+### 5.2 client 端口的 `GET /` 必须回 501，响应体逐字节
+
+`PhabricatorNotificationServerRef::testClient()`（第 181-203 行）把 501 当健康信号，把 200 当故障：
+
+```php
+try {
+  id(new HTTPSFuture($server_uri))
+    ->setTimeout(2)
+    ->resolvex();
+} catch (HTTPFutureHTTPResponseStatus $ex) {
+  // This is what we expect when things are working correctly.
+  if ($ex->getStatusCode() == 501) {
+    return true;
+  }
+  throw $ex;
+}
+
+throw new Exception(
+  pht('Got HTTP 200, but expected HTTP 501 (WebSocket Upgrade)!'));
+```
+
+响应体也照抄：逐字节 `HTTP/501 Use Websockets\n`，末尾那个换行也在内（Aphlict 的 `AphlictClientServer.js:78` 原文）。PHP 目前不读这个 body，`tests/contract/notification/client/` 的固件按原文断言它，因为它是「这个端口还在讲 Aphlict 的话」唯一可见的证据，而将来客户端 JS 去读它的成本是零。
+
+**这条与平台层正面冲突，所以平台层为它长了一个字段。** `health.Register()` 本来无条件注册 `e.GET("/", Live())` 返回 200；`httpx.Config.SkipRootProbe` 为 true 时跳过这一条，把根路径让给域包。**全仓库只有 notification 的 client 端口设它**，理由写在 `health.go` 的注释里。摘掉这个字段、或者「为了一致性」把根探针加回这个端口，Phorge 会报 `Got HTTP 200, but expected HTTP 501`——这一条至少会报错，因为它走的是 `testClient()` 而不是 `postMessage()`。
+
+`/healthz` 与 `/readyz` 照样注册，所以容器探针不受影响。豁免只挑根路径，不是整包跳过。
+
+### 5.3 admin 的成功响应不套信封（错误响应可以）
+
+两个 admin 端点的**成功**响应刻意不套 `{data,error}`：
+
+- `POST /` → 裸 `{"fingerprint":"..."}`
+- `GET /status/` → 带点号键的扁平 map
+
+PHP 侧的读法是 `phutil_json_decode($body)` 之后**直接索引**（`PhabricatorConfigClusterNotificationsController`）：
+
+```php
+$clients = pht(
+  '%s Active / %s Total',
+  new PhutilNumber(idx($details, 'clients.active')),
+  new PhutilNumber(idx($details, 'clients.total')));
+```
+
+两个推论：
+
+- **键里的点是字面量，不是嵌套约定。** 改成 `{"clients":{"active":…}}` 之后 `idx()` 全部落空，面板显示 0 或空白，不报错。`contracts/notification.go` 的 json tag 就是这些带点的字面串。
+- **套上信封同样是「取不到」而不是「取错」。** 每个字段都退到 `data` 下面，`idx($details, 'version')` 返回 null，面板显示一个后面什么都没有的 "Version"。
+
+所以这两个 handler 用 `c.JSON()` 而**不是** `httpx.OK()`。`admin_test.go` 的 `decodeBare()` 在每条成功响应上断言「恰好一个 JSON 文档，且顶层没有 `data` / `error` 键」。
+
+**错误路径可以走信封，这不是不一致。** PHP 用 `resolvex()`，它在非 2xx 上抛 `HTTPFutureHTTPResponseStatus` 而**从不解析响应体**。反过来说也成立：**不要指望用响应体给 PHP 侧传递失败原因**，那个字段没有读者。
+
+还有一处细节：`history.age` 在 history 为空时必须是 `null` 而不是 0，所以 `contracts.AphlictStatus.HistoryAge` 是指针。PHP 只在 `idx($details, 'history.size')` 为真时才读它，所以这一条当前无害；保留它是为了不必将来再考古一次 Aphlict 的行为（`AphlictAdminServer.js:139` 也是 `var history_age = null;`）。
+
+### 5.4 admin handler 不能用 Echo 的 binder
+
+**这一条是实现阶段才发现的，也正是这份文件存在的理由。**
+
+Phorge 发消息走 `HTTPSFuture`，body 是 `phutil_json_encode($data)` 出来的裸 JSON 字符串：
+
+```php
+$server_uri = $this->getURI('/');
+$payload = phutil_json_encode($data);
+
+$this->newFuture($server_uri, $payload)
+  ->setMethod('POST')
+  ->resolvex();
+```
+
+而这个请求到达时带的 `Content-Type` 是 curl 给字符串 body 贴的默认值 **`application/x-www-form-urlencoded`**（`HTTPSFuture` 在 arcanist 里、不在本仓库，所以这一条是从实际请求上观察到的，不是从代码读出来的）。
+
+Echo 的 `c.Bind()` 按 `Content-Type` 分派，而它对这个头**不报错**：`DefaultBinder.BindBody` 的 `case MIMEApplicationForm` 分支照字面意思去做表单解析（`bind.go` 第 105-112 行），而 `hub.Message` 是 `map[string]any`，正好落在 `bindData` 支持的那几种 map 目标里（第 169-190 行）。所以 admin 的 `POST /` 必须自己解 body：
+
+```go
+var msg hub.Message
+if err := json.NewDecoder(c.Request().Body).Decode(&msg); err != nil {
+	return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
+}
+```
+
+**用 `c.Bind()` 的后果比「被拒绝」更糟：请求成功。**实测（Echo v4.15.4）把 `{"type":"notification"}` 贴上这个头交给 `c.Bind`，表单解析把整段 JSON 当成一个没有 `=` 的键，得到
+
+```
+map[string]any{"{\"type\":\"notification\"}": ""}
+```
+
+一个键、值为空串，`msg["type"]` 是 nil。handler 拿着这坨东西照常往下走：`AddFingerprint` 看不到 `touched` 于是判定「消息是新的」，`Publish` 把它塞进 history 并按「没有 subscribers」当广播扇出，最后 `c.JSON` 答一个**完全合法的 200 加真 fingerprint**。
+
+于是**根本没有异常给 5.1 上面那个 catch 吞**——PHP 侧的 `postMessage()` 顺利返回，它以为消息发出去了。症状是通知内容被静默揉碎：浏览器要么收到一条没有 `type` 的垃圾消息，要么因为原本的 `subscribers` 已经丢失而收到本不该收到的广播。而 Config → Cluster → Notification 页面**两台服务器全绿**（那个页面走 `/status/` 与 `testClient()`，都不经过这个 handler），`messages.in` 照常增长，**本服务日志里连一条 4xx 都没有**。
+
+这是本文件所有约束里最彻底的一条：其余几条至少在某处留下一个错误状态码，这一条什么都不留。
+
+**415 确实存在，但不在这条路上。** `BindBody` 的 `default:` 分支返回 `ErrUnsupportedMediaType`，命中它的是 Echo **不认识**的 mediatype——包括**空** `Content-Type`（第 82-84 行按 `;` 切完之后 mediatype 为空串）。Phorge 从不发空头，所以真实流量永远走不到 415。别照着 415 去找这个问题。
+
+守它的断言有三处。`c.Bind()` 破坏这条约束有**两条**路——payload 里带非法百分号转义的，在进 handler 之前就被拒成 400；不带的，答 200 而把 body 揉成垃圾键——下面这两处各只挡住其中一条（两条都挡的第三处见 5.5 末尾）。把它们各自守住多少记清楚很要紧，因为记强了比不记更坏：
+
+- **契约固件 `tests/contract/notification/admin/post-form-content-type.json` 挡的是「被拒」那条。** 它的 payload 里带 `100% done`，而 `% d` 对表单解析器是个非法的百分号转义，于是换成 `c.Bind` 之后请求被拒成 400 `invalid URL escape "% d"`，固件的 `status: 200` 当场失败。**teeth 在 payload 的字节上，不在断言上**：断言只有「200 + 有 fingerprint + 没有信封」，而上面已经说明这三条在消息被揉碎的情况下全部成立，所以另一条路它看不见。改这份固件时别把那个百分号「清理」掉——清理掉它就退化成一个在 `c.Bind` 下照样通过的检查。（同一段里的 `&` 与 `=` 只改变垃圾键的形状、不改变状态码——实测带 `&`、`=` 但不带 `%` 的 payload 在 `c.Bind` 下照样 200。撑住这条断言的只有那个非法转义。）
+- **单元测试 `TestContentTypeIsIgnored` 挡的是「被揉碎」那条**，也就是本节开头说的那条什么都不留的路；三处里只有它是直接撞在内容断言上的。它跑 `application/json` / `application/x-www-form-urlencoded` / 空头三种，断言 200 **并且** `history[0]["type"] == "notification"`。换成 `c.Bind` 实测，镜像 Phorge 的那个 form-urlencoded 子测试失败在后一句上：`the message reached the hub mangled: map[touched:[…] {"type":"notification"}:]`——整段 JSON 成了一个垃圾键，`type` 是 nil。**teeth 在「查那一条 history 的内容」而不是「数它有几条」上。** 这一行是后来补的，测试自己的注释写明了理由（"inspected rather than counted"）：被揉碎的 body 一样会在 history 里留下一条，只有内容分得出两者。**别把它改回只数条数**——只数条数的那个旧版本在 `c.Bind` 下只有空头子测试会红（415 ≠ 200），而空头是 Phorge 不会发的形状，照着那个 415 去找问题会找错地方。它挡不住的是另一条：payload 里没有百分号，所以「被拒成 400」那条路它永远走不到；而且它只看到 hub，不保证内容到得了浏览器。
+
+`tests/e2e/notification.sh` 第 2 条场景用的是同一手法（payload 里同样带 `100% done`），所以它也真的挡得住。
+
+顺带：空 body 在这里解出 `io.EOF`，落到 400 `ERR_BAD_REQUEST`。这是 admin 端口唯一走信封的响应。
+
+### 5.5 一处已知偏离，与验证方法
+
+admin 口的 `GET /` 现在回 200 探针响应，Aphlict 回 405（`AphlictAdminServer.js:114`）。`POST /` 与 `GET /` 方法不同、可以共存，所以平台层的根探针在这个端口上留着了。PHP 侧只打 `POST /` 与 `GET /status/`，观察不到，记在 [`../../docs/findings.md`](../../docs/findings.md) 第 11 条。**别把这个处理方式套到 client 口上**——那边的 `GET /` 必须是 501。
+
+对着跑起来的实例验证本节的最短路径：
+
+```bash
+# 5.2：必须 501，且 body 逐字节是 "HTTP/501 Use Websockets\n"
+curl -i http://127.0.0.1:22280/
+
+# 5.4：贴着 form-urlencoded 头的 JSON 必须被接受。
+# payload 里的 "100%" 不是凑数的：% d 对表单解析器是非法转义，所以只有
+# 「不看头、直接按 JSON 解」的 handler 才会答 200。
+# 换掉这个 payload 会让本条退化成一个永远通过的检查——见 5.4。
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d '{"type":"notification","title":"build 100% done"}' http://127.0.0.1:22281/
+
+# 5.3：顶层必须直接是那些带点的键，没有 data 包裹
+curl -s http://127.0.0.1:22281/status/
+```
+
+`tests/e2e/notification.sh` 跑的就是这几条。5.1 只能在 PHP 侧验证：起栈之后打开 Config → Cluster → Notification，两台服务器都显示正常——这一步同时验证了 5.2 的 501 与 5.3 的响应形状。
+
+**但 5.4 用 curl 只能验到「没被拒」这一半。**「消息的键有没有原样进 hub」在 HTTP 层看不见：`/status/` 的 `messages.in` 在消息被揉碎的情况下同样会 +1。
+
+而「form-urlencoded 的标签」与「内容原样到达」这两半，跨两个端口一直验到浏览器的那一份由 `client_test.go` 的 `TestMessagePostedToAdminReachesASubscribedBrowser` 守住（同一对断言在 hub 那一层的版本是 5.4 的 `TestContentTypeIsIgnored`）：它的两个 POST 走 `postAsPhorge`（贴的是 Phorge 真发的那个头，不是 `postTo` 写死的 `application/json`，而 `c.Bind` 处理 JSON 是正确的、拿它测等于不设防），payload 里带 `build 100% done`，消息则是从 WebSocket 上**逐字段读回来**的（`key` 与 `title`）。于是 binder 坏掉这条约束的两条路都落在它手上：非法转义被直接拒成 400 `invalid URL escape "% d"`，或者答 200 但把 body 表单解析掉、断言的那两个字段随之消失。这是把 handler 换成 `c.Bind()` 实测过的，失败信息就是前一条。**teeth 在 payload 里那个非法百分号转义与「逐字段读」这两件事上**：把 `postAsPhorge` 换回 `postTo`、把百分号「清理」掉、或者把字段断言简化成 `expectFirstMessage` 那样只看第一条是谁——任何一步都会让这个测试继续通过，而守卫无声消失。
+
+---
+
 ## 附：鉴权与响应信封
 
 `PhabricatorGorgeRenderClient` 依赖以下两点，改动会直接打断 PHP 侧：
@@ -332,3 +518,5 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 **空 source 不是错误**：`{"source": ""}` 返回 200 与空 `html`，不返回 400。Phorge 渲染空文件时依赖这个行为。
 
 **健康探针不套信封**：`GET /`、`GET /healthz`、`GET /readyz` 返回裸 `{"status":"ok"}`。这是给容器探针和负载均衡用的，不要「顺手统一」成信封格式。
+
+本附录讲的是 `/api/**`，即 render 与 diff 两个域。**notification 的两个端口都不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。

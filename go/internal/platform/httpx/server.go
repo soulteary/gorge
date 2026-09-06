@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +29,10 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	// Ready is handed to the /readyz probe; nil means "no external dependency".
 	Ready health.ReadyFunc
+	// SkipRootProbe leaves GET / unregistered so a domain can answer it
+	// instead. Only one port in the repository needs this; see health.Register
+	// for the single reason it exists.
+	SkipRootProbe bool
 }
 
 // Server is an Echo instance preloaded with the platform middleware stack and
@@ -84,7 +89,7 @@ func New(cfg Config) *Server {
 	}))
 	e.Use(middleware.BodyLimit(cfg.BodyLimit))
 
-	health.Register(e, cfg.Ready)
+	health.Register(e, cfg.Ready, cfg.SkipRootProbe)
 
 	return &Server{echo: e, cfg: cfg}
 }
@@ -94,28 +99,69 @@ func (s *Server) Echo() *echo.Echo { return s.echo }
 
 // Run listens until SIGINT or SIGTERM arrives, then drains in-flight requests
 // within ShutdownTimeout before returning.
-func (s *Server) Run() error {
+func (s *Server) Run() error { return RunAll(s) }
+
+// RunAll listens on every server at once, sharing one signal registration, and
+// returns when the first listener stops or when SIGINT or SIGTERM arrives.
+// Whatever is still listening at that point is drained.
+//
+// A binary that spreads one service over several ports cannot usefully outlive
+// any of them: a notification client port with no admin port beside it accepts
+// browsers and then never has anything to tell them. So a single failed
+// listener takes the whole set down rather than leaving a half-reachable
+// service behind for orchestration to keep in rotation.
+func RunAll(servers ...*Server) error {
+	if len(servers) == 0 {
+		return nil
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	serveErr := make(chan error, 1)
-	go func() {
-		slog.Info("listening", "addr", s.cfg.ListenAddr)
-		err := s.echo.Start(s.cfg.ListenAddr)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		serveErr <- err
-	}()
+	// Buffered for every server, so the goroutines behind the listeners we do
+	// not wait for still finish instead of blocking on the send forever.
+	serveErr := make(chan error, len(servers))
+	for _, s := range servers {
+		go func() {
+			slog.Info("listening", "addr", s.cfg.ListenAddr)
+			err := s.echo.Start(s.cfg.ListenAddr)
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			serveErr <- err
+		}()
+	}
 
 	select {
 	case err := <-serveErr:
+		// The remaining listeners are drained too, but their shutdown errors
+		// are dropped: this err is the root cause and the only one worth
+		// reporting.
+		_ = shutdownAll(servers)
 		return err
 	case <-ctx.Done():
 	}
 
-	slog.Info("shutting down", "timeout", s.cfg.ShutdownTimeout)
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
-	defer cancel()
-	return s.echo.Shutdown(shutdownCtx)
+	return shutdownAll(servers)
+}
+
+// shutdownAll drains the servers concurrently, so the wait is the longest
+// ShutdownTimeout rather than the sum of them.
+func shutdownAll(servers []*Server) error {
+	errs := make([]error, len(servers))
+
+	var wg sync.WaitGroup
+	for i, s := range servers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slog.Info("shutting down", "addr", s.cfg.ListenAddr, "timeout", s.cfg.ShutdownTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+			defer cancel()
+			errs[i] = s.echo.Shutdown(ctx)
+		}()
+	}
+	wg.Wait()
+
+	return errors.Join(errs...)
 }

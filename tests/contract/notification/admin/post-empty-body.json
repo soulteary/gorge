@@ -1,0 +1,17 @@
+{
+  "name": "an empty body is rejected",
+  "description": "A POST with nothing in it decodes to io.EOF rather than an empty message, so it is a 400 instead of an accepted no-op that would report a fingerprint for a message nobody sent. Failures do use the envelope, which is safe because Phorge's client calls resolvex() and throws on a non-2xx without parsing the body.",
+  "request": {
+    "method": "POST",
+    "path": "/",
+    "headers": {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 400,
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data", "fingerprint"]
+  }
+}

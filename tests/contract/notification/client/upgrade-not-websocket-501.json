@@ -1,0 +1,16 @@
+{
+  "name": "an upgrade to something other than WebSocket is refused",
+  "description": "Only a WebSocket upgrade gets through; an Upgrade header naming another protocol is as much a plain HTTP request as one with no header at all. Worth pinning separately because a hand-rolled check on the presence of Upgrade, rather than on its value, would pass every other fixture here.",
+  "request": {
+    "method": "GET",
+    "path": "/",
+    "headers": {
+      "Connection": "Upgrade",
+      "Upgrade": "h2c"
+    }
+  },
+  "expect": {
+    "status": 501,
+    "bodyContains": ["HTTP/501 Use Websockets\n"]
+  }
+}

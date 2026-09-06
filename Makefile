@@ -2,7 +2,14 @@ GO_DIR      := go
 COMPOSE     := docker compose -f deploy/compose/docker-compose.yml
 SERVICE     ?= gorge-render
 BIN_DIR     := bin
-BASE_URL    ?= http://127.0.0.1:8140
+
+# gorge-render serves both the render and diff domains on one port, so those
+# two scripts share a base URL. gorge-notification is a second binary on two
+# listeners that answer the same request differently, so it needs one URL per
+# port rather than a single BASE_URL.
+BASE_URL          ?= http://127.0.0.1:8140
+NOTIFY_ADMIN_URL  ?= http://127.0.0.1:22281
+NOTIFY_CLIENT_URL ?= http://127.0.0.1:22280
 
 .DEFAULT_GOAL := help
 
@@ -80,11 +87,14 @@ compose-logs: ## Tail service logs
 ## --- Tests ----------------------------------------------------------------
 
 .PHONY: e2e
-e2e: ## Run the e2e smoke tests against BASE_URL
-	# Both domains are served by one binary on one port, so this is two
-	# scripts against one BASE_URL rather than two deployments.
+e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
+	# render and diff share one binary on one port, so those two are two
+	# scripts against one BASE_URL rather than two deployments. notification is
+	# a separate binary and needs both of its ports; every service under test
+	# has to be running already, since none of these scripts start anything.
 	BASE_URL=$(BASE_URL) bash tests/e2e/render.sh
 	BASE_URL=$(BASE_URL) bash tests/e2e/diff.sh
+	ADMIN_URL=$(NOTIFY_ADMIN_URL) CLIENT_URL=$(NOTIFY_CLIENT_URL) bash tests/e2e/notification.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

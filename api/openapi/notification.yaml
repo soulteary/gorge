@@ -1,0 +1,601 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Notification API
+  description: |
+    HTTP contract for the `gorge-notification` binary, which replaces Phorge's
+    Aphlict server. Unlike `render.yaml` and `diff.yaml`, which describe two
+    domains sharing one port, this document describes **one domain spread over
+    two ports**, and the two are not interchangeable:
+
+    - the **admin** port (22281) is what PHP posts messages to and reads status
+      from. It carries no credentials and must stay on a private network;
+    - the **client** port (22280) is what browsers hold WebSockets open
+      against, so its address has to be reachable from outside the deployment.
+
+    Phorge's `PhabricatorNotificationServersConfigType` refuses to save a
+    `notification.servers` list that does not name both kinds, and it probes
+    them differently, so they cannot be collapsed into one listener. Every
+    operation below therefore declares the port it belongs to under `servers`.
+
+    **This is the one API in the repository whose successful responses are
+    deliberately not wrapped in the `{data, error}` envelope.** Phorge's
+    `PhabricatorNotificationServerRef` decodes these bodies with a bare
+    `phutil_json_decode()` and indexes the keys directly, so an envelope would
+    put every field out of reach without raising any error. Failures *do* answer
+    in the envelope, which is safe because the PHP client calls `resolvex()` and
+    throws on a non-2xx without ever parsing the body.
+
+    Two further shapes here are compatibility constraints rather than design
+    choices, and both look like bugs until you know why:
+
+    - `GET /` on the client port answers **501**, not 200.
+      `PhabricatorNotificationServerRef::testClient()` reads 501 as the healthy
+      answer and reports `Got HTTP 200, but expected HTTP 501` for anything
+      else. This is why `httpx.Config.SkipRootProbe` exists.
+    - `POST /` accepts a JSON body labelled
+      `application/x-www-form-urlencoded`. Phorge posts through `HTTPSFuture`,
+      which leaves curl's default Content-Type in place, so the handler decodes
+      the body directly rather than dispatching on the header — a Content-Type
+      binder would form-decode Phorge's JSON, or answer 415 outright for any
+      other label.
+
+    There is no service token. Aphlict authenticated nothing, Phorge's
+    notification client sends no credentials, and adding a token would silently
+    stop every message rather than fail loudly — so unlike the other domains
+    there is no `401` anywhere in this document and no `unauthorized.json`
+    fixture.
+
+    The schemas under `components.schemas` mirror
+    `go/internal/contracts/notification.go`, which is the single source of truth
+    shared by the Go service, the PHP client and the contract fixtures under
+    `tests/contract/notification/`.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:22281
+    description: Local development, admin port
+  - url: http://localhost:22280
+    description: Local development, client port
+
+tags:
+  - name: admin
+    description: Message intake and status, admin port only
+  - name: client
+    description: WebSocket delivery, client port only
+  - name: health
+    description: Liveness and readiness probes, both ports
+
+paths:
+
+  /:
+    post:
+      tags: [admin]
+      servers:
+        - url: http://localhost:22281
+          description: Admin port
+      summary: Publish a message
+      description: |
+        Delivers a message to every listener of the addressed instance that
+        subscribes to one of its `subscribers`, records it in the replay
+        history, and relays it to the configured cluster peers.
+
+        The request body is an **open object**: its shape is defined by the
+        Phorge code that posts it, not by this service, and it travels through to
+        browsers unchanged. Only `subscribers` and `touched` mean anything here.
+
+        `Content-Type` is not inspected, and the body is opaque JSON rather than
+        form data whatever the header says. Phorge posts this JSON through
+        `HTTPSFuture`, which labels it with curl's default
+        `application/x-www-form-urlencoded`, so the handler decodes the body
+        itself rather than dispatching on the header: a Content-Type binder
+        would percent-decode and split the payload as form fields, failing on a
+        message that contains a stray `%` and mangling every other one.
+        `tests/contract/notification/admin/post-form-content-type.json` pins
+        that, because the "cleanup" is an easy one to make.
+      operationId: publishMessage
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Instance'
+      requestBody:
+        required: true
+        description: |
+          The same JSON body under either Content-Type. The form-encoded entry
+          is not really form-encoded: it is Phorge's JSON, mislabelled by curl's
+          default, and it is listed so that the accepted header is part of the
+          written contract rather than folklore.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AphlictMessage'
+            examples:
+              targeted:
+                summary: Delivered only to the named subscribers
+                value:
+                  type: message
+                  data:
+                    type: notification
+                    subscribers: [PHID-USER-abcdefghijklmnopqrst]
+                  subscribers: [PHID-USER-abcdefghijklmnopqrst]
+              broadcast:
+                summary: An empty subscriber list reaches every listener
+                value:
+                  type: message
+                  data:
+                    type: notification
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AphlictMessage'
+      responses:
+        '200':
+          description: |
+            Accepted. Also the answer for a message that has already been round
+            the cluster and come back, which is recognised by this server's own
+            fingerprint already being in `touched` and is dropped rather than
+            republished — the receipt is identical either way.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AphlictReceipt'
+              example:
+                fingerprint: 7xKm3pQr9tVwZ2bN
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    get:
+      tags: [client]
+      servers:
+        - url: http://localhost:22280
+          description: Client port
+      summary: Open a WebSocket, or report that plain HTTP is not served
+      description: |
+        Upgrades the connection and registers the client as a listener of the
+        default instance. A request that is not a WebSocket upgrade answers 501
+        with Aphlict's own wording, byte for byte.
+
+        The 501 is a health signal, not an unimplemented endpoint: Phorge probes
+        this port with a plain `GET /` and treats 200 as a broken server. On the
+        **admin** port the same request is the platform liveness probe and
+        answers `{"status":"ok"}` with 200 — a deviation from Aphlict, which
+        answered 405 there, and one nothing notices because Phorge only ever
+        probes `/status/` on that port.
+
+        Once upgraded, the client speaks the Aphlict wire protocol over the
+        socket: `subscribe`, `unsubscribe`, `replay` and `ping` commands as JSON
+        frames. Malformed frames and unknown commands are ignored rather than
+        reported, as Aphlict did — a browser has no way to act on a protocol
+        complaint, and closing the connection over a version skew would be worse.
+      operationId: openWebSocket
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UpgradeHeader'
+        - $ref: '#/components/parameters/ConnectionHeader'
+        - $ref: '#/components/parameters/WebSocketKeyHeader'
+        - $ref: '#/components/parameters/WebSocketVersionHeader'
+      responses:
+        '101':
+          $ref: '#/components/responses/SwitchingProtocols'
+        '501':
+          $ref: '#/components/responses/UseWebsockets'
+
+  /~{instance}/:
+    get:
+      tags: [client]
+      servers:
+        - url: http://localhost:22280
+          description: Client port
+      summary: Open a WebSocket against a named instance
+      description: |
+        Identical to `GET /` except that the Phorge instance travels in the
+        path. `PhabricatorNotificationServerRef::getWebsocketURI()` appends
+        `~{instance}/` when `cluster.instance` is configured, so this is the
+        form browsers actually connect to in a multi-instance deployment.
+
+        Served by a wildcard route, which is why an unrecognised path answers
+        501 rather than 404 on this port. `/healthz` and `/readyz` stay
+        reachable underneath it because static routes outrank the wildcard.
+      operationId: openWebSocketForInstance
+      security: []
+      parameters:
+        - name: instance
+          in: path
+          required: true
+          description: |
+            Phorge instance name. A bare `~` with nothing after it, like any
+            path without one, is the instance named `default`.
+          schema:
+            type: string
+          example: acme
+        - $ref: '#/components/parameters/UpgradeHeader'
+        - $ref: '#/components/parameters/ConnectionHeader'
+        - $ref: '#/components/parameters/WebSocketKeyHeader'
+        - $ref: '#/components/parameters/WebSocketVersionHeader'
+      responses:
+        '101':
+          $ref: '#/components/responses/SwitchingProtocols'
+        '501':
+          $ref: '#/components/responses/UseWebsockets'
+
+  /status/:
+    get:
+      tags: [admin]
+      servers:
+        - url: http://localhost:22281
+          description: Admin port
+      summary: Report the instance's counters
+      description: |
+        Feeds Phorge's cluster notification panel, which reads the keys off the
+        top level of the body with `idx($details, 'clients.active')`.
+
+        The trailing slash is part of the path: `PhabricatorNotificationClient`
+        requests `/status/`, and nothing routes `/status`.
+      operationId: serverStatus
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Instance'
+      responses:
+        '200':
+          description: Counters for the addressed instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AphlictStatus'
+              examples:
+                idle:
+                  summary: Nothing has been published yet, so the history is empty
+                  value:
+                    instance: default
+                    uptime: 41230
+                    clients.active: 0
+                    clients.total: 0
+                    messages.in: 0
+                    messages.out: 0
+                    history.size: 0
+                    history.age: null
+                    version: 8
+                busy:
+                  summary: Two clients connected, one message fanned out to both
+                  value:
+                    instance: default
+                    uptime: 902411
+                    clients.active: 2
+                    clients.total: 5
+                    messages.in: 1
+                    messages.out: 2
+                    history.size: 1
+                    history.age: 1204
+                    version: 8
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: |
+        Always succeeds while the process is serving. Registered on both ports,
+        including the client port, where it survives the WebSocket wildcard
+        because Echo ranks static routes above it.
+
+        The container healthcheck is configured against the admin port.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once the service can accept traffic. All of this domain's state
+        is in memory, so readiness equals liveness and this reports ready as
+        soon as the port is listening.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+
+components:
+
+  parameters:
+
+    Instance:
+      name: instance
+      in: query
+      required: false
+      description: |
+        Phorge instance the request addresses. Phorge only sends it when
+        `cluster.instance` is configured; absent or empty means `default`.
+      schema:
+        type: string
+      example: acme
+
+    UpgradeHeader:
+      name: Upgrade
+      in: header
+      required: false
+      description: |
+        Must be `websocket` for the connection to be upgraded. Absent, or set to
+        anything else, is what produces the 501.
+      schema:
+        type: string
+        enum: [websocket]
+
+    ConnectionHeader:
+      name: Connection
+      in: header
+      required: false
+      description: Must contain `Upgrade` alongside the `Upgrade` header.
+      schema:
+        type: string
+        enum: [Upgrade]
+
+    WebSocketKeyHeader:
+      name: Sec-WebSocket-Key
+      in: header
+      required: false
+      description: Standard handshake nonce. Missing or blank fails the handshake.
+      schema:
+        type: string
+      example: dGhlIHNhbXBsZSBub25jZQ==
+
+    WebSocketVersionHeader:
+      name: Sec-WebSocket-Version
+      in: header
+      required: false
+      description: Standard handshake version.
+      schema:
+        type: string
+        enum: ['13']
+
+  schemas:
+
+    AphlictMessage:
+      type: object
+      description: |
+        One Aphlict message. Additional properties are the norm rather than the
+        exception: the object is defined by the Phorge code that posts it and is
+        forwarded to browsers unchanged, so this service reads only the two keys
+        below and never rewrites the rest.
+      additionalProperties: true
+      properties:
+        subscribers:
+          type: array
+          items:
+            type: string
+          description: |
+            PHIDs to deliver to. An **empty or absent** list broadcasts to every
+            listener of the instance, which is how Aphlict addressed everyone;
+            it does not mean "deliver to nobody".
+          example: [PHID-USER-abcdefghijklmnopqrst]
+        touched:
+          type: array
+          items:
+            type: string
+          description: |
+            Fingerprints of the servers that have already handled this message.
+            The receiving server appends its own before relaying, and drops a
+            message that already carries it. That is the whole of the cluster's
+            loop prevention, so a caller must forward this key untouched rather
+            than reconstructing the message.
+          example: [7xKm3pQr9tVwZ2bN]
+
+    AphlictReceipt:
+      type: object
+      required: [fingerprint]
+      description: |
+        Bare, with no `{data, error}` envelope. Phorge indexes `fingerprint`
+        straight off the decoded body.
+      properties:
+        fingerprint:
+          type: string
+          description: |
+            Identifies the server that accepted the message. Minted per process
+            rather than configured, so two servers cannot collide on one by
+            misconfiguration, and it changes on every restart.
+          example: 7xKm3pQr9tVwZ2bN
+
+    AphlictStatus:
+      type: object
+      required:
+        - instance
+        - uptime
+        - clients.active
+        - clients.total
+        - messages.in
+        - messages.out
+        - history.size
+        - version
+      description: |
+        Bare and **flat**. The dots in these key names are literal, not a
+        nesting convention: Phorge's cluster notification panel reads
+        `clients.active` as one key, so turning these into nested objects would
+        leave the panel with nothing to show.
+      properties:
+        instance:
+          type: string
+          description: The instance these counters describe, echoing the request.
+          example: default
+        uptime:
+          type: integer
+          format: int64
+          description: Milliseconds since the process started.
+          example: 41230
+        clients.active:
+          type: integer
+          description: WebSocket connections open right now.
+          example: 2
+        clients.total:
+          type: integer
+          format: int64
+          description: |
+            Connections accepted since startup for this instance, not a
+            high-water mark: it only grows.
+          example: 5
+        messages.in:
+          type: integer
+          format: int64
+          description: Messages accepted on the admin port since startup.
+          example: 1
+        messages.out:
+          type: integer
+          format: int64
+          description: |
+            Individual deliveries to clients since startup. One message fanned
+            out to two subscribers counts twice, so this is normally larger than
+            `messages.in`.
+          example: 2
+        history.size:
+          type: integer
+          description: |
+            Messages currently held for replay, bounded by 4096 entries and 60
+            seconds. Process-wide rather than per instance.
+          example: 1
+        history.age:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Age of the oldest held message in milliseconds, or `null` when the
+            history is empty. Phorge only reads it when `history.size` is
+            non-zero.
+          example: 1204
+        version:
+          type: integer
+          description: |
+            Aphlict wire protocol version. It describes the protocol this
+            service speaks, not the service's own version, so it moves only when
+            the protocol does.
+          example: 8
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      description: |
+        The envelope, which on this API appears **only** on failures. Phorge's
+        client throws on a non-2xx without reading the body, so nothing on the
+        PHP side depends on this shape; it is here because the platform's error
+        handler produces it for every service.
+      properties:
+        data:
+          nullable: true
+          description: Always null on error.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable code. The notification domain contributes no
+            code of its own: an undecodable message body is `ERR_BAD_REQUEST`
+            and everything else comes from the platform.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_NOT_FOUND
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_TOO_LARGE
+            - ERR_INTERNAL
+        message:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+      description: |
+        Bare probe payload, outside the envelope like everything else here — but
+        for the ordinary reason: container probes and load balancers consume it
+        directly.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    SwitchingProtocols:
+      description: |
+        Handshake accepted; the connection now belongs to the WebSocket and the
+        Aphlict wire protocol takes over. There is no response body.
+      headers:
+        Upgrade:
+          schema:
+            type: string
+            enum: [websocket]
+        Connection:
+          schema:
+            type: string
+            enum: [Upgrade]
+        Sec-WebSocket-Accept:
+          schema:
+            type: string
+
+    UseWebsockets:
+      description: |
+        The request was not a WebSocket upgrade. Phorge reads this as the client
+        port's healthy answer, so the status and the body are both contractual.
+      content:
+        text/plain:
+          schema:
+            type: string
+            description: Aphlict's own wording, including the trailing newline.
+          example: "HTTP/501 Use Websockets\n"
+
+    BadRequest:
+      description: |
+        The message body could not be decoded as JSON. An empty body is this
+        too, since it decodes to `io.EOF`.
+
+        This is the one failure a caller can act on, and unlike the success path
+        it does answer in the envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_BAD_REQUEST
+              message: 'unexpected EOF'
+
+    InternalError:
+      description: |
+        The request failed for a reason the caller cannot act on — in practice a
+        recovered panic. Panic values and stack traces go to the service log, so
+        a 5xx body never describes the service's internals.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: internal server error

@@ -20,8 +20,17 @@ type ReadyFunc func() error
 // HEALTHCHECK, Kubernetes probes and load balancers, which are configured
 // against this flat shape; wrapping them "for consistency" would silently
 // break every probe in every deployment. Leave them unwrapped.
-func Register(e *echo.Echo, ready ReadyFunc) {
-	e.GET("/", Live())
+//
+// skipRoot hands GET / to the caller. It exists for exactly one reason: Phorge
+// probes a notification client port with a plain GET / and reads HTTP 501 as
+// the healthy answer, treating the 200 this package would otherwise return as
+// a broken server (PhabricatorNotificationServerRef::testClient). /healthz and
+// /readyz are registered either way, so container probes keep working and no
+// other service has a reason to set this.
+func Register(e *echo.Echo, ready ReadyFunc, skipRoot bool) {
+	if !skipRoot {
+		e.GET("/", Live())
+	}
 	e.GET("/healthz", Live())
 	e.GET("/readyz", Ready(ready))
 }

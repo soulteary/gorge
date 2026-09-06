@@ -14,7 +14,7 @@ import (
 func serve(t *testing.T, ready ReadyFunc, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	e := echo.New()
-	Register(e, ready)
+	Register(e, ready, false)
 
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
@@ -73,6 +73,47 @@ func TestProbesAreNotEnveloped(t *testing.T) {
 		}
 		if body["status"] != "ok" {
 			t.Errorf("%s: expected a bare status field, got %v", path, body)
+		}
+	}
+}
+
+// TestSkipRootLeavesRootToTheCaller guards the exemption Register documents:
+// the notification client port answers GET / with 501 and Phorge reads that as
+// the healthy answer, so a probe registered here would report the server broken.
+func TestSkipRootLeavesRootToTheCaller(t *testing.T) {
+	e := echo.New()
+	Register(e, nil, true)
+
+	const sentinel = "domain answered"
+	e.GET("/", func(c echo.Context) error {
+		return c.String(http.StatusNotImplemented, sentinel)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("expected the domain's 501, got %d", rec.Code)
+	}
+	if rec.Body.String() != sentinel {
+		t.Errorf("expected %q, got %q", sentinel, rec.Body.String())
+	}
+}
+
+// TestSkipRootKeepsContainerProbes pins the other half of the exemption: only
+// GET / is given up, so Docker HEALTHCHECK and Kubernetes keep their endpoints.
+func TestSkipRootKeepsContainerProbes(t *testing.T) {
+	e := echo.New()
+	Register(e, nil, true)
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: expected 200, got %d", path, rec.Code)
 		}
 	}
 }

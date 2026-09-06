@@ -23,8 +23,12 @@
 |---|---|---|
 | `render/` | `gorge-render` | `go/internal/render/contract_test.go` |
 | `diff/` | `gorge-render`（同进程） | `go/internal/diff/contract_test.go` |
+| `notification/admin/` | `gorge-notification` 的 admin 口 | `go/internal/notification/contract_admin_test.go` |
+| `notification/client/` | 同上，client 口 | `go/internal/notification/contract_client_test.go` |
 
-两个 runner 都只是三行 wrapper，真正的重放逻辑在 `go/internal/contracttest/`。它是 diff 迁入时从 render 的固件测试里抽出来的，抽出的理由不是省代码，而是**断言词汇必须在两个域之间保持一致**——各写一份 runner，两个域很快会开始用不同的方式描述自己的契约。它是普通包而非 `_test.go`，因为要被两个域的测试 import。
+**notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
+
+这些 runner 都只是三行 wrapper，真正的重放逻辑在 `go/internal/contracttest/`。它是 diff 迁入时从 render 的固件测试里抽出来的，抽出的理由不是省代码，而是**断言词汇必须在两个域之间保持一致**——各写一份 runner，两个域很快会开始用不同的方式描述自己的契约。它是普通包而非 `_test.go`，因为要被两个域的测试 import。
 
 ### 2.1 格式
 
@@ -64,6 +68,8 @@
 
 runner 必须用 token `contract-token` 启动服务：固件靠这个值认证，且其中一份固件断言不带 token 的请求被拒。其余一律用服务默认值。
 
+**notification 是这一条的例外**：那个域按设计不挂鉴权中间件（Phorge 的通知客户端不发凭据，配了 token 会让它发的每条消息都被拒），所以它的两个 runner 忽略 `contracttest.Token`，固件目录里也没有 `unauthorized.json`。`contracttest.go` 里那个常量的注释写明了这一点——**别看到少一份未授权固件就去补一份**。
+
 Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoutes(...)`，不监听真实端口。
 
 ### 2.3 现有固件
@@ -71,6 +77,10 @@ Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoute
 **render 域 12 份**：正常渲染（python / go）、别名解析、大小写敏感的两条（`.R` / `.r`）、未知语言、空 source、CRLF、格式错误的请求体、未授权、查询参数认证、语言列表。
 
 **diff 域 14 份**：hunk 头的三种计数形态、无尾换行的三种组合、identical 分支、normalize、prose 的三条、未授权、查询参数认证、格式错误的请求体。逐条对应见 [`../tests/contract/diff/README.md`](../tests/contract/diff/README.md)。
+
+**notification 域 11 份**：admin 7 份（发消息、form-urlencoded 的 Content-Type、空 body、格式错误的 body、`/status/` 的扁平点号键、带 instance 的 `/status/`、根探针），client 4 份（`GET /` 与实例路径各一条 501、带 Upgrade 头但不是 WebSocket 的一条 501、`/healthz` 不被通配符吃掉）。逐条对应见 [`../tests/contract/notification/README.md`](../tests/contract/notification/README.md)。
+
+这批固件让共享 runner 长了两处：`lookupJSONPath` 现在会**先把整段路径当字面量键查一次**再按 `.` 切分，否则 `clients.active` 这类键寻址不到（那些点是键名的一部分，不是嵌套）；`check` 现在对「只断言状态码与原始字节」的固件跳过 JSON 解码，否则 client 口那句纯文本 501 会在解码那一步就失败。两处都是共享词汇的扩展而非 notification 专用分支。
 
 diff 域**刻意没有**超限固件：两道尺寸护栏都随部署可配，一份断言 413 的固件会随被测服务的启动参数时过时不过，而这正是契约固件不能有的性质。那些路径在 `go/internal/diff/http_test.go` 里覆盖，那里可以设限。
 
@@ -102,24 +112,28 @@ prose diff 落在两者之间：它的输出没有外部基准，所以固件钉
 
 ## 4. e2e 冒烟
 
-两份脚本，都对着一个**已经在跑**的实例执行，自己不启动也不清理任何东西：
+三份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
 
 ```bash
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/render.sh
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/diff.sh
+ADMIN_URL=http://127.0.0.1:22281 CLIENT_URL=http://127.0.0.1:22280 \
+  bash tests/e2e/notification.sh
 # 或
-TOKEN=dev-token make e2e     # 两份都跑
+TOKEN=dev-token make e2e     # 三份都跑
 ```
 
-两个域共用一个端口，所以 `make e2e` 是「两个脚本打同一个 BASE_URL」，不是两套部署。
+render 与 diff 共用一个端口，所以那两份是「两个脚本打同一个 `BASE_URL`」，不是两套部署。notification 是另一个进程，而且**要两个变量**：`ADMIN_URL` 与 `CLIENT_URL` 不可互换，同一个请求在两个端口上的正确答案不一样，这正是它第 4、5 条场景要验证的东西。它也没有 `TOKEN`——那个域按设计不鉴权。
 
 `render.sh` 六条场景：存活探针（并断言响应里**不出现** `"data"`，即探针没被套上信封）、就绪探针、无 token 得 401、渲染成功且 HTML 带 `k`/`nf`/`nb`/`mi` 类名、语言列表含 python。
 
 `diff.sh` 九条场景：无 token 得 401、四种 hunk 头/标记形态做整值比对、identical 分支、normalize、prose 分段、格式错误的请求体得 400。
 
-两份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+`notification.sh` 五条场景：admin 存活探针、用 curl 的**默认** `Content-Type`（即 form-urlencoded 贴在一段真 JSON 上，Phorge 的实际形状）发消息并拿到 fingerprint、`/status/` 的扁平点号键、client 口纯 HTTP 得 501、client 口真握手得 101。第 2 条是这份脚本存在的主要理由，而它的**payload 才是断言的关键**：里面那个 `100% done` 对表单解析器是非法的百分号转义，所以只有「不看头、直接按 JSON 解」的 handler 才会答 200。把那个百分号「清理」掉，这条场景就退化成一个永远通过的检查——理由见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 5.4 节。
 
-它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。`cmd/gorge-render` 与 `httpx.Run()` 的覆盖率缺口就靠它兜。
+render 与 diff 两份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+
+它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。两个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）
 
 `diff.sh` 还有一个单元测试拿不到的作用：`\ No newline at end of file` 这个标记里含反斜杠，是整个 payload 里唯一会被 JSON 转义错误悄悄改坏的部分，而它只有过一趟真实的 HTTP 编解码才验证得到。
 
@@ -130,19 +144,25 @@ TOKEN=dev-token make e2e     # 两份都跑
 | `platform/auth` | 100.0% |
 | `platform/config` | 100.0% |
 | `platform/health` | 100.0% |
-| `platform/httpx` | 74.1% |
+| `platform/httpx` | 97.1% |
 | `render` | 91.7% |
 | `render/highlight` | 92.9% |
 | `diff` | 92.1% |
 | `diff/unified` | 100.0% |
 | `diff/prose` | 100.0% |
-| `contracttest` | 0.0%（见下） |
+| `notification` | 97.1% |
+| `notification/hub` | 83.7% |
+| `notification/peer` | 96.2% |
+| `contracttest` | 20.2%（见下） |
 | `cmd/gorge-render` | 0.0% |
-| **总计** | **79.0%** |
+| `cmd/gorge-notification` | 0.0% |
+| **总计** | **84.0%** |
 
-两处真实缺口都是刻意的：`httpx` 缺的是 `Run()` 的信号循环与 `Shutdown` 路径，`cmd` 缺的是 `main()`。两者都需要起真进程，测试成本高于收益，由 e2e 在集成层面覆盖。
+`httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 
-`contracttest` 的 0.0% 是**度量假象，不是未测代码**：它没有自己的 `_test.go`，而 `go test` 默认只把一个包自己的测试计入该包的覆盖率。这份代码实际上被两个域的固件测试每次都完整跑过。**不要为了让这个数字变好看而给它加测试**——真要度量就用 `-coverpkg`。
+`contracttest` 的 20.2% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
+
+`notification/hub` 的 83.7% 有一部分是同一个假象：`Listener` 那几个要真 WebSocket 才调得到的方法，连接建在 `internal/notification` 的测试里，不计入 `hub`。`-coverpkg` 合并度量后它们都是 100%，覆盖率的真实缺口只剩三处，都登记在 [`findings.md`](findings.md) 第 9 条。
 
 生成报告：
 

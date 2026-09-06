@@ -1,0 +1,36 @@
+{
+  "name": "status is a flat map whose keys contain literal dots",
+  "description": "Feeds Phorge's cluster notification panel, which reads these off the top level with idx($details, 'clients.active'). The dots are part of the key names, not a nesting convention: nesting them would leave the panel with nothing to show, and it is this response that made contracttest's path walker try a whole dotted segment as a literal key before splitting on dots.",
+  "request": {
+    "method": "GET",
+    "path": "/status/"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": [
+      "instance",
+      "uptime",
+      "clients.active",
+      "clients.total",
+      "messages.in",
+      "messages.out",
+      "history.size",
+      "version"
+    ],
+    "jsonEquals": {
+      "instance": "default",
+      "clients.active": 0,
+      "clients.total": 0,
+      "version": 8
+    },
+    "jsonAbsent": ["data", "error", "clients", "messages", "history"],
+    "bodyContains": [
+      "\"clients.active\"",
+      "\"clients.total\"",
+      "\"messages.in\"",
+      "\"messages.out\"",
+      "\"history.size\"",
+      "\"history.age\""
+    ]
+  }
+}

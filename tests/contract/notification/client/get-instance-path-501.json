@@ -1,0 +1,12 @@
+{
+  "name": "an instance path is refused the same way",
+  "description": "getWebsocketURI() appends ~{instance}/ when cluster.instance is set, so a multi-instance deployment is probed at this path rather than at /. It is served by a wildcard route, which is also why an unrecognised path on this port answers 501 rather than 404.",
+  "request": {
+    "method": "GET",
+    "path": "/~acme/"
+  },
+  "expect": {
+    "status": 501,
+    "bodyContains": ["HTTP/501 Use Websockets\n"]
+  }
+}
