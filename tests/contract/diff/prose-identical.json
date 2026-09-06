@@ -1,0 +1,21 @@
+{
+  "name": "identical prose is one unchanged segment",
+  "description": "Unchanged text collapses to a single \"=\" segment rather than one per word or paragraph. A caller rendering the result walks the segment list, so an engine that returned the same text split into fragments would still be correct but would defeat every consumer's markup batching.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/prose",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"unchanged text\",\"new\":\"unchanged text\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.parts.0.type": "=",
+      "data.parts.0.text": "unchanged text"
+    },
+    "jsonAbsent": ["data.parts.1"]
+  }
+}

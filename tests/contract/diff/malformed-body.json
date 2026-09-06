@@ -1,0 +1,19 @@
+{
+  "name": "an invalid JSON body is a bad request",
+  "description": "A truncated body is 400 ERR_BAD_REQUEST, not 500. The distinction matters because Phorge's client treats 5xx as a service fault worth retrying, and a malformed request will never succeed on a retry.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":"
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

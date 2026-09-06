@@ -80,8 +80,11 @@ compose-logs: ## Tail service logs
 ## --- Tests ----------------------------------------------------------------
 
 .PHONY: e2e
-e2e: ## Run the e2e smoke test against BASE_URL
+e2e: ## Run the e2e smoke tests against BASE_URL
+	# Both domains are served by one binary on one port, so this is two
+	# scripts against one BASE_URL rather than two deployments.
 	BASE_URL=$(BASE_URL) bash tests/e2e/render.sh
+	BASE_URL=$(BASE_URL) bash tests/e2e/diff.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

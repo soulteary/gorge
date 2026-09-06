@@ -1,6 +1,7 @@
 // Package render is the rendering domain: it turns source artifacts into HTML
-// for Phorge. Today that means syntax highlighting; diff rendering will join
-// the same binary under /api/diff/*.
+// for Phorge, which today means syntax highlighting. The diff domain shares
+// this binary under /api/diff/* but is a package of its own; see
+// docs/modules/render.md and docs/modules/diff.md.
 package render
 
 import (

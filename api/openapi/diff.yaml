@@ -1,0 +1,571 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Diff API
+  description: |
+    HTTP contract for the diff domain, served by the `gorge-render` binary.
+    The diff domain does not get a process of its own: it registers
+    `/api/diff/*` on the same Echo instance that serves `/api/highlight/*`,
+    so everything in this document is reachable on the same port as
+    `render.yaml`.
+
+    Two response shapes coexist deliberately:
+
+    - `/api/**` endpoints return the `{data, error}` envelope. Exactly one of
+      the two keys is populated. This holds for failures the service never
+      reached a handler for — an unknown path, a body over the transport limit,
+      a recovered panic — because `httpx` replaces the framework's default
+      error handler.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them. They are described
+      here as well as in `render.yaml` because one process answers both;
+      the two descriptions must stay in agreement.
+
+    The single exception to the envelope is a `HEAD` request, which by protocol
+    carries no response body: only the status code reports the failure.
+
+    The schemas under `components.schemas` mirror
+    `go/internal/contracts/diff.go`, which is the single source of truth
+    shared by the Go service, the PHP client and the contract fixtures under
+    `tests/contract/diff/`.
+
+    Unlike the highlight endpoints, whose output is consumed by a browser,
+    `POST /api/diff/generate` produces text that `ArcanistDiffParser` and
+    `DifferentialHunkParser` parse on the PHP side. Its byte-level format
+    replaces the output of `diff -U65535` and is a hard contract; the rules are
+    written down in `compat/phorge/README.md` section 4, and the contract
+    fixtures assert them exactly rather than by substring.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8140
+    description: Local development
+
+tags:
+  - name: diff
+    description: Text difference computation
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/diff/generate:
+    post:
+      tags: [diff]
+      summary: Generate a full-context unified diff
+      description: |
+        Computes a line-level unified diff between `old` and `new` and returns
+        it as text, replacing Phorge's
+        `PhabricatorDifferenceEngine::generateRawDiffFromFileContent`, which
+        shells out to `diff -U65535`.
+
+        The output always contains exactly one hunk starting at line 1 (full
+        context), because the PHP side re-renders the whole file rather than
+        just the changed region.
+
+        The hunk header follows GNU `diff`'s counting rules, which are not
+        uniform: a side with zero lines is written `0,0`, a side with exactly
+        one line omits the count entirely (`@@ -1 +1 @@`), and only a side with
+        two or more lines is written `1,count`. A side whose text does not end
+        in a newline gets a `\ No newline at end of file` line after its last
+        record. See `compat/phorge/README.md` section 4 — getting a single byte
+        wrong here does not raise an error on the PHP side, it silently
+        misaligns line numbers.
+      operationId: generateDiff
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiffRequest'
+            examples:
+              changed:
+                summary: One line replaced, both sides two lines
+                value:
+                  old: "hello\nworld\n"
+                  new: "hello\ngopher\n"
+                  oldName: a.txt
+                  newName: b.txt
+              singleLine:
+                summary: One line against one line, so both counts are omitted
+                value:
+                  old: "world\n"
+                  new: "gopher\n"
+              created:
+                summary: Empty old side, written as -0,0
+                value:
+                  old: ""
+                  new: "hello\nworld\n"
+              normalized:
+                summary: Whitespace-insensitive comparison
+                value:
+                  old: "if (x) {\n"
+                  new: "if(x){\n"
+                  normalize: true
+      responses:
+        '200':
+          description: Unified diff text
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiffResponse'
+              examples:
+                changed:
+                  summary: Both sides two lines, so both counts are written
+                  value:
+                    data:
+                      diff: "--- a.txt 9999-99-99\n+++ b.txt 9999-99-99\n@@ -1,2 +1,2 @@\n hello\n-world\n+gopher\n"
+                      equal: false
+                singleLine:
+                  summary: Both sides one line, so both counts are omitted
+                  value:
+                    data:
+                      diff: "--- /dev/universe 9999-99-99\n+++ /dev/universe 9999-99-99\n@@ -1 +1 @@\n-world\n+gopher\n"
+                      equal: false
+                noNewline:
+                  summary: Neither side ends in a newline, so each gets a marker
+                  value:
+                    data:
+                      diff: "--- /dev/universe 9999-99-99\n+++ /dev/universe 9999-99-99\n@@ -1 +1 @@\n-world\n\\ No newline at end of file\n+gopher\n\\ No newline at end of file\n"
+                      equal: false
+                identical:
+                  summary: >
+                    Equal inputs take a synthetic branch copied from the PHP
+                    implementation, not from GNU diff
+                  value:
+                    data:
+                      diff: "--- /dev/universe 9999-99-99\n+++ /dev/universe 9999-99-99\n@@ -1,3 +1,3 @@\n hello\n world\n \n"
+                      equal: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/diff/prose:
+    post:
+      tags: [diff]
+      summary: Generate a fine-grained prose diff
+      description: |
+        Computes a prose diff between `old` and `new` and returns it as an
+        ordered list of parts, replacing
+        `PhutilProseDifferenceEngine::getDiff`.
+
+        The engine recurses through four granularities — paragraphs, sentences,
+        words, then characters — refining only the regions that actually
+        changed. The result is therefore a flat list, not a tree: the recursion
+        is an implementation detail of how the parts were found.
+
+        Two invariants hold over the returned parts and are what the PHP side
+        relies on: concatenating the `=` and `-` texts in order reproduces
+        `old` exactly, and concatenating the `=` and `+` texts in order
+        reproduces `new` exactly. No character is dropped or duplicated.
+      operationId: proseDiff
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProseRequest'
+            examples:
+              words:
+                summary: Two words replaced within one sentence
+                value:
+                  old: The quick brown fox
+                  new: The slow brown cat
+      responses:
+        '200':
+          description: Ordered prose diff parts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProseResponse'
+              example:
+                data:
+                  parts:
+                    - type: '='
+                      text: 'The '
+                    - type: '-'
+                      text: quick
+                    - type: '+'
+                      text: slow
+                    - type: '='
+                      text: ' brown '
+                    - type: '-'
+                      text: fox
+                    - type: '+'
+                      text: cat
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: Always succeeds while the process is serving. Never authenticated.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once the service can accept traffic. Both domains in this
+        process are pure computation with no external dependencies, so it
+        reports ready as soon as it is listening; services with dependencies
+        fail this check while those are unavailable.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form. When the server's configured token is empty, all
+        requests pass unauthenticated.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        Fallback for callers that cannot set headers. Checked only when
+        `X-Service-Token` is absent.
+
+  schemas:
+
+    DiffRequest:
+      type: object
+      required: [old, new]
+      properties:
+        old:
+          type: string
+          description: |
+            Entire previous file content. An absent or empty value means an
+            empty file and is not an error; it produces a hunk header whose old
+            side reads `-0,0`.
+          example: "hello\nworld\n"
+        new:
+          type: string
+          description: |
+            Entire current file content. Absent or empty is likewise a valid
+            empty file, producing `+0,0`.
+          example: "hello\ngopher\n"
+        oldName:
+          type: string
+          description: |
+            Name written into the `---` header line. Defaults to
+            `/dev/universe`, matching the PHP implementation's `nonempty()`
+            fallback. Cosmetic: the parser does not resolve it against a real
+            path.
+          example: a.txt
+        newName:
+          type: string
+          description: |
+            Name written into the `+++` header line. Same default and same
+            cosmetic role as `oldName`.
+          example: b.txt
+        normalize:
+          type: boolean
+          default: false
+          description: |
+            Strips every space and tab from both sides before comparing, so
+            that reindentation and reformatting do not register as changes.
+            This mirrors `PhabricatorDifferenceEngine::normalizeFile`.
+
+            The stripping is applied to the text itself, not only to the
+            comparison, so the returned diff shows the stripped lines. The
+            caller wanted a whitespace-insensitive alignment and re-renders the
+            real content from its own copy.
+
+    DiffResult:
+      type: object
+      required: [diff, equal]
+      properties:
+        diff:
+          type: string
+          description: |
+            Unified diff text, always a single full-context hunk starting at
+            line 1. Non-empty even when `equal` is true.
+
+            Line endings are `\n` throughout, including the trailing one. A
+            `\r` in the input is an ordinary character belonging to the line
+            before it, so CRLF text diffs as CRLF text.
+        equal:
+          type: boolean
+          description: |
+            True when the two sides compare as identical, letting the caller
+            skip parsing the diff. Trailing-newline state participates in this
+            comparison, so `"a\n"` and `"a"` are *not* equal.
+
+            When true, `diff` holds a synthetic changeless diff — every line
+            prefixed with a space — rather than an empty string, because the
+            PHP side renders the unchanged file from this text and has no other
+            copy of the content. That synthetic branch reproduces the PHP
+            implementation's own string building rather than GNU diff's output;
+            see `compat/phorge/README.md` section 4.
+
+    DiffResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/DiffResult'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ProseRequest:
+      type: object
+      required: [old, new]
+      properties:
+        old:
+          type: string
+          description: |
+            Previous text. An absent or empty value is valid and yields a
+            result whose parts are all insertions.
+          example: The quick brown fox
+        new:
+          type: string
+          description: |
+            Current text. Absent or empty likewise yields all deletions.
+          example: The slow brown cat
+
+    ProsePart:
+      type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          description: |
+            Which sides the text belongs to: `=` to both, `-` to `old` only,
+            `+` to `new` only.
+          enum: ['=', '-', '+']
+        text:
+          type: string
+          description: |
+            The segment itself, carrying its original whitespace and
+            punctuation. Parts are not trimmed; a part may consist of nothing
+            but a space.
+
+    ProseResult:
+      type: object
+      required: [parts]
+      properties:
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProsePart'
+          description: |
+            Ordered segments. Within a changed region every `-` part precedes
+            the `+` parts, and adjacent parts of the same type are merged, so
+            the list is already in the shape a two-column renderer wants.
+
+            Empty inputs on both sides yield an empty list.
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        data:
+          nullable: true
+          description: Always null on error.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable code; clients branch on this, not on the
+            message.
+
+            The diff domain contributes no code of its own — unlike the render
+            domain's `ERR_HIGHLIGHT_FAILED` — because both engines are pure
+            functions that cannot fail: an unparseable body is
+            `ERR_BAD_REQUEST` and an oversized one is `ERR_TOO_LARGE`, both
+            platform codes. Adding a diff-specific code later means defining it
+            in `go/internal/diff/http.go`, not in `platform/httpx`.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            # Only reachable on the health paths; see the 404 response, which
+            # explains why a wrong method under /api/diff/** answers 404.
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_TOO_LARGE
+            - ERR_INTERNAL
+        message:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+      description: |
+        Bare probe payload, deliberately outside the `{data, error}` envelope.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    BadRequest:
+      description: Body is not valid JSON, or does not match the request schema
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_BAD_REQUEST
+              message: 'code=400, message=Syntax error'
+
+    Unauthorized:
+      description: Missing or invalid service token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: |
+        No route matched. Paths are matched exactly, so this is what a caller
+        that appends a trailing slash or joins the base URL wrongly receives —
+        the usual cause on the Phorge side.
+
+        Two quirks of the routing are worth knowing, because both look like
+        the wrong status at first glance:
+
+        - Under `/api/diff/**` the token is checked before the path is
+          resolved, so an unauthenticated request to a non-existent path
+          answers 401, not 404.
+        - Also under `/api/diff/**`, a documented path called with the wrong
+          method answers 404 rather than 405, because the group matches every
+          method in order to authenticate them. `ERR_METHOD_NOT_ALLOWED` is
+          therefore only seen on the health paths.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: Not Found
+
+    TooLarge:
+      description: |
+        The request was rejected on size. Three independent limits produce
+        this, and all three report `ERR_TOO_LARGE` so callers need not tell
+        them apart:
+
+        - `len(old) + len(new)` exceeds `GORGE_DIFF_MAX_BYTES` (1 MiB by
+          default), checked by the handler. Note that the limit applies to the
+          *sum*: two 600 KiB files are over it;
+        - the whole request body exceeds the platform's transport limit (2M),
+          checked by middleware. Only reachable when `GORGE_DIFF_MAX_BYTES` is
+          configured above that;
+        - the unified engine's dynamic programming table would exceed its cell
+          cap, checked after the two sides are split into lines. This one is a
+          compile-time constant rather than a configurable limit, and it exists
+          because the table is O(lines_old x lines_new): a payload well under
+          the byte limit can still ask for gigabytes of table. It is a cap on
+          the *product*, not on either side's line count, so comparing 100
+          lines against 100000 is not rejected.
+
+        The three report different `message` wording, which is not part of the
+        contract.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_TOO_LARGE
+              message: combined input exceeds maximum allowed size
+
+    InternalError:
+      description: |
+        The request failed for a reason the client cannot act on. Both diff
+        engines are pure functions that return no error, so in practice this is
+        a recovered panic or an unexpected handler error, and it reports
+        `ERR_INTERNAL`.
+
+        `ERR_INTERNAL` always carries the same generic `message`. Panic values,
+        stack traces and internal error strings are written to the service log
+        instead, so a 5xx body never describes the service's internals.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: internal server error

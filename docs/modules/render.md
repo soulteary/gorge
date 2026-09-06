@@ -1,6 +1,6 @@
 # render 模块
 
-把源码产物渲染成 HTML 交给 Phorge。今天是语法高亮，diff 渲染计划并入同一进程。
+把源码产物渲染成 HTML 交给 Phorge，目前即语法高亮。diff 域与本域共用 `gorge-render` 这个二进制与 `:8140` 这个端口，但是独立的包，见 [`diff.md`](diff.md)。
 
 | | |
 |---|---|
@@ -17,7 +17,7 @@
 
 **不负责**：外层 DOM 结构。输出里没有 `<pre>`、没有 `<div class="highlight">`，只有 `<span class="...">` 序列与文本节点——Phorge 自己渲染外层容器，因为它要在上面挂行号与 diff 高亮。
 
-**无外部依赖**。高亮是纯计算，没有数据库、缓存或下游服务，所以 `main.go` 显式传 `Ready: nil`，就绪等同于存活。这是 render 域与将来的 conduit、search 等模块的一处结构性差异。
+**无外部依赖**。高亮是纯计算，没有数据库、缓存或下游服务，所以 `main.go` 显式传 `Ready: nil`，就绪等同于存活。diff 域同样如此，这也正是两者能共用一个进程的原因；这是它们与将来的 conduit、search 等模块的一处结构性差异。
 
 ## 2. 路由与依赖
 
@@ -39,7 +39,7 @@ func RegisterRoutes(e *echo.Echo, deps *Deps) {
 
 路径按**域**命名而非按二进制命名（`/api/highlight/*` 而不是 `/api/render/*`），理由见 [`../architecture.md`](../architecture.md) 第 4.3 节。`TestRoutePathsAreStable` 遍历 `e.Routes()` 断言这两条路径仍然注册着——Phorge 侧 `PhabricatorGorgeRenderClient` 已经在调它们，重命名是 PHP 侧的破坏性变更。
 
-`Deps` 是一个三字段结构体（`Highlighter` / `Token` / `MaxBytes`），由 `main.go` 组装。整个仓库没有引入 DI 框架，也没有包级单例——`main.go` 一共 39 行，串联「加载配置 → 建服务器 → 注册路由 → Run」四步。
+`Deps` 是一个三字段结构体（`Highlighter` / `Token` / `MaxBytes`），由 `main.go` 组装。整个仓库没有引入 DI 框架，也没有包级单例——`main.go` 串联「加载配置 → 建服务器 → 注册两个域的路由 → Run」四步。`cfg.ServiceToken` 同时传给两个域：token 认证的是调用方对这个进程的身份，不是对某个路由分组的身份。
 
 ## 3. 渲染处理器
 
@@ -186,7 +186,7 @@ if mapped, ok := h.lexerMap[lang]; ok {
 
 ### 5.3 端口与路由
 
-`gorge-highlight` 的 `:8140` 由 `gorge-render` 继承；`gorge-diff` 原先的 `:8130` 在 diff 并入后废弃。对 PHP 侧的影响：`gorge.render.uri` 与 `gorge.render.token` 两个配置项不需要改。
+`gorge-highlight` 的 `:8140` 由 `gorge-render` 继承；`gorge-diff` 原先的 `:8130` **已废弃**，diff 域现在在 `:8140` 上以 `/api/diff/*` 提供服务。对 PHP 侧的影响：`gorge.render.uri` 与 `gorge.render.token` 两个配置项不需要改。
 
 ## 6. 配置
 

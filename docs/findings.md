@@ -57,9 +57,47 @@ Chroma 的 lexer 注册表在进程生命周期内不变，这个列表（数百
 
 ---
 
+## diff 模块
+
+### 4. `config.Base` 由 render 域持有，diff 域读不到进程级配置
+
+**影响**：中。是个结构问题，不是 bug。
+
+`config.Base`（`GORGE_LISTEN_ADDR`、`GORGE_SERVICE_TOKEN`、`GORGE_CONFIG_FILE`）目前嵌在 `render.Config` 里。diff 域是同一个进程里的第二个域，但它的 `diff.Config` 只有一个域级字段，进程级配置得由 `main.go` 从 `render.Load()` 的结果里取出来再传给它：
+
+```go
+cfg, err := render.Load()          // 这里面有 config.Base
+diffCfg := diff.LoadFromEnv()      // 这里只有 MaxBytes
+
+diff.RegisterRoutes(srv.Echo(), &diff.Deps{
+	Token:    cfg.ServiceToken,    // 从 render 的配置里借
+	MaxBytes: diffCfg.MaxBytes,
+})
+```
+
+这样接是对的——两个域各自声称拥有 `GORGE_LISTEN_ADDR` 会让「谁说了算」变得含混——但「进程级配置住在某个域的包里」这件事本身摆错了位置。**第三个域进来时这条会开始咬人**：它同样得从 `render.Load()` 借 token，而它和 render 之间并没有任何关系。
+
+**建议**：把 `config.Base` 的加载上提到一个进程级的 `platform/config.LoadProcess()` 或 `cmd/gorge-render` 自己的私有类型里，各域的 `Config` 只留域级字段（diff 已经是这个形状）。这次刻意没做，因为它会动到 render 的配置加载路径与那套「新名优先、旧名兜底」的查找逻辑，不该和迁入混在一个改动里。
+
+### 5. LCS 不是 Myers：一处技术债的两个症状
+
+**影响**：中。两个症状都不是 bug，但都有代价。
+
+`unified.lcs()` 是经典 LCS 全表动态规划，而 GNU diff 跑的是 Myers 的 `O(ND)` 算法。由此来的两件事：
+
+**症状一：靠常量护栏兜内存。** 全表要 `(n+1)×(m+1)`，所以 `maxCells = 4_000_000` 这道护栏必须存在（见 [`modules/diff.md`](modules/diff.md) 第 5 节）。代价是 2001 行对 2001 行这种完全正常的文件比较会被拒成 413，而 GNU 毫无压力——Myers 的内存与**差异量**成正比，不与两侧行数之积成正比。
+
+**症状二：歧义对齐的选择与 GNU 不同。** 一行重复出现时可能有多个同样最小的对齐，GNU 的选择来自 Myers 加它的边界平移启发式。实测约 2900 组生成输入：91.4% 逐字节一致，8.6% 分歧且全部含重复行，但 **hunk 头 0 次不同、编辑数 0 次不同**——即行号从不错位、diff 从不更差。边界写在 `compat/phorge/README.md` 第 4.6 节，由 `unified/systemdiff_test.go` 守着。
+
+**建议**：换成 Myers（或 `diff-match-patch` 那类实现）一并解决两个症状。护栏是权宜，不是可调参数——**不要简单地把 `maxCells` 往上调**，那只是把 OOM 的门槛挪高。
+
+换的时候注意：`systemdiff_test.go` 里 `TestAlignmentChoiceMayDifferFromSystemDiff` 目前只断言 hunk 头与编辑数。真换到 Myers 之后应当先看这组歧义输入能不能全等，能的话就把它收紧成整值比对，这个测试就从「记录偏差」变成「锁住全等」。
+
+---
+
 ## 文档
 
-### 4. 存在两份过期的技术报告
+### 6. 存在两份过期的技术报告
 
 **影响**：中。会把下一个人引到不存在的路径上。
 
@@ -74,7 +112,7 @@ Chroma 的 lexer 注册表在进程生命周期内不变，这个列表（数百
 
 **建议**：删除 `go/internal/render/highlight/TECHNICAL_REPORT.md`，把包注释改指 `docs/modules/render.md` 与 `compat/phorge/README.md`。
 
-### 5. 兼容测试没有反向指回 `compat/`
+### 7. 兼容测试没有反向指回 `compat/`
 
 **影响**：低，但错过成本高。
 
@@ -82,15 +120,17 @@ Chroma 的 lexer 注册表在进程生命周期内不变，这个列表（数百
 
 在这些测试文件顶部加一行指回 `compat/phorge/README.md` 的注释，能让「为什么这个断言存在」在改动现场就可见。这正是这批测试最容易被当成冗余删掉的地方——它们断言的都是些看起来无关紧要的 CSS 类名。
 
-### 6. `layering_test.go` 的禁止列表需要人工维护
+### 8. `layering_test.go` 的禁止列表需要人工维护
 
-**影响**：低（当前只有一个域），但随模块数量线性增长。
+**影响**：中。diff 迁入时已经踩到一次——这一行是手工补的。
 
 ```go
 var forbiddenPrefixes = []string{
 	"github.com/soulteary/gorge/go/internal/render",
+	"github.com/soulteary/gorge/go/internal/diff",
 	"github.com/soulteary/gorge/go/internal/contracts",
 }
 ```
 
-新增域包时忘了加一行，这个测试对新域就是静默失效的。可以改成扫描 `internal/` 下除 `platform` 外的所有目录自动生成列表，这样新域自动被纳入。
+新增域包时忘了加一行，这个测试对新域就是静默失效的：它照样通过，只是不再检查任何新东西。可以改成扫描 `internal/` 下除 `platform`、`contracts`、`contracttest` 外的所有目录自动生成列表，这样新域自动被纳入。第二个域进来后这已经不是假想问题了。
+

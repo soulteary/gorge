@@ -8,8 +8,10 @@
 
 ```bash
 docker build -t gorge-render go/
-docker build -t gorge-diff --build-arg SERVICE=gorge-diff go/
+docker build -t gorge-conduit --build-arg SERVICE=gorge-conduit go/   # 将来的二进制
 ```
+
+第二条现在还没有对应的 `cmd/`——当前仓库只产出 `gorge-render` 一个二进制，它同时承载 render 与 diff 两个域。`SERVICE` 这个参数是给**新增二进制**用的，不是给新增域用的：域并入既有进程时不碰这里，见 [`architecture.md`](architecture.md) 第 4.2 节。
 
 多阶段构建：
 
@@ -90,4 +92,6 @@ tag 策略由 `docker/metadata-action` 生成：语义化的 `{{version}}` / `{{
 | Docker | `docker-build` `compose-config` `compose-up` `compose-down` `compose-logs` |
 | 测试 | `e2e` |
 
-`SERVICE`、`BASE_URL` 是可覆盖变量（`SERVICE=gorge-diff make build`），默认分别是 `gorge-render` 与 `http://127.0.0.1:8140`。
+`SERVICE`、`BASE_URL` 是可覆盖变量（`SERVICE=<二进制名> make build`），默认分别是 `gorge-render` 与 `http://127.0.0.1:8140`。当前只有一个二进制，所以覆盖 `SERVICE` 要等到真有第二个 `cmd/` 才有意义。
+
+`e2e` 跑 `tests/e2e/` 下的两个脚本，都打同一个 `BASE_URL`——render 与 diff 两个域由一个进程在一个端口上服务，不是两套部署。

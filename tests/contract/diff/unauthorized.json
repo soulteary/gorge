@@ -1,0 +1,18 @@
+{
+  "name": "missing service token is rejected",
+  "description": "One token guards both domains in this binary, so the diff routes reject an unauthenticated caller exactly as the highlight routes do. The response must carry no data field, so a caller that ignores the status code still cannot mistake it for a result.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{\"old\":\"a\\n\",\"new\":\"b\\n\"}"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_UNAUTHORIZED" },
+    "jsonAbsent": ["data"]
+  }
+}

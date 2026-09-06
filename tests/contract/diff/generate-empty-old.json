@@ -1,0 +1,20 @@
+{
+  "name": "an empty old side starts at line zero",
+  "description": "A side with no content is \"0,0\", not \"1,0\": there is no line 1 for the hunk to point at. This is the shape Phorge sees whenever a file is created.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"\",\"new\":\"x\\ny\\n\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.equal": false,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -0,0 +1,2 @@\n+x\n+y\n"
+    }
+  }
+}

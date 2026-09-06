@@ -1,0 +1,20 @@
+{
+  "name": "a single line on each side omits the count",
+  "description": "GNU diff writes \"@@ -1 +1 @@\" rather than \"@@ -1,1 +1,1 @@\" when a side has exactly one line. ArcanistDiffParser accepts both spellings but positions the following lines from what it reads, so emitting the redundant count here is a silent corruption rather than a cosmetic difference.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"hello\\n\",\"new\":\"gopher\\n\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.equal": false,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1 +1 @@\n-hello\n+gopher\n"
+    }
+  }
+}

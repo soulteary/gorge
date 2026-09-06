@@ -19,7 +19,12 @@ x-service-defaults: &service-defaults
 
 services:
 
-  # --- render: syntax highlighting (and, later, diff) ---
+  # --- render: syntax highlighting and diffs ---
+  #
+  # Two domains, one service. The diff domain answers /api/diff/* on this same
+  # port; it has no service of its own because both domains are pure
+  # computation with no external dependency, so a second container would only
+  # add something else to deploy. Its former :8130 is retired.
   render:
     <<: *service-defaults
     build:
@@ -32,6 +37,7 @@ services:
       GORGE_LISTEN_ADDR: ":8140"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
       GORGE_RENDER_MAX_BYTES: ${GORGE_RENDER_MAX_BYTES:-1048576}
+      GORGE_DIFF_MAX_BYTES: ${GORGE_DIFF_MAX_BYTES:-1048576}
       GORGE_RENDER_TIMEOUT_SEC: ${GORGE_RENDER_TIMEOUT_SEC:-15}
     ports:
       - "${GORGE_RENDER_PORT:-8140}:8140"

@@ -1,0 +1,21 @@
+{
+  "name": "a changed line in a two line file",
+  "description": "The canonical case. Two lines each way, one of them replaced, so the hunk header carries an explicit count on both sides and the body is a context line followed by a delete/insert pair in that order.",
+  "request": {
+    "method": "POST",
+    "path": "/api/diff/generate",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"old\":\"hello\\nworld\\n\",\"new\":\"hello\\ngopher\\n\",\"oldName\":\"a\",\"newName\":\"b\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonAbsent": ["error"],
+    "jsonEquals": {
+      "data.equal": false,
+      "data.diff": "--- a 9999-99-99\n+++ b 9999-99-99\n@@ -1,2 +1,2 @@\n hello\n-world\n+gopher\n"
+    }
+  }
+}
