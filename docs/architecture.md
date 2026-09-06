@@ -6,7 +6,7 @@
 
 Gorge 是 Phorge（Phabricator 社区维护分支）的 Go 服务层单仓库。Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以常驻 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及将来 PHP 侧的适配层。
 
-当前产出两个二进制、承载**三个域**：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口。代码规模：生产代码 3482 行，测试代码 4865 行（约为生产代码的 1.40 倍），外加 37 份语言中立的契约固件（render 12 + diff 14 + notification 11）与三份 e2e 冒烟脚本。
+当前产出三个二进制、承载**四个域**：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口，`gorge-mailer` 独占一个进程与一个端口。代码规模：生产代码 5174 行，测试代码 6374 行（约为生产代码的 1.23 倍），外加 47 份语言中立的契约固件（render 12 + diff 14 + notification 11 + mailer 10）与四份 e2e 冒烟脚本。
 
 ### 1.1 为什么要替换掉进程内实现
 
@@ -31,16 +31,19 @@ notification 域的动机又不一样：它替换的不是子进程或内联实�
 ├── go/                       单一 Go module（github.com/soulteary/gorge/go）
 │   ├── cmd/gorge-render/     二进制入口，一个 cmd 一个服务
 │   ├── cmd/gorge-notification/ 同上；两个 httpx.Server 交给 httpx.RunAll
+│   ├── cmd/gorge-mailer/     同上；唯一传了非 nil Ready 的入口
 │   ├── internal/contracts/   线上数据结构，PHP / Go / OpenAPI / 固件的唯一真源
 │   ├── internal/contracttest/ 契约固件 runner，两个域各写一个 wrapper 指向自己的目录
 │   ├── internal/platform/    httpx / auth / health / config，不依赖任何业务域
 │   ├── internal/render/      render 域：highlight 引擎 + HTTP 路由 + 配置
 │   ├── internal/diff/        diff 域：unified / prose 引擎 + HTTP 路由 + 配置
 │   ├── internal/notification/ notification 域：admin / client 两组路由 + hub/ + peer/
+│   ├── internal/mailer/      mailer 域：七个投递适配器 + Dispatcher + HTTP 路由 + 配置
 │   └── Dockerfile            一份 Dockerfile 服务所有二进制（ARG SERVICE 选择）
 ├── api/openapi/render.yaml   render 域的 HTTP 契约
 ├── api/openapi/diff.yaml     diff 域的 HTTP 契约
 ├── api/openapi/notification.yaml  notification 域的 HTTP 契约（两个端口）
+├── api/openapi/mailer.yaml   mailer 域的 HTTP 契约
 ├── compat/phorge/README.md   与 Phorge 的兼容约束，改动前必读
 ├── deploy/compose/           本地与单机部署编排
 ├── deploy/kubernetes/        （占位）
@@ -50,9 +53,11 @@ notification 域的动机又不一样：它替换的不是子进程或内联实�
     ├── contract/render/      语言中立的契约固件，Go 与 PHP runner 共读
     ├── contract/diff/        同上；unified 部分做字节精确断言
     ├── contract/notification/ 分 admin/ 与 client/ 两组，因为它们是两个端口
+    ├── contract/mailer/      同上；失败路径靠 test 适配器的可控失败注入
     ├── e2e/render.sh         对着运行中实例做的冒烟测试
     ├── e2e/diff.sh           同上，打同一个端口的 /api/diff/*
-    └── e2e/notification.sh   同上，但要 ADMIN_URL 与 CLIENT_URL 两个变量
+    ├── e2e/notification.sh   同上，但要 ADMIN_URL 与 CLIENT_URL 两个变量
+    └── e2e/mailer.sh         同上；被测实例必须配了至少一个后端，否则 /readyz 那条按设计失败
 ```
 
 `contracttest` 是 diff 迁入时从 render 的固件测试里抽出来的。抽出的理由不是省代码，而是**断言词汇必须在两个域之间保持一致**——各写一份 runner，两个域很快会开始用不同的方式描述自己的契约。

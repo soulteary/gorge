@@ -1,0 +1,18 @@
+{
+  "name": "missing service token is rejected",
+  "description": "When the service is configured with a token, a request without one gets 401 and an error envelope. The response must carry no data field, so a caller that ignores the status code still cannot mistake it for a sent message.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{\"message\":{\"from\":{\"address\":\"noreply@example.com\"},\"to\":[{\"address\":\"rcpt@example.com\"}],\"subject\":\"no token\",\"textBody\":\"Hello\"}}"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_UNAUTHORIZED" },
+    "jsonAbsent": ["data"]
+  }
+}

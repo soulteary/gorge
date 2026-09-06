@@ -1,0 +1,19 @@
+{
+  "name": "attachments travel base64-encoded in the message",
+  "description": "Attachment.data is base64 at this layer, always: the PHP adapter encodes with base64_encode($att->getData()) before serialising, because a JSON document cannot carry raw bytes. Moving the encoding to either side would corrupt every attachment without changing any status code.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"message\":{\"from\":{\"address\":\"noreply@example.com\"},\"to\":[{\"address\":\"rcpt@example.com\"}],\"cc\":[{\"address\":\"cc@example.com\"}],\"subject\":\"with attachment\",\"textBody\":\"See attached\",\"htmlBody\":\"<p>See attached</p>\",\"attachments\":[{\"filename\":\"note.txt\",\"mimeType\":\"text/plain\",\"data\":\"SGVsbG8sIGdvcmdlIQ==\"}]}}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.mailerKey"],
+    "jsonEquals": { "data.mailerKey": "test-mailer" },
+    "jsonAbsent": ["error"]
+  }
+}

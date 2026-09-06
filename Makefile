@@ -10,6 +10,7 @@ BIN_DIR     := bin
 BASE_URL          ?= http://127.0.0.1:8140
 NOTIFY_ADMIN_URL  ?= http://127.0.0.1:22281
 NOTIFY_CLIENT_URL ?= http://127.0.0.1:22280
+MAILER_URL        ?= http://127.0.0.1:8110
 
 .DEFAULT_GOAL := help
 
@@ -95,6 +96,10 @@ e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
 	BASE_URL=$(BASE_URL) bash tests/e2e/render.sh
 	BASE_URL=$(BASE_URL) bash tests/e2e/diff.sh
 	ADMIN_URL=$(NOTIFY_ADMIN_URL) CLIENT_URL=$(NOTIFY_CLIENT_URL) bash tests/e2e/notification.sh
+	# gorge-mailer needs a backend configured as well as a listener, or its
+	# /readyz scenario fails: GORGE_MAILER_CONFIG='[{"key":"test","type":"test"}]'
+	# is what the compose service ships with.
+	BASE_URL=$(MAILER_URL) bash tests/e2e/mailer.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

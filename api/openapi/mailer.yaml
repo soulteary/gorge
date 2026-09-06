@@ -1,0 +1,552 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Mailer API
+  description: |
+    HTTP contract for the `gorge-mailer` binary, which serves the mailer
+    domain: one outbound email in, one delivery attempt out, across whichever
+    of the seven backends a deployment configured.
+
+    Two response shapes coexist deliberately:
+
+    - `/api/**` endpoints return the `{data, error}` envelope. Exactly one of
+      the two keys is populated. This holds for failures the service never
+      reached a handler for — an unknown path, a body over the transport limit,
+      a recovered panic — because `httpx` replaces the framework's default
+      error handler.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them.
+
+    `/readyz` carries more information here than in the other services: it
+    reports whether any backend is configured at all, which is the one failure
+    mode that otherwise looks completely healthy while every message fails.
+
+    The schemas under `components.schemas` mirror
+    `go/internal/contracts/mailer.go`, which is the single source of truth
+    shared by the Go service, the PHP adapter and the contract fixtures under
+    `tests/contract/mailer/`.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8110
+    description: Local development
+
+tags:
+  - name: mailer
+    description: Outbound email
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/mailer/send:
+    post:
+      tags: [mailer]
+      summary: Send one email
+      description: |
+        Hands the message to the configured backends in descending priority
+        order, retrying a backend a few times before failing over to the next.
+
+        The failover stops at the first *permanent* rejection: that describes
+        the message rather than the backend, so another backend would only
+        produce the same answer more slowly.
+
+        This endpoint is synchronous and holds no queue. Phorge's worker queue
+        is the authoritative retry loop, which is why the retries here are
+        measured in seconds and why the whole call is bound by the request
+        context — a client that disconnects stops the work behind it.
+      operationId: sendMail
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendRequest'
+      responses:
+        '200':
+          description: A backend accepted the message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendResponse'
+              example:
+                data:
+                  mailerKey: smtp
+                  messageId: ''
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '422':
+          $ref: '#/components/responses/PermanentFailure'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/SendFailed'
+
+  /api/mailer/mailers:
+    get:
+      tags: [mailer]
+      summary: List the configured backends
+      description: |
+        Reports the backends in the order the dispatcher will try them, highest
+        priority first — not in configuration order.
+
+        The keys reported here are the values `mailerKeys` accepts on
+        `POST /api/mailer/send`, which is how Phorge's
+        `bin/mail send-test --mailer <key>` reaches one specific backend.
+
+        Credentials never appear: an entry carries only its key, type and
+        priority.
+      operationId: listMailers
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The backend list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailersResponse'
+              example:
+                data:
+                  - key: smtp
+                    type: smtp
+                    priority: 100
+                  - key: fallback
+                    type: sendgrid
+                    priority: 10
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: |
+        Always succeeds while the process is serving. Never authenticated.
+
+        It reports nothing about the backends, deliberately. Use `/readyz` for
+        that; a container healthcheck pointed here would report healthy for a
+        service with no backend configured.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once at least one backend is configured. This is the probe
+        container orchestration should be pointed at.
+
+        It deliberately does **not** dial SMTP or ping a provider. Readiness
+        would then flip with every third-party hiccup, and having several
+        backends to fail over between is the answer to those already. So a 200
+        here means "this service can attempt a delivery", not "the next message
+        will arrive".
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: No backend is configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+                reason: no mailers configured
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form, and what the PHP client uses. When the server's
+        configured token is empty, all requests pass unauthenticated.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        Fallback for callers that cannot set headers. Checked only when
+        `X-Service-Token` is absent.
+
+  schemas:
+
+    Address:
+      type: object
+      required: [address]
+      properties:
+        name:
+          type: string
+          description: Optional display name, RFC 2047-encoded before it reaches a header.
+          example: Phorge
+        address:
+          type: string
+          example: noreply@example.com
+
+    Header:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+          example: X-Phabricator-Sent-This-Message
+        value:
+          type: string
+          description: |
+            CR and LF are stripped before the value reaches a header, which is
+            what stops a caller-supplied header from injecting headers of its
+            own.
+          example: 'Yes'
+
+    Attachment:
+      type: object
+      required: [filename, data]
+      properties:
+        filename:
+          type: string
+          example: patch.diff
+        mimeType:
+          type: string
+          description: Defaults to `application/octet-stream` when empty.
+          example: text/plain
+        data:
+          type: string
+          format: byte
+          description: |
+            Base64-encoded file content — always, at this layer. A JSON
+            document cannot carry raw bytes, so the PHP adapter encodes before
+            serialising and each backend decodes only if its provider wants raw
+            bytes. Moving the encoding to either side corrupts every attachment
+            without changing any status code.
+
+    EmailMessage:
+      type: object
+      required: [from, to, subject]
+      properties:
+        from:
+          $ref: '#/components/schemas/Address'
+        replyTo:
+          $ref: '#/components/schemas/Address'
+        to:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Address'
+        cc:
+          type: array
+          items:
+            $ref: '#/components/schemas/Address'
+        subject:
+          type: string
+        textBody:
+          type: string
+          description: |
+            Truncated to `GORGE_MAILER_BODY_LIMIT` bytes (512 KiB by default)
+            on a UTF-8 rune boundary. Truncation is silent: an oversized body
+            is shortened, not rejected.
+        htmlBody:
+          type: string
+          description: Truncated on the same limit as `textBody`.
+        headers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Header'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attachment'
+
+    SendRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          $ref: '#/components/schemas/EmailMessage'
+        mailerKeys:
+          type: array
+          items:
+            type: string
+          description: |
+            Restricts delivery to the named backends. They are still tried in
+            the service's priority order, not in the order given here: this
+            narrows the set, it does not reorder it. Omit or leave empty for
+            "any configured backend".
+
+            Naming only backends that do not exist is a 502 `ERR_SEND_FAILED`,
+            not a 404.
+
+    SendResult:
+      type: object
+      required: [mailerKey]
+      properties:
+        mailerKey:
+          type: string
+          description: |
+            The backend that accepted the message, which may not be the one
+            tried first. This is what Phorge records against the sent mail.
+        messageId:
+          type: string
+          description: |
+            The backend's own id, when it has one. Often absent: SMTP and
+            sendmail hand back nothing, and SendGrid reports the id in a
+            response header that may be empty.
+
+    MailerInfo:
+      type: object
+      required: [key, type, priority]
+      properties:
+        key:
+          type: string
+        type:
+          type: string
+          enum: [smtp, sendmail, ses, sendgrid, mailgun, postmark, test]
+        priority:
+          type: integer
+          description: |
+            Higher is tried first. A backend configured without one is
+            reported with a negative value, placing it after every explicitly
+            prioritised backend in declaration order.
+
+    SendResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SendResult'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    MailersResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MailerInfo'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        data:
+          nullable: true
+          description: Always null on error.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code; clients branch on this, not on the message.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            # Only reachable on the health paths; see the 404 response, which
+            # explains why a wrong method under /api/mailer/** answers 404.
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_TOO_LARGE
+            - ERR_INTERNAL
+            # Mailer-domain codes, both predating the monorepo.
+            - ERR_PERMANENT_FAILURE
+            - ERR_SEND_FAILED
+        message:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        reason:
+          type: string
+          description: Present only when `status` is not `ok`.
+      description: |
+        Bare probe payload, deliberately outside the `{data, error}` envelope.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    BadRequest:
+      description: |
+        The request never reached a backend. Either the body is not valid JSON,
+        or the message is missing a sender, a recipient or a subject.
+
+        This is 400 rather than 422 on purpose: nothing has judged the message
+        undeliverable, so Phorge must not record a permanent delivery failure
+        for what is a bug in its own serialisation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_BAD_REQUEST
+              message: at least one recipient is required
+
+    Unauthorized:
+      description: Missing or invalid service token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: |
+        No route matched. Paths are matched exactly, so this is what a caller
+        that appends a trailing slash or joins the base URL wrongly receives.
+
+        Two quirks of the routing are worth knowing, because both look like the
+        wrong status at first glance:
+
+        - Under `/api/mailer/**` the token is checked before the path is
+          resolved, so an unauthenticated request to a non-existent path
+          answers 401, not 404.
+        - Also under `/api/mailer/**`, a documented path called with the wrong
+          method answers 404 rather than 405, because the group matches every
+          method in order to authenticate them.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: Not Found
+
+    TooLarge:
+      description: |
+        The request body exceeded the transport limit, which this service
+        raises to 10M because attachments arrive base64-encoded inside the JSON
+        body and cost about a third more than their own size.
+
+        The per-message body limit is not reported here: `textBody` and
+        `htmlBody` over `GORGE_MAILER_BODY_LIMIT` are truncated silently, not
+        rejected.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_TOO_LARGE
+              message: Request Entity Too Large
+
+    PermanentFailure:
+      description: |
+        A backend rejected the message itself, and retrying cannot change that:
+        a malformed recipient, an unverified sender domain, a revoked API key.
+
+        **This code changes what the caller does, not just what it reports.**
+        Phorge's client raises it as
+        `PhabricatorMetaMTAPermanentFailureException`, which is what stops the
+        worker queue from re-submitting the message; every other failure is
+        re-queued.
+
+        What produces it, per backend: an SMTP 5xx reply; an HTTP 4xx from SES,
+        SendGrid, Mailgun or Postmark, **except 429**, since rate limiting says
+        "not now" rather than "not ever"; a sendmail exit code from the
+        `EX_NOUSER` / `EX_DATAERR` / `EX_NOHOST` family. Anything unrecognised
+        is reported as transient instead, because dropping mail costs more than
+        a wasted retry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_PERMANENT_FAILURE
+              message: 'smtp: 550 5.1.1 <nobody@example.com>: Recipient address rejected'
+
+    SendFailed:
+      description: |
+        Every eligible backend failed transiently — the message may well go out
+        on a later attempt. Also what naming only unknown `mailerKeys`
+        produces.
+
+        Reported as 502 because the failure is downstream of this service.
+        Phorge re-queues on this code.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_SEND_FAILED
+              message: 'all mailers failed, last error: smtp (smtp): dial tcp: connection refused'
+
+    InternalError:
+      description: |
+        The request failed for a reason the client cannot act on — a recovered
+        panic, an unexpected handler error.
+
+        `ERR_INTERNAL` always carries the same generic `message`. Panic values,
+        stack traces and internal error strings are written to the service log
+        instead, so a 5xx body never describes the service's internals. Note
+        that backend failures are **not** 500s: they are 422 or 502.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: internal server error

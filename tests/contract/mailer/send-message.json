@@ -1,0 +1,19 @@
+{
+  "name": "a complete message is accepted and reports which mailer took it",
+  "description": "The canonical case. data.mailerKey is what Phorge records against the sent mail, so it must name the backend that actually accepted the message rather than the one that was asked first. messageId is only asserted present: SMTP and sendmail have none to give, so an empty value is legal, but the field must never be missing when a backend did report one.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"message\":{\"from\":{\"name\":\"Phorge\",\"address\":\"noreply@example.com\"},\"to\":[{\"address\":\"rcpt@example.com\"}],\"subject\":\"gorge contract\",\"textBody\":\"Hello\",\"headers\":[{\"name\":\"X-Phabricator-Sent-This-Message\",\"value\":\"Yes\"}]}}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.mailerKey", "data.messageId"],
+    "jsonEquals": { "data.mailerKey": "test-mailer" },
+    "jsonAbsent": ["error"]
+  }
+}

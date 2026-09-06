@@ -1,0 +1,18 @@
+{
+  "name": "a message with no sender is 400",
+  "description": "Every backend needs an envelope sender, and none of them can invent one. Rejecting here keeps the failure attributable to the request rather than surfacing as a different rejection from each backend.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"message\":{\"to\":[{\"address\":\"rcpt@example.com\"}],\"subject\":\"no sender\",\"textBody\":\"Hello\"}}"
+  },
+  "expect": {
+    "status": 400,
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

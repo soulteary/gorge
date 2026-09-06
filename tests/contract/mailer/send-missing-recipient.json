@@ -1,0 +1,18 @@
+{
+  "name": "a message with no recipient is 400, not 422",
+  "description": "The distinction matters to the caller. A 422 says a backend judged this message undeliverable; a 400 says the request never got that far. Answering 422 here would have Phorge record a permanent delivery failure for what is a bug in its own serialisation.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"message\":{\"from\":{\"address\":\"noreply@example.com\"},\"subject\":\"nobody\",\"textBody\":\"Hello\"}}"
+  },
+  "expect": {
+    "status": 400,
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

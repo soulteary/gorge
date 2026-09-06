@@ -42,6 +42,8 @@ jobs:
           # gorge-notification listens on two ports; 22281 is the admin one.
           - service: gorge-notification
             port: 22281
+          - service: gorge-mailer
+            port: 8110
 
     steps:
       - name: Checkout code

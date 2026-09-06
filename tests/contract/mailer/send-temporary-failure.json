@@ -1,0 +1,19 @@
+{
+  "name": "a backend that failed transiently is 502 ERR_SEND_FAILED",
+  "description": "The counterpart to the permanent case, and it has to stay a distinct code. A transient failure reported as ERR_PERMANENT_FAILURE makes Phorge give up on a message that would have gone out on the next attempt — mail silently lost, with a FAIL status that reads as if the address were bad.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"message\":{\"from\":{\"address\":\"noreply@example.com\"},\"to\":[{\"address\":\"rcpt@example.com\"}],\"subject\":\"backend down\",\"textBody\":\"Hello\"},\"mailerKeys\":[\"down\"]}"
+  },
+  "expect": {
+    "status": 502,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_SEND_FAILED" },
+    "jsonAbsent": ["data"]
+  }
+}

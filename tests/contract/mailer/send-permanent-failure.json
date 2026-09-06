@@ -1,0 +1,19 @@
+{
+  "name": "an undeliverable message is 422 ERR_PERMANENT_FAILURE",
+  "description": "The most load-bearing fixture in this directory. PhabricatorGorgeMailerClient turns this exact code into PhabricatorMetaMTAPermanentFailureException, which is what stops Phorge's worker from re-queueing a message no backend will ever accept. Reporting a permanent rejection as a plain 502 leaves a mistyped recipient address retrying forever, and nothing anywhere raises an error about it.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"message\":{\"from\":{\"address\":\"noreply@example.com\"},\"to\":[{\"address\":\"rcpt@example.com\"}],\"subject\":\"rejected\",\"textBody\":\"Hello\"},\"mailerKeys\":[\"rejects\"]}"
+  },
+  "expect": {
+    "status": 422,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_PERMANENT_FAILURE" },
+    "jsonAbsent": ["data"]
+  }
+}

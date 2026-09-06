@@ -25,6 +25,7 @@
 | `diff/` | `gorge-render`（同进程） | `go/internal/diff/contract_test.go` |
 | `notification/admin/` | `gorge-notification` 的 admin 口 | `go/internal/notification/contract_admin_test.go` |
 | `notification/client/` | 同上，client 口 | `go/internal/notification/contract_client_test.go` |
+| `mailer/` | `gorge-mailer` | `go/internal/mailer/contract_test.go` |
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
 
@@ -112,15 +113,16 @@ prose diff 落在两者之间：它的输出没有外部基准，所以固件钉
 
 ## 4. e2e 冒烟
 
-三份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
+四份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
 
 ```bash
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/render.sh
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/diff.sh
 ADMIN_URL=http://127.0.0.1:22281 CLIENT_URL=http://127.0.0.1:22280 \
   bash tests/e2e/notification.sh
+BASE_URL=http://127.0.0.1:8110 TOKEN=dev bash tests/e2e/mailer.sh
 # 或
-TOKEN=dev-token make e2e     # 三份都跑
+TOKEN=dev-token make e2e     # 四份都跑
 ```
 
 render 与 diff 共用一个端口，所以那两份是「两个脚本打同一个 `BASE_URL`」，不是两套部署。notification 是另一个进程，而且**要两个变量**：`ADMIN_URL` 与 `CLIENT_URL` 不可互换，同一个请求在两个端口上的正确答案不一样，这正是它第 4、5 条场景要验证的东西。它也没有 `TOKEN`——那个域按设计不鉴权。
@@ -131,7 +133,9 @@ render 与 diff 共用一个端口，所以那两份是「两个脚本打同一�
 
 `notification.sh` 五条场景：admin 存活探针、用 curl 的**默认** `Content-Type`（即 form-urlencoded 贴在一段真 JSON 上，Phorge 的实际形状）发消息并拿到 fingerprint、`/status/` 的扁平点号键、client 口纯 HTTP 得 501、client 口真握手得 101。第 2 条是这份脚本存在的主要理由，而它的**payload 才是断言的关键**：里面那个 `100% done` 对表单解析器是非法的百分号转义，所以只有「不看头、直接按 JSON 解」的 handler 才会答 200。把那个百分号「清理」掉，这条场景就退化成一个永远通过的检查——理由见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 5.4 节。
 
-render 与 diff 两份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+`mailer.sh` 八条场景：存活探针、就绪探针、无 token 得 401、后端列表、发一封并断言 `data.mailerKey`、带 base64 附件的一封、缺收件人得 400、`mailerKeys` 指向不存在的后端得 502。**它对被测实例有一个额外前提**：必须配了至少一个后端，否则第 2 条按设计就该失败——`/readyz` 报的正是「一个后端都没配」。用 `test` 后端起服务就能满足，`make e2e` 与 compose 的默认值都是它。
+
+render、diff 与 mailer 三份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
 
 它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。两个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）
 
@@ -153,14 +157,18 @@ render 与 diff 两份都在 `TOKEN` 为空时跳过 401 那条并明确打印 S
 | `notification` | 97.1% |
 | `notification/hub` | 83.7% |
 | `notification/peer` | 96.2% |
+| `mailer` | 79.1%（见下） |
 | `contracttest` | 20.2%（见下） |
 | `cmd/gorge-render` | 0.0% |
 | `cmd/gorge-notification` | 0.0% |
-| **总计** | **84.0%** |
+| `cmd/gorge-mailer` | 0.0% |
+| **总计** | **81.4%** |
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 
 `contracttest` 的 20.2% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
+
+`mailer` 的 79.1% 是本表最低的一个真实数字，而它的缺口是**可指名的**：SMTP 的两条发送路径与 SendGrid / Mailgun / Postmark 的 HTTP 往返。永久失败分类本身测到了（`classifyProviderStatus` / `classifySMTPError` 有表驱动用例，sendmail 用 stub 脚本走了真实退出码路径，SES 因为端点可配而用 `httptest` 打了完整一圈），缺的是另外三家 provider 那一圈——它们的端点是编译期常量，测不了。修法与理由写在 [`findings.md`](findings.md) 第 14 条。
 
 `notification/hub` 的 83.7% 有一部分是同一个假象：`Listener` 那几个要真 WebSocket 才调得到的方法，连接建在 `internal/notification` 的测试里，不计入 `hub`。`-coverpkg` 合并度量后它们都是 100%，覆盖率的真实缺口只剩三处，都登记在 [`findings.md`](findings.md) 第 9 条。
 
