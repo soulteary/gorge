@@ -1,0 +1,405 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Render API
+  description: |
+    HTTP contract for the `gorge-render` binary, which serves the render domain
+    (syntax highlighting today, diff rendering later).
+
+    Two response shapes coexist deliberately:
+
+    - `/api/**` endpoints return the `{data, error}` envelope. Exactly one of
+      the two keys is populated. This holds for failures the service never
+      reached a handler for — an unknown path, a body over the transport limit,
+      a recovered panic — because `httpx` replaces the framework's default
+      error handler.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them.
+
+    The single exception to the envelope is a `HEAD` request, which by protocol
+    carries no response body: only the status code reports the failure.
+
+    The schemas under `components.schemas` mirror
+    `go/internal/contracts/render.go`, which is the single source of truth
+    shared by the Go service, the PHP client and the contract fixtures under
+    `tests/contract/render/`.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8140
+    description: Local development
+
+tags:
+  - name: highlight
+    description: Syntax highlighting
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/highlight/render:
+    post:
+      tags: [highlight]
+      summary: Highlight source code
+      description: |
+        Renders source code to HTML carrying Pygments-compatible CSS class
+        names (`k`, `nf`, `nb`, `s2`, `mi`, `c1`, ...), so Phorge's existing
+        stylesheet applies without modification.
+
+        The output has no surrounding `<pre>` element; the caller wraps it.
+      operationId: renderHighlight
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HighlightRequest'
+            examples:
+              python:
+                summary: Explicit language
+                value:
+                  source: "def hello():\n    print(\"Hello\")\n"
+                  language: python
+              autodetect:
+                summary: Empty language triggers content analysis
+                value:
+                  source: "package main\n\nfunc main() {}\n"
+                  language: ""
+      responses:
+        '200':
+          description: Highlighted HTML
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HighlightResponse'
+              example:
+                data:
+                  html: "<span class=\"k\">def</span> <span class=\"nf\">hello</span><span class=\"p\">():</span>"
+                  language: python
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/highlight/languages:
+    get:
+      tags: [highlight]
+      summary: List supported languages
+      description: |
+        Returns every lexer name Chroma registers, lowercased.
+
+        The ordering is Chroma's, which sorts by the original mixed-case name
+        before this handler lowercases each entry; the result is therefore not
+        alphabetical (`atl` precedes `actionscript`). Do not depend on it.
+
+        Aliases registered by `lexermap.go` are resolvable in
+        `POST /api/highlight/render` even when absent from this list.
+      operationId: listLanguages
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: Language list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LanguagesResponse'
+              example:
+                data:
+                  - abap
+                  - abnf
+                  - al
+                  - ampl
+                  - antlr
+                  - apl
+                  - atl
+                  - actionscript
+                  - actionscript 3
+                  - ada
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: Always succeeds while the process is serving. Never authenticated.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once the service can accept traffic. The render domain has no
+        external dependencies, so it reports ready as soon as it is listening;
+        services with dependencies fail this check while those are unavailable.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form. When the server's configured token is empty, all
+        requests pass unauthenticated.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        Fallback for callers that cannot set headers. Checked only when
+        `X-Service-Token` is absent.
+
+  schemas:
+
+    HighlightRequest:
+      type: object
+      required: [source]
+      properties:
+        source:
+          type: string
+          description: |
+            Source code to highlight. An empty string is accepted and yields a
+            200 with empty `html`, rather than an error.
+          example: "print('hello')"
+        language:
+          type: string
+          description: |
+            Language name or alias. Resolution order: the alias table in
+            `lexermap.go`, then Chroma's own lexer registry, then content
+            analysis, then the plaintext fallback. Highlighting never fails
+            because of an unknown language.
+          example: python
+
+    HighlightResult:
+      type: object
+      required: [html, language]
+      properties:
+        html:
+          type: string
+          description: |
+            Highlighted HTML fragment using Pygments CSS class names, with no
+            surrounding `<pre>` element.
+        language:
+          type: string
+          description: |
+            Echoed back verbatim whenever the request set a non-empty
+            `language` — aliases, unknown names and the original casing all
+            come back unchanged, so `py` answers `py`, not `python`. Only a
+            request that omits `language` reports the lexer content analysis
+            picked, lowercased. An empty `source` short-circuits before
+            highlighting and likewise echoes the requested language.
+
+    HighlightResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/HighlightResult'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    LanguagesResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: string
+          description: |
+            Supported lexer names, lowercased, in Chroma's own order. Not
+            alphabetical; see the endpoint description.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        data:
+          nullable: true
+          description: Always null on error.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code; clients branch on this, not on the message.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            # Only reachable on the health paths; see the 404 response, which
+            # explains why a wrong method under /api/highlight/** answers 404.
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_TOO_LARGE
+            - ERR_INTERNAL
+            # Render-domain code predating the monorepo; Phorge's client
+            # already branches on it, so 500s from the highlight handler keep
+            # reporting it instead of the generic ERR_INTERNAL.
+            - ERR_HIGHLIGHT_FAILED
+        message:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+      description: |
+        Bare probe payload, deliberately outside the `{data, error}` envelope.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    BadRequest:
+      description: Body is not valid JSON, or does not match the request schema
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_BAD_REQUEST
+              message: 'code=400, message=Syntax error'
+
+    Unauthorized:
+      description: Missing or invalid service token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: |
+        No route matched. Paths are matched exactly, so this is what a caller
+        that appends a trailing slash or joins the base URL wrongly receives —
+        the usual cause on the Phorge side.
+
+        Two quirks of the routing are worth knowing, because both look like
+        the wrong status at first glance:
+
+        - Under `/api/highlight/**` the token is checked before the path is
+          resolved, so an unauthenticated request to a non-existent path
+          answers 401, not 404.
+        - Also under `/api/highlight/**`, a documented path called with the
+          wrong method answers 404 rather than 405, because the group matches
+          every method in order to authenticate them. `ERR_METHOD_NOT_ALLOWED`
+          is therefore only seen on the health paths.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: Not Found
+
+    TooLarge:
+      description: |
+        The request body was rejected on size. Two independent limits produce
+        this, and both report `ERR_TOO_LARGE` so callers need not tell them
+        apart:
+
+        - `source` exceeds `GORGE_RENDER_MAX_BYTES` (1MiB by default), checked
+          by the handler;
+        - the whole request body exceeds the platform's transport limit (2M),
+          checked by middleware. Only reachable when `GORGE_RENDER_MAX_BYTES`
+          is configured above that.
+
+        The two report different `message` wording, which is not part of the
+        contract.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_TOO_LARGE
+              message: source exceeds maximum allowed size
+
+    InternalError:
+      description: |
+        The request failed for a reason the client cannot act on. The highlight
+        handler reports `ERR_HIGHLIGHT_FAILED` when highlighting itself fails;
+        anything else — a recovered panic, an unexpected handler error —
+        reports `ERR_INTERNAL`.
+
+        `ERR_INTERNAL` always carries the same generic `message`. Panic values,
+        stack traces and internal error strings are written to the service log
+        instead, so a 5xx body never describes the service's internals.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_HIGHLIGHT_FAILED
+              message: tokenisation failed

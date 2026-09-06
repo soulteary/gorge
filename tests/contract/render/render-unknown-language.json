@@ -1,0 +1,19 @@
+{
+  "name": "unknown language falls back instead of failing",
+  "description": "An unrecognised language name degrades to content analysis and then to the plain-text lexer. The service must never answer 4xx or 5xx for this, because Phorge passes through whatever language string a repository configuration holds.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"source\":\"some plain text\",\"language\":\"unknownlang12345\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.html"],
+    "jsonEquals": { "data.language": "unknownlang12345" },
+    "htmlContains": ["some plain text"]
+  }
+}

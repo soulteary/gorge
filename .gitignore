@@ -1,0 +1,16 @@
+# Build artifacts
+bin/
+*.test
+*.exe
+
+# Coverage reports
+coverage.*
+
+# Local environment overrides
+.env
+.env.local
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/

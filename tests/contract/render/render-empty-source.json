@@ -1,0 +1,17 @@
+{
+  "name": "empty source short-circuits to empty html",
+  "description": "An empty source is not an error. The service returns empty HTML and echoes the requested language, so callers need no special case.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"source\":\"\",\"language\":\"python\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": { "data.html": "", "data.language": "python" }
+  }
+}

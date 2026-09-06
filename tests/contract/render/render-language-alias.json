@@ -1,0 +1,19 @@
+{
+  "name": "language aliases resolve but are echoed verbatim",
+  "description": "Phorge sends file-extension style names such as py. The service must resolve the alias to the python lexer, yet echo back the name the caller sent so the PHP side can correlate the response with its request.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"source\":\"def f():\\n    print(1)\\n\",\"language\":\"py\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.html"],
+    "jsonEquals": { "data.language": "py" },
+    "htmlContainsClasses": ["k", "nf", "nb"]
+  }
+}
