@@ -1,0 +1,19 @@
+{
+  "name": "uppercase R resolves to the R lexer, not the lowercase r entry",
+  "description": "The Pygments alias table is case-sensitive: 'R' is the R language while 'r' is REBOL. Phorge's getLanguageFromFilename() passes the filename extension through with its original case, so a file named foo.R really does arrive here as 'R'. Lowercasing the language before the table lookup silently resolved it to the REBOL entry, which Chroma has no lexer for, leaving R files unhighlighted. Pair this with render-language-case-lowercase.json: together they pin that the two names reach different lexers.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"source\":\"f <- function(x) {\\n  # square it\\n  if (x > 1) TRUE else NULL\\n}\\n\",\"language\":\"R\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.html"],
+    "jsonEquals": { "data.language": "R" },
+    "htmlContainsClasses": ["kr", "kc", "c1"]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "lowercase r keeps the REBOL entry and does not borrow the R lexer",
+  "description": "The other half of render-language-case-uppercase.json, sent with the same source but language 'r'. PHP maps 'r' to REBOL, which Chroma has no lexer for, so the request falls back to plain text instead of being quietly upgraded to the R lexer. Asserting the absence of the R lexer's keyword classes is what makes the pair prove the two names do not collapse; a fixture that only checked the uppercase side would still pass if both were folded to R.",
+  "request": {
+    "method": "POST",
+    "path": "/api/highlight/render",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"source\":\"f <- function(x) {\\n  # square it\\n  if (x > 1) TRUE else NULL\\n}\\n\",\"language\":\"r\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.html"],
+    "jsonEquals": { "data.language": "r" },
+    "htmlNotContains": ["class=\"kr\"", "class=\"kc\""]
+  }
+}

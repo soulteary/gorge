@@ -3,6 +3,8 @@ package highlight
 import (
 	"strings"
 	"testing"
+
+	"github.com/alecthomas/chroma/v2/lexers"
 )
 
 func TestHighlightPython(t *testing.T) {
@@ -116,12 +118,57 @@ func TestLexerMapResolution(t *testing.T) {
 		{"ts", "typescript"},
 		{"yml", "yaml"},
 		{"go", "go"},
+
+		// The PHP table is case-sensitive and the language arrives as a raw
+		// filename extension, so these four must not collapse into two.
+		{"R", "splus"},
+		{"r", "rebol"},
+		{"S", "splus"},
+		{"s", "gas"},
+
+		// Mixed-case keys with no differing lowercase twin still have to
+		// resolve, whether they hit the verbatim entry or the folded one.
+		{"Makefile", "make"},
+		{"GNUmakefile", "make"},
+		{"SConstruct", "python"},
+		{"ASM", "nasm"},
+
+		// An unmapped name keeps falling through lowercased.
+		{"RUST", "rust"},
 	}
 
 	for _, tc := range cases {
 		resolved := h.resolveLexer(tc.input)
 		if resolved != tc.expected {
 			t.Errorf("resolveLexer(%q) = %q, want %q", tc.input, resolved, tc.expected)
+		}
+	}
+}
+
+// TestCaseSensitiveAliasesReachDistinctLexers guards the half of the fix that
+// resolveLexer alone cannot: a mapped name is only useful if Chroma actually
+// has a lexer under it. "splus" is an alias of Chroma's R lexer, so "R" and
+// "S" land on R, while "s" lands on GAS.
+func TestCaseSensitiveAliasesReachDistinctLexers(t *testing.T) {
+	h := New()
+
+	cases := []struct {
+		language string
+		want     string
+	}{
+		{"R", "R"},
+		{"S", "R"},
+		{"s", "GAS"},
+	}
+
+	for _, tc := range cases {
+		lexer := lexers.Get(h.resolveLexer(tc.language))
+		if lexer == nil {
+			t.Errorf("language %q resolves to a lexer Chroma does not have", tc.language)
+			continue
+		}
+		if got := lexer.Config().Name; got != tc.want {
+			t.Errorf("language %q selected the %q lexer, want %q", tc.language, got, tc.want)
 		}
 	}
 }

@@ -92,6 +92,13 @@ func (h *Highlighter) resolveLexer(language string) string {
 	if language == "" {
 		return ""
 	}
+	// Look the name up verbatim before folding case. The alias table is
+	// case-sensitive on both sides ("R" is R but "r" is REBOL), and the
+	// language PHP sends is a filename extension with its original case, so
+	// lowercasing first would quietly resolve "foo.R" to the wrong lexer.
+	if mapped, ok := h.lexerMap[language]; ok {
+		return mapped
+	}
 	lang := strings.ToLower(language)
 	if mapped, ok := h.lexerMap[lang]; ok {
 		return mapped
