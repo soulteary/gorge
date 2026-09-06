@@ -13,6 +13,7 @@ Each subdirectory belongs to one domain:
 | `diff/` | `gorge-render` (same process) | `go/internal/diff/contract_test.go` |
 | `notification/admin/` | `gorge-notification`, admin port | `go/internal/notification/contract_admin_test.go` |
 | `notification/client/` | `gorge-notification`, client port | `go/internal/notification/contract_client_test.go` |
+| `mailer/` | `gorge-mailer` | `go/internal/mailer/contract_test.go` |
 
 The notification domain gets two directories rather than one because its two
 ports are separate listeners with separate contracts; see

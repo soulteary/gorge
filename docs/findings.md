@@ -134,6 +134,21 @@ var forbiddenPrefixes = []string{
 
 新增域包时忘了加一行，这个测试对新域就是静默失效的：它照样通过，只是不再检查任何新东西。可以改成扫描 `internal/` 下除 `platform`、`contracts`、`contracttest` 外的所有目录自动生成列表，这样新域自动被纳入。第二个域进来后这已经不是假想问题了。
 
+（mailer 迁入时同样是手工补的这一行，这是它第三次被手工维护。）
+
+### 16. 根 `README.md` 与 `delivery.md` 停在「只有一个二进制」
+
+**影响**：中。是新人接触这个仓库时读到的第一段话。
+
+两处都还在断言只有 `gorge-render` 一个二进制：
+
+- 根 [`README.md`](../README.md)：「当前只有一个二进制 `gorge-render`，承载 render 域」，目录结构里也只列了 `cmd/gorge-render/`、`internal/render/`、`api/openapi/render.yaml`、`tests/contract/render/`、`tests/e2e/render.sh`。
+- [`delivery.md`](delivery.md)：「当前仓库只产出 `gorge-render` 一个二进制」，以及「覆盖 `SERVICE` 要等到真有第二个 `cmd/` 才有意义」。
+
+实际是**三个二进制、四个域**。这两处在 diff、notification、mailer 三次迁入里都没有被更新，说明「模块文档只新增不改动既有文档」这条规则被套用到了不该套用的地方——[`docs/README.md`](README.md) 的「新增一个模块时」清单里确实没有它们。
+
+**建议**：把这两处改成不点名数量的写法（「产出若干二进制，见 [`docs/README.md`](README.md) 的模块表」），让它们不再需要随每次迁入维护；同时在「新增一个模块时」清单里补一条，指明哪些跨模块文档带有会过期的计数（`architecture.md` 第 1 节的行数与固件数、`testing.md` 第 4、5 节）。
+
 ---
 
 ## notification 模块
@@ -184,4 +199,46 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 同源的第二件事：`replay` 读的是本实例的 history，而 history 随进程启动清空。刚重启过的实例上重放窗口是空的，重连的客户端拿不到断线期间的消息，也不会收到任何提示。
 
 **建议**：给 `cluster` 补一个环境变量形式（`GORGE_NOTIFICATION_CLUSTER`，`host:port` 逗号分隔），让「多实例」不必绑定挂载文件这条更重的路。`deploy/compose/.env.example` 已经写明了这个前提，但那是文档层的补救，不是代码层的。
+
+---
+
+## mailer 模块
+
+### 13. 重试默认值从 250 次 / 15 秒改成 2 次 / 2 秒（**已改，登记原因**）
+
+**影响**：高，但是正向的。这条不是待办，是一次**行为变更的记录**——下一个看到这两个数字变小的人需要知道为什么。
+
+迁入前的 `MaxRetries=250` / `RetryWait=15` 是**死配置**：`config.go` 读它们，而 `Dispatcher.Send` 从不使用，所以七个后端各只试一次。迁入时把它们真正接进了单适配器重试循环，于是那组值第一次有了含义——而它的含义是 `250 × 15s ≈ 62 分钟`，一次 HTTP 请求最坏阻塞一小时以上。
+
+三个数字彼此矛盾：
+
+| 谁 | 等多久 |
+|---|---|
+| 原默认值下的一个适配器 | 最坏 62 分钟 |
+| PHP 客户端 | 30 秒 |
+| Phorge worker 队列的下一轮 | 分钟级，且是外层重试的**权威** |
+
+所以默认值改为 `2` / `2`（单适配器最坏 4 秒），并让整个重试循环受 `c.Request().Context()` 约束，客户端断开即止。Go 侧只吸收秒级抖动，重投这件事仍然归 worker 队列管。
+
+`TestMailerRetryDefaultsStaySmall` 断言的不只是这两个数，还有它们的乘积低于 10 秒——**它守的是那个不等式，不是那两个字面值**。要调大，先想清楚哪一侧的等待更长。
+
+### 14. 七个适配器里有四个的发送路径没有测试
+
+**影响**：中。
+
+`internal/mailer` 覆盖率 79.1%，缺口集中且可指名：SMTP 的两条发送路径（明文与 implicit TLS）、SendGrid / Mailgun / Postmark 的 HTTP 往返。
+
+分类逻辑本身是测到的——`classifyProviderStatus` 与 `classifySMTPError` 有直接的表驱动用例，sendmail 用一个 stub 脚本走完了真实的退出码路径，SES 因为 `endpoint` 可配而用 `httptest` 打了完整的一圈（连带覆盖了 SigV4 签名）。缺的是另外三家 provider 的那一圈，原因很具体：**它们的端点是编译期常量**。
+
+**建议**：把三个端点改成适配器字段，构造时从 `options["endpoint"]` 取、默认值保持现状。这样它们能照 SES 那样用 `httptest` 测，顺带让「provider 有区域性端点或企业私有部署」这件事变得可配——Mailgun 的 `api-hostname` 已经是这个形状了，另外两家只是没做。
+
+### 15. `MAILER_CONFIG` 解析失败只有一条日志
+
+**影响**：中。是个运维陷阱，但已经比迁入前好。
+
+老代码是 `_ = json.Unmarshal(...)`：JSON 写错了就静默得到零个后端，而 `/healthz` 照样 200。现在会 `slog.Error` 一条，并且 `/readyz` 会因为「零后端」而报 503，所以这个状态不再伪装成健康。
+
+但它仍然不是启动失败。「配置写错」与「还没配」在退出码上无法区分，而这两件事的处置完全不同。
+
+**建议**：给一个显式的严格模式（比如 `GORGE_MAILER_STRICT=1` 时解析失败即 `os.Exit(1)`），让编排能在部署阶段就把配置错误拦下来，而不是等到第一封信。没有直接改成硬失败，是因为「先起服务、再补配置」是这个域的一个合理工作流——`/readyz` 已经把它表达清楚了。
 

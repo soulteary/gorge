@@ -96,6 +96,44 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- gorge-mailer: outbound email ---
+  #
+  # A process of its own, unlike diff sharing render's. It is the opposite of
+  # pure computation: it holds adapter state, it connects out to SMTP servers
+  # and provider APIs, and it has a readiness condition worth reporting.
+  #
+  # The healthcheck probes /readyz rather than /healthz, and that difference is
+  # the point of this service having one. /healthz answers 200 as soon as the
+  # process is listening — including when no backend is configured at all,
+  # which is the state where every message fails. /readyz is what tells the two
+  # apart, so compose reports unhealthy instead of keeping a container in
+  # rotation that can deliver nothing.
+  gorge-mailer:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-mailer
+        PORT: 8110
+    image: ghcr.io/soulteary/gorge-mailer:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8110"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # The backend list. Left at the "test" default the service is ready and
+      # accepts mail, but delivers none of it; see .env.example.
+      GORGE_MAILER_CONFIG: ${GORGE_MAILER_CONFIG:-[{"key":"test","type":"test"}]}
+      GORGE_MAILER_MAX_RETRIES: ${GORGE_MAILER_MAX_RETRIES:-2}
+      GORGE_MAILER_RETRY_WAIT: ${GORGE_MAILER_RETRY_WAIT:-2}
+    ports:
+      - "${GORGE_MAILER_PORT:-8110}:8110"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8110/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
 networks:
   gorge:
     driver: bridge

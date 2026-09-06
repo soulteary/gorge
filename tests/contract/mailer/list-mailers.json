@@ -1,0 +1,22 @@
+{
+  "name": "the mailer list reports the failover order",
+  "description": "GET /api/mailer/mailers answers the configured backends in the order the dispatcher will try them, highest priority first — not in configuration order. Phorge's setup check and `bin/mail` read the keys from here to name a specific mailer, so key and type are part of the contract; priority is reported so the order is verifiable rather than implied.",
+  "request": {
+    "method": "GET",
+    "path": "/api/mailer/mailers",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.key", "data.0.type", "data.0.priority"],
+    "jsonEquals": {
+      "data.0.key": "test-mailer",
+      "data.0.type": "test",
+      "data.1.key": "rejects",
+      "data.2.key": "down"
+    },
+    "jsonAbsent": ["data.3", "error"]
+  }
+}

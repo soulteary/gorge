@@ -1,6 +1,6 @@
 # Phorge 兼容契约
 
-本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的五项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
+本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的六项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
 
 | 约定 | 破坏后的表现 |
 |---|---|
@@ -9,8 +9,9 @@
 | 三、端口与路由 | PHP 侧配置指错地方，表现为 `ERR_NOT_FOUND` |
 | 四、unified diff 输出格式 | 解析器接受错误的 hunk 头，然后**静默地把之后每一行都放错位置**（第 4.6 节写明了保证到哪里为止） |
 | 五、Aphlict 线兼容（通知） | 四条子约束，最坏的一条（5.4）**连错误状态码都不产生**：请求答 200、fingerprint 合法、`messages.in` 照常增长，只有消息内容被静默揉碎 |
+| 六、mailer 的错误码与字段名 | 唯一一项会**改变 PHP 侧行为**的约定：`ERR_PERMANENT_FAILURE` 决定 worker 要不要重投这封信，两个方向的误判分别是「无限重投」与「静默丢信」，都要几天后看邮件统计才发现 |
 
-第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。
+第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。第六项的性质又不一样：它**会**产生一个明确的失败状态，只是方向是反的，所以看日志找不出问题——每条记录看起来都合理。
 
 改动其中任何一项，都必须同步改动 PHP 侧并在这里更新说明。
 
@@ -472,6 +473,64 @@ curl -s http://127.0.0.1:22281/status/
 
 ---
 
+## 六、mailer 服务的四条约定
+
+**Go 侧**：`go/internal/mailer/`、`go/internal/contracts/mailer.go`
+**PHP 侧**：`PhabricatorMailGorgeAdapter` 与 `PhabricatorGorgeMailerClient`
+
+这一节与前五节的性质略有不同：前五节多是「破坏后静默失效」，本节第 6.2 条**会**产生一个明确的失败，但**失败的方向是反的**——邮件明明发得出去，却被记成永久失败丢掉；或者明明地址写错，却被无限重投。两者都要几天后看邮件统计才发现。
+
+### 6.1 路径与字段名
+
+两条路径是契约，`PhabricatorGorgeMailerClient` 已经在调：
+
+- `POST /api/mailer/send`
+- `GET /api/mailer/mailers`
+
+请求体 `{message, mailerKeys}` 与响应 `data` 里的字段名**一律 camelCase，一个都不能改**：`from` / `replyTo` / `to` / `cc` / `subject` / `textBody` / `htmlBody` / `headers` / `attachments`，地址是 `{name, address}`，头是 `{name, value}`，附件是 `{filename, mimeType, data}`，结果是 `{mailerKey, messageId}`。
+
+它们声明在 [`go/internal/contracts/mailer.go`](../../go/internal/contracts/mailer.go)，按契约层的规则，**改一个字段名就是一次兼容性变更**。PHP 侧 `serializeMessage()` 直接按这些键拼数组，改名的表现是那个字段静默变成空值——比如 `htmlBody` 改成 `html`，所有邮件都退化成纯文本版，没有任何一处报错。
+
+### 6.2 `ERR_PERMANENT_FAILURE` 的语义：本域最要紧的一条
+
+这是全仓库唯一一个**改变 PHP 侧行为**而不只是改变它报告内容的错误码。
+
+| 码 | 状态 | PHP 侧的反应 |
+|---|---|---|
+| `ERR_PERMANENT_FAILURE` | 422 | 抛 `PhabricatorMetaMTAPermanentFailureException`，worker **停止重投**，邮件落 `FAIL` |
+| `ERR_SEND_FAILED` | 502 | 普通异常，worker **重新入队** |
+
+两个方向的误判代价不对称，而且都不会有任何一处报错：
+
+- **永久判成临时**：收件人地址写错，Phorge 的 worker 无限重投同一封信。这正是迁入前的实际状态——老代码定义了 `PermanentError` 但七个适配器从不返回它。
+- **临时判成永久**：provider 限流或抖动了一下，本可以在下一次投递成功的信被直接丢掉，且在 Phorge 里的状态看起来就像地址写错了。
+
+所以 Go 侧的分类是**保守**的：只有明确描述「这封信」的信号才判永久——SMTP 5xx、provider HTTP 4xx（**429 除外**，限流说的是「现在不行」）、sendmail 的 `EX_NOUSER` / `EX_DATAERR` / `EX_NOHOST` 一族退出码。**任何不认识的信号一律判临时。**
+
+改动分类规则时，先想清楚要往哪个方向错。`tests/contract/mailer/send-permanent-failure.json` 与 `send-temporary-failure.json` 是成对的，缺一条就只守住了一半。
+
+### 6.3 附件的 base64 编码位置
+
+`Attachment.data` 在**这一层**永远是 base64：PHP 侧 `serializeMessage()` 做 `base64_encode($att->getData())`，Go 侧按需解码——SMTP / sendmail / SES / SendGrid / Postmark 原样透传（它们本来就要 base64），只有 Mailgun 解回原始字节（它的 multipart 表单要文件本身）。
+
+把编码挪到任何一侧都会**损坏每一个附件而不改变任何状态码**：少编码一次，JSON 编码器会把二进制字节按 UTF-8 处理并替换掉非法序列；多编码一次，收件人拿到一个装着 base64 文本的文件。
+
+这也是 `gorge-mailer` 把传输层 `BodyLimit` 显式设成 `10M` 的原因（平台默认 `2M`）：base64 让附件在请求体里比它本身大约三分之一。
+
+### 6.4 配置形态：只走 `cluster.mailers` 的 `options`
+
+端点与 token 只放在 Phorge `cluster.mailers` 条目的 `options` 里，**不新增任何全局 config key**。
+
+这消掉的是老 `phorge` 里一个真实的坑：老实现要求两层配置（一个全局 `go-mailer.url`，外加 `cluster.mailers` 里的条目），而 entrypoint 只写了其中一层，表现为「明明设了 URL，却依然一封信都不发」。
+
+配套的两个后果，改 PHP 侧时都不能省：`cluster.mailers` 是一个**共享列表**（用户可能手工配了 postmark 等条目），下发时必须**合并而非整体重写**；生成的条目要显式带 `"inbound": false` 与 `"media": ["email"]`——gorge-mailer 只做出站，而 `inbound` 的默认值是 `true`，适配器侧没有覆盖它的钩子。
+
+### 6.5 顺带记一条不属于契约但会被误读的事
+
+`/readyz` 返回 503 的含义是「一个后端都没配」，**不是**「SMTP 连不上」。Go 侧刻意不拨测第三方：那会让就绪状态随外部抖动翻转，而多后端 failover 本来就是为此存在的。所以 PHP 侧的 setup check 把 `/readyz` 失败单独报出来是对的——它精确对应「服务活着但一个后端都没配」这个最容易踩的状态——但不要据此推断「就绪 = 下一封信会到」。
+
+---
+
 ## 附：鉴权与响应信封
 
 `PhabricatorGorgeRenderClient` 依赖以下两点，改动会直接打断 PHP 侧：
@@ -511,7 +570,9 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 
 `ERR_INTERNAL` 的 `message` 恒为一句通用文案，panic 值与堆栈只进 `slog` 日志。**排查 500 要看服务日志，不要指望响应体。**
 
-域级错误码目前只有一个：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，高亮 handler 内部失败时返回它而不是 `ERR_INTERNAL`。这是迁移前就有的码，Phorge 侧已经在用，故未收敛进平台码。全局错误处理器不会覆盖它——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
+域级错误码有三个，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，以及 mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
+
+mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另外 mailer 域的后端失败一律落在 422 或 502，**不落 500**——那里的 500 只意味着服务自己出了问题。
 
 **diff 域刻意没有域级错误码。**两个引擎都没有可报告的失败模式：prose 引擎是全函数，unified 引擎唯一会拒绝的是过大的输入，而那已经是 `ERR_TOO_LARGE` 了。在那里造一个码，它永远不会被返回。新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。
 
@@ -519,4 +580,6 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 
 **健康探针不套信封**：`GET /`、`GET /healthz`、`GET /readyz` 返回裸 `{"status":"ok"}`。这是给容器探针和负载均衡用的，不要「顺手统一」成信封格式。
 
-本附录讲的是 `/api/**`，即 render 与 diff 两个域。**notification 的两个端口都不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。
+本附录讲的是 `/api/**`，即 render、diff 与 mailer 三个域——三者的鉴权与信封口径完全一致（`ERR_TOO_LARGE` 的来源除外：mailer 的传输层上限是 `10M` 而非 `2M`，且它没有域级字节检查，正文超限是静默截断而不是拒绝）。
+
+**notification 的两个端口不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。

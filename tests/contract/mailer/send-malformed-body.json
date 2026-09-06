@@ -1,0 +1,18 @@
+{
+  "name": "an invalid JSON body is 400 ERR_BAD_REQUEST, not 500",
+  "description": "A truncated payload is the caller's fault and must be reported as such. A 500 here would send Phorge's worker into its retry loop over a request that can never succeed.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"message\": {\"from\":"
+  },
+  "expect": {
+    "status": 400,
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}
