@@ -8,6 +8,7 @@ Fixtures for `gorge-render`'s highlight endpoints. See
 | `render-python.json` | The six Pygments classes Phorge's stylesheet targets (`k`, `nf`, `nb`, `s2`, `mi`, `c1`), and the absence of any `<pre>` / `<div class="highlight">` wrapper. |
 | `render-go.json` | A second lexer, so a regression confined to one language table is still caught. |
 | `render-language-alias.json` | Extension-style names such as `py` resolve to the right lexer, while `data.language` echoes back exactly what the caller sent. |
+| `render-language-case-uppercase.json`, `render-language-case-lowercase.json` | The alias table is case-sensitive: `R` reaches the R lexer while `r` stays on PHP's REBOL entry. Only meaningful as a pair. |
 | `render-empty-source.json` | An empty source is a 200 with empty HTML, not an error. |
 | `render-unknown-language.json` | An unrecognised language falls back to plain text rather than failing. |
 | `render-crlf.json` | CRLF and lone-CR line endings are accepted; Pygments rejected the latter. |
@@ -18,4 +19,4 @@ Fixtures for `gorge-render`'s highlight endpoints. See
 
 The two paths themselves, `POST /api/highlight/render` and
 `GET /api/highlight/languages`, are part of the contract: Phorge's
-`PhabricatorGoHighlightClient` calls them as written.
+`PhabricatorGorgeRenderClient` calls them as written.

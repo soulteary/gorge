@@ -3,6 +3,14 @@ package highlight
 // buildLexerMap mirrors the Pygments lexer alias map from
 // PhutilPygmentsSyntaxHighlighter::getPygmentsLexerNameFromLanguageName
 // to ensure PHP sends the same language names and gets correct results.
+//
+// The keys are case-sensitive, exactly as the PHP table is; see the
+// mixed-case group at the bottom and resolveLexer for why.
+//
+// Target names are spelled exactly as PHP spells them, even where Chroma
+// accepts a synonym ("rb" not "ruby", "coffee-script" not "coffeescript"), so
+// the two tables stay diffable. The only entries that deviate are the ones
+// where the PHP spelling would break: they carry a comment saying so.
 func buildLexerMap() map[string]string {
 	return map[string]string{
 		"adb":             "ada",
@@ -32,7 +40,7 @@ func buildLexerMap() map[string]string {
 		"cl":              "common-lisp",
 		"clj":             "clojure",
 		"cmd":             "bat",
-		"coffee":          "coffeescript",
+		"coffee":          "coffee-script",
 		"cs":              "csharp",
 		"csh":             "tcsh",
 		"cw":              "redcode",
@@ -42,7 +50,7 @@ func buildLexerMap() map[string]string {
 		"def":             "modula2",
 		"dhandler":        "mason",
 		"di":              "d",
-		"duby":            "ruby",
+		"duby":            "rb",
 		"dyl":             "dylan",
 		"ebuild":          "bash",
 		"eclass":          "bash",
@@ -52,14 +60,14 @@ func buildLexerMap() map[string]string {
 		"erl-sh":          "erl",
 		"f":               "fortran",
 		"f90":             "fortran",
-		"feature":         "cucumber",
+		"feature":         "Cucumber",
 		"fhtml":           "velocity",
 		"flx":             "felix",
 		"flxh":            "felix",
 		"frag":            "glsl",
-		"g":               "antlr",
+		"g":               "antlr", // PHP: "antlr-ruby", absent from Chroma
 		"gdc":             "gooddata-cl",
-		"gemspec":         "ruby",
+		"gemspec":         "rb",
 		"geo":             "glsl",
 		"gnumakefile":     "make",
 		"h":               "c",
@@ -123,12 +131,12 @@ func buildLexerMap() map[string]string {
 		"pyx":             "cython",
 		"r":               "rebol",
 		"r3":              "rebol",
-		"rake":            "ruby",
-		"rakefile":        "ruby",
-		"rbw":             "ruby",
-		"rbx":             "ruby",
+		"rake":            "rb",
+		"rakefile":        "rb",
+		"rbw":             "rb",
+		"rbx":             "rb",
 		"rest":            "rst",
-		"rl":              "ragel",
+		"rl":              "ragel", // PHP: "ragel-em", absent from Chroma
 		"robot":           "robotframework",
 		"rout":            "rconsole",
 		"rss":             "xml",
@@ -143,7 +151,7 @@ func buildLexerMap() map[string]string {
 		"spt":             "cheetah",
 		"sqlite3-console": "sqlite3",
 		"st":              "smalltalk",
-		"sv":              "verilog",
+		"sv":              "verilog", // PHP: "v", which is V/vlang in Chroma, not Verilog
 		"tac":             "python",
 		"tmpl":            "cheetah",
 		"toc":             "tex",
@@ -179,5 +187,30 @@ func buildLexerMap() map[string]string {
 		"toml":            "toml",
 		"graphql":         "graphql",
 		"gql":             "graphql",
+
+		// Mixed-case keys, mirroring the PHP table verbatim. PHP looks the
+		// language up with a plain idx() on a case-sensitive array, and
+		// PhutilDefaultSyntaxHighlighterEngine::getLanguageFromFilename()
+		// hands over the extension with its original case, so "foo.R" really
+		// arrives as "R". Two of these differ from their lowercase twin and
+		// must not be folded together:
+		//
+		//   "R" is the R language while "r" is REBOL
+		//   "S" is the R language while "s" is GAS assembly
+		//
+		// Chroma has no "rebol" lexer, so "r" falls through to content
+		// analysis; that matches what PHP asks for as closely as Chroma can.
+		// The rest resolve the same either way and are listed only to keep
+		// this table diffable against the PHP one.
+		"ASM":         "nasm",
+		"G":           "antlr", // "antlr-ruby" in PHP; Chroma only has "antlr"
+		"GNUmakefile": "make",
+		"Makefile":    "make",
+		"R":           "splus", // Chroma alias of its R lexer
+		"Rakefile":    "rb",
+		"Rout":        "rconsole", // no Chroma equivalent; falls back
+		"S":           "splus",
+		"SConscript":  "python",
+		"SConstruct":  "python",
 	}
 }

@@ -6,17 +6,66 @@
 
 ---
 
-## 一、Pygments 语言别名表必须双向同步
+## 一、Pygments 语言别名表：PHP 表是下界，Go 表可以是超集
 
 **Go 侧**：`go/internal/render/highlight/lexermap.go` 的 `buildLexerMap()`
 **PHP 侧**：`PhutilPygmentsSyntaxHighlighter::getPygmentsLexerNameFromLanguageName()`
 （参考实现见 `phorge-fork/src/infrastructure/markup/syntax/highlighter/PhutilPygmentsSyntaxHighlighter.php`）
 
-Go 侧的别名表是从 PHP 侧那张 `static $map` 逐条抄过来的（PHP 约 166 条，Go 侧约 174 条，Go 多出的几条是 Chroma 与 Pygments 之间的 lexer 命名差异补丁）。它的作用是把 Phorge 数据库里存量的语言标识（`adb`、`ads`、`ahkl`、`bat`、`cxx` 这类历史别名）翻译成 Chroma 认得的 lexer 名。
+Go 侧的别名表是从 PHP 侧那张 `static $map` 抄过来的（PHP 166 条，Go 184 条）。它的作用是把 Phorge 数据库里存量的语言标识（`adb`、`ads`、`ahkl`、`bat`、`cxx` 这类历史别名）翻译成 Chroma 认得的 lexer 名。
 
-之所以不能只维护一侧：Phorge 并没有全量切到 Go 服务，`PhutilPygmentsSyntaxHighlighter` 仍是可选的高亮后端。两张表漂移后，同一个 `.adb` 文件在两个后端下会走不同 lexer，产生不同的 HTML，且没有任何断言会捕捉到。
+要防的是什么：Phorge 并没有全量切到 Go 服务，`PhutilPygmentsSyntaxHighlighter` 仍是可选的高亮后端。两个后端把同一个语言标识解析到不同 lexer 时，产生的 HTML 不同，且没有任何断言会捕捉到。**但这不等于两张表必须逐条相等**，下面两小节把范围划准。
 
-**新增别名时**：Go 与 PHP 两侧同时加，并在 `tests/contract/render/` 补一条固件。
+### 必须同步的方向只有 PHP → Go
+
+PHP 侧查表是 `idx($map, $language, $language)`：**未命中就把语言名原样透传**给 pygmentize。这条透传语义决定了约束是不对称的。
+
+判据是「PHP 表对该键做了**非恒等映射**」——现存 166 条恰好全部满足（`adb` → `ada` 这类），所以实践上就是一句话：**PHP 表有的键，Go 侧必须有，且映射到等价的 lexer。**非恒等映射意味着 pygmentize 认不得原始名、或认得但指向另一个 lexer，必须靠表改写；这种键 Go 侧漏掉时，Go 会把 `adb` 原样交给 Chroma，落到内容嗅探，两个后端就此分叉。**漏一条就是一次静默漂移，这是本节真正要守的东西。**
+
+### 反过来，Go 表可以是 PHP 表的超集
+
+Go 目前独有 20 条，**这不算违约，也不要求补到 PHP 侧**：
+
+- 15 条现代语言键：`ts` / `tsx` / `jsx` / `rs` / `kt` / `kts` / `swift` / `toml` / `tf` / `hcl` / `gradle` / `dockerfile` / `containerfile` / `graphql` / `gql`
+- 5 条 PHP 混合大小写键的小写补充：`gnumakefile` / `rakefile` / `rout` / `sconscript` / `sconstruct`
+
+无害的理由就在上面那条透传语义：pygmentize 本身就认 `ts`、`rs`、`kt` 这类别名，PHP 未命中后把原始名透传过去，落到的是同一个 lexer。两个后端结果一致，没有漂移可言。Go 侧多这几条只是省掉一次 Chroma 的猜测。
+
+新增 Go 独有键时唯一要确认的就是这个前提：**pygmentize 透传该名字后能落到与 Go 相同的 lexer**。若不成立（pygmentize 完全不认，PHP 侧会退回 `PhutilDefaultSyntaxHighlighter`），那就得同时补 PHP 侧。
+
+### 这张表区分大小写
+
+PHP 侧是一个普通 PHP 数组加 `idx()`，键的大小写原样参与匹配；而传进来的语言名是 `PhutilDefaultSyntaxHighlighterEngine::getLanguageFromFilename()` 从文件名里切出来的扩展名，**没有做归一化**，所以 `foo.R` 真的会以 `R` 的形式到达这里。表里有两组同字母异映射：
+
+| 键 | 目标 lexer | 含义 |
+|---|---|---|
+| `R` / `S` | `splus` | R 语言（`splus` 是 Chroma 里 R lexer 的别名） |
+| `r` | `rebol` | REBOL，Chroma 无对应 lexer，退化为纯文本 |
+| `s` | `gas` | GAS 汇编 |
+
+因此 Go 侧 `resolveLexer()` **先用原始字符串查表，未命中才降级到 `strings.ToLower` 再查一次**。早期实现无条件先 `ToLower`，把 `R` 折成 `r`、`S` 折成 `s`，结果是所有 `.R` 文件按 REBOL 处理（即无高亮）、所有 `.S` 文件按汇编处理。这是本约束唯一一次真实漂移，`tests/contract/render/render-language-case-{uppercase,lowercase}.json` 与 `TestCaseSensitiveAliasesReachDistinctLexers` 现在把它锁住了。`lexermap.go` 末尾单列了一组混合大小写键，与 PHP 表逐条对应，方便 diff。
+
+### Chroma 与 Pygments 的 lexer 命名差异不算漂移
+
+Go 侧的目标名必须是 Chroma 真的认得的，否则 `lexers.Get()` 返回 nil，请求静默退化成内容嗅探——补了等于没补。
+
+**能照抄就照抄。**即使 Chroma 同时接受某个同义写法，目标名也一律用 PHP 的那个（`rb` 而不是 `ruby`、`coffee-script` 而不是 `coffeescript`、`Cucumber` 而不是 `cucumber`），这样两张表能逐字 diff，不必每次都判断「写法不同但等价」。下表是**偏离的完整清单**，已逐条实测（Chroma v2.27），下一个人不必重查：
+
+| PHP 写的名字（涉及的键） | 在 Chroma 里 | Go 侧写什么 |
+|---|---|---|
+| `splus`（`R` / `S`） | ✅ 存在，是 Chroma R lexer 的别名 | 照抄，所以 `R` / `S` 的修复真实生效 |
+| `rebol`（`r` / `r3`） | ❌ 不存在 | 照抄，退化为纯文本；忠实反映 PHP 的意图，Chroma 无力实现 |
+| `rconsole`（`Rout`） | ❌ 不存在 | 照抄，同上 |
+| `antlr-ruby`（`g` / `G`） | ❌ 不存在 | **偏离**：写 `antlr` |
+| `ragel-em`（`rl`） | ❌ 不存在 | **偏离**：写 `ragel` |
+| `v`（`sv`） | ⚠️ 存在，但指向 **V/vlang 语言**，不是 Verilog | **偏离**：写 `verilog`，改回 `v` 会得到彻底错误的语言 |
+| `html+evoque` / `xml+evoque`（`html` / `xml`） | ❌ 不存在 | **偏离**：整条不进表。进表反而让 `html` / `xml` 从直接命中 Chroma 的 HTML/XML lexer 退化成内容嗅探 |
+
+与 PHP 不一致的就只有标「偏离」的这四组，其余一律逐字相同。这两类偏离（换等价名、刻意留空）都不算漂移，不要「顺手修正」回 Pygments 的原名。
+
+`v` 那条是对齐时最容易踩的坑，也是判据的来处：**`lexers.Get()` 返回非 nil 不代表解析对了。**要对齐某个写法时，比对的是两个写法拿到的 lexer **身份**（`Config().Name`）是否相同，只判空会把 `sv` → `v` 放过去。
+
+**新增别名的检查清单**：PHP 表有的键 Go 必须有，键的大小写照抄；Go 独有键先确认 pygmentize 透传后落到同一 lexer；目标名先用 `lexers.Get()` 确认 Chroma 认得；最后在 `tests/contract/render/` 补一条固件。
 
 ## 二、Chroma formatter 的三项配置是固定的
 
@@ -49,7 +98,7 @@ defaultStyle = styles.Get("pygments")
 - `POST /api/highlight/render`
 - `GET /api/highlight/languages`
 
-这两个路径是 `PhabricatorGoHighlightClient`（`src/infrastructure/cluster/PhabricatorGoHighlightClient.php`）已经在调的，改了要同步改 PHP。按域而非按二进制命名的好处是，将来 diff 并进同一进程时直接加 `/api/diff/*` 即可，两边都不用动。
+这两个路径是 `PhabricatorGorgeRenderClient`（`src/infrastructure/cluster/PhabricatorGorgeRenderClient.php`）已经在调的，改了要同步改 PHP。按域而非按二进制命名的好处是，将来 diff 并进同一进程时直接加 `/api/diff/*` 即可，两边都不用动。
 
 ### 端口：`:8130` 并入 `:8140`
 
@@ -60,7 +109,7 @@ defaultStyle = styles.Get("pygments")
 | `gorge-highlight` | `:8140` | 由 `gorge-render` 继承，保持 `:8140` |
 | `gorge-diff` | `:8130` | **废弃**，diff 并入 `gorge-render` 后走 `:8140` |
 
-对 PHP 侧的影响：`go-highlight.url` 配置项（或 `GO_HIGHLIGHT_URL` 环境变量）不需要改。将来接入 diff 时，原本指向 `:8130` 的 diff 配置要改指 `:8140`。旧的 `phorge/docker/services/docker-compose.yml` 里 `diff` 服务那一段届时应当整体删除，而不是留着空跑。
+对 PHP 侧的影响：`gorge.render.uri` 配置项（与之配套的 `gorge.render.token`）不需要改。将来接入 diff 时，原本指向 `:8130` 的 diff 配置要改指 `:8140`。旧的 `phorge/docker/services/docker-compose.yml` 里 `diff` 服务那一段届时应当整体删除，而不是留着空跑。
 
 ### 环境变量：新名优先，旧名兜底
 
@@ -80,7 +129,7 @@ defaultStyle = styles.Get("pygments")
 
 ## 附：鉴权与响应信封
 
-`PhabricatorGoHighlightClient` 依赖以下两点，改动会直接打断 PHP 侧：
+`PhabricatorGorgeRenderClient` 依赖以下两点，改动会直接打断 PHP 侧：
 
 **鉴权**：请求头 `X-Service-Token` 优先，查询参数 `?token=` 兜底；服务端 token 配置为空时全部放行。PHP 客户端走的是请求头。
 
@@ -101,7 +150,7 @@ defaultStyle = styles.Get("pygments")
 | `ERR_TOO_LARGE` | 413 | 请求体超限 |
 | `ERR_INTERNAL` | 500 | panic 或其他非预期失败 |
 
-`ERR_NOT_FOUND` 对 PHP 侧最有诊断价值：`go-highlight.url` 尾部多一个斜杠、或 base URL 拼接出双斜杠时，拿到的就是它。两个路由细节别误判：`/api/highlight/**` 分组的鉴权早于路由解析，不带 token 打不存在的路径返回 401 而不是 404；同样在这个分组下方法用错返回 404 而不是 405（分组为了鉴权匹配了所有方法），所以 `ERR_METHOD_NOT_ALLOWED` 实际只在健康探针路径上见得到。
+`ERR_NOT_FOUND` 对 PHP 侧最有诊断价值：`gorge.render.uri` 尾部多一个斜杠、或 base URL 拼接出双斜杠时，拿到的就是它。两个路由细节别误判：`/api/highlight/**` 分组的鉴权早于路由解析，不带 token 打不存在的路径返回 401 而不是 404；同样在这个分组下方法用错返回 404 而不是 405（分组为了鉴权匹配了所有方法），所以 `ERR_METHOD_NOT_ALLOWED` 实际只在健康探针路径上见得到。
 
 `ERR_TOO_LARGE` 有两个来源，同码是刻意的：`GORGE_RENDER_MAX_BYTES`（默认 1MiB）由 handler 检查，`httpx` 的传输层上限（固定 2M）由中间件检查。默认配置下只会命中前者；把 `GORGE_RENDER_MAX_BYTES` 调到 2M 以上就会改走后者。PHP 客户端按码分支即可，不需要知道是哪一道。
 
