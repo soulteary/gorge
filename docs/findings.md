@@ -134,3 +134,54 @@ var forbiddenPrefixes = []string{
 
 新增域包时忘了加一行，这个测试对新域就是静默失效的：它照样通过，只是不再检查任何新东西。可以改成扫描 `internal/` 下除 `platform`、`contracts`、`contracttest` 外的所有目录自动生成列表，这样新域自动被纳入。第二个域进来后这已经不是假想问题了。
 
+---
+
+## notification 模块
+
+### 9. 覆盖率的三处真实缺口
+
+**影响**：中。
+
+现状：`internal/notification` 97.1%、`hub` 83.7%、`peer` 96.2%。`hub` 那个数字里有相当一部分是**度量假象**——`Listener` 的 `WriteJSON`/`ReadMessage`/`Close` 等方法要一条真 WebSocket 才调得到，而那些连接建在 `internal/notification` 的测试里，`go test` 默认只把一个包自己的测试计入该包覆盖率。用 `-coverpkg` 合并度量后它们都是 100%。
+
+合并度量之后剩下三处真缺口：
+
+1. **`Hub.Publish` 摘除写失败 listener 的分支**（`hub.go` 174-179）。这是 `clients.active` 唯一的自愈路径。它坏掉的表现是集群面板上的活跃连接数只增不减，看起来像用户在涨。
+2. **`replay` 的写失败路径**（`client.go` 160-162，以及 `readLoop` 里对它的 `return`）。它保证一个已经走掉的客户端不会被剩下的历史消息逐条重试。
+3. **history 的按时长清理**（`hub.go` 210-215）。4096 条那道上限有 `TestHistoryPurgeHonoursTheSizeLimit` 压着，但真正约束线上重放窗口的是 60 秒那道，它没有任何测试。
+
+**建议**：三条都不需要起进程。第三条优先，因为 `hub_test.go` 与被测代码同包，往 `h.history` 里塞一条时间戳提前的记录就能覆盖；也因为它是唯一一条「上限没生效了也看不出来」的——history 无限增长在测试里表现为一切正常。
+
+### 10. Aphlict 配置文件里的多数键被静默丢弃
+
+**影响**：中。是个运维陷阱。
+
+`ServerSpec` 只读 `type`/`port`/`listen`，`Config` 只读 `servers`/`cluster`。而 Phorge 自带的 `conf/aphlict/aphlict.default.json` 还有 per-server 的 `ssl.key`/`ssl.cert`/`ssl.chain` 与顶层的 `logs`、`pidfile`——`encoding/json` 把它们静默忽略。**「能读 Aphlict 的配置文件」目前只兑现了一半，而多出来的那一半不报错。**
+
+两个具体后果：
+
+- 配了 `ssl.cert` 的文件递过来，服务照常起，但只讲明文 HTTP。PHP 侧 `notification.servers` 里若相应填了 `protocol: https`，`testClient()` 失败、面板报连接错误——**报了错，但报的地方离原因很远**。
+- 默认文件里 admin 的 `listen` 是 `127.0.0.1`，而 `LoadFromFile` 只在该字段为**空**时才填默认值，所以这个值会被原样保留。容器里这等于 admin 口对 phorge 容器不可达，而 PHP 侧 `PhabricatorNotificationClient::tryToPostMessage()` 是 `catch (Exception $ex) {}` 全吞——通知完全不工作，且没有任何一处报错。
+
+**建议**：`LoadFromFile` 把没识别的键列一条 `slog.Warn`。`config.go` 的注释已经写明 `ssl.*` 不生效，但注释拦不住一个把现成文件直接挂进容器的运维。
+
+### 11. admin 口的 `GET /` 从 405 变成 200（已知偏离）
+
+**影响**：低。
+
+Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/lib/AphlictAdminServer.js:114`）。Gorge 的 admin 口保留了平台层的根探针，`POST /` 与 `GET /` 方法不同、可以共存，于是 `GET /` 回 200 与裸 `{"status":"ok"}`。PHP 侧只打 `POST /` 与 `GET /status/`，观察不到这个差别，`TestAdminProbesAnswer` 把现状钉住了。
+
+登记而不修，是因为「探针形状全仓库一致」比「与 Aphlict 逐位全等」更有价值。**唯一要留神的是别把 client 口也顺手这么处理**——那个端口的 `GET /` 必须是 501，见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第五节。
+
+### 12. 多实例部署要求配 `cluster`，而 `cluster` 只能从文件给
+
+**影响**：高，但只在多实例时。
+
+状态全在进程内存里。跑两个实例时，`tryToPostMessage()` 对 admin 服务器列表 `shuffle()` 之后只投给其中一个成功的，所以一条消息只进那一个实例的 hub；要让它到达连在另一个实例上的浏览器，只能靠 `cluster` 里的 peer 中继。而 `LoadFromEnv` **完全没有表达 `cluster` 的手段**，只有 `GORGE_NOTIFICATION_CONFIG_FILE` 那条路。
+
+漏配的表现：每条通知只到一部分用户，看起来像偶发丢失；两个实例的 `/status/` 都正常，日志里什么都没有。
+
+同源的第二件事：`replay` 读的是本实例的 history，而 history 随进程启动清空。刚重启过的实例上重放窗口是空的，重连的客户端拿不到断线期间的消息，也不会收到任何提示。
+
+**建议**：给 `cluster` 补一个环境变量形式（`GORGE_NOTIFICATION_CLUSTER`，`host:port` 逗号分隔），让「多实例」不必绑定挂载文件这条更重的路。`deploy/compose/.env.example` 已经写明了这个前提，但那是文档层的补救，不是代码层的。
+

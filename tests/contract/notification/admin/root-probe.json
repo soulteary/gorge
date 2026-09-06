@@ -1,0 +1,13 @@
+{
+  "name": "the admin root stays a liveness probe alongside POST /",
+  "description": "POST / and the platform's GET / probe coexist because they differ by method, so registering the message intake at the root does not shadow the probe. This is also the domain's one known deviation from Aphlict, which answered 405 to GET / on this port; nothing notices, because Phorge only ever probes /status/ here. The 501 in the client fixtures is what this must NOT become — that answer belongs to the other port.",
+  "request": {
+    "method": "GET",
+    "path": "/"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": { "status": "ok" },
+    "jsonAbsent": ["data", "error", "fingerprint"]
+  }
+}

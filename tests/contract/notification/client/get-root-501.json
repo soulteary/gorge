@@ -1,0 +1,13 @@
+{
+  "name": "a plain GET / is refused with 501 and Aphlict's own wording",
+  "description": "The load-bearing case for the whole client port. PhabricatorNotificationServerRef::testClient() reads 501 as the healthy answer and raises 'Got HTTP 200, but expected HTTP 501 (WebSocket Upgrade)' for anything else, so a 200 here takes the notification server out of service on the Phorge side. The body is Aphlict's, byte for byte including the trailing newline, and it is plain text rather than JSON — which is why the runner only requires a JSON body when a fixture asserts something about its structure.",
+  "request": {
+    "method": "GET",
+    "path": "/"
+  },
+  "expect": {
+    "status": 501,
+    "bodyContains": ["HTTP/501 Use Websockets\n"],
+    "bodyNotContains": ["\"error\"", "\"status\"", "ERR_"]
+  }
+}

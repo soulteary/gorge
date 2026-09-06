@@ -1,0 +1,17 @@
+{
+  "name": "status reports the instance it was asked about",
+  "description": "Phorge appends ?instance= only when cluster.instance is configured, and each instance keeps its own listener table. Asking about one that has never been seen is a 200 with zeroed counters, not a 404: the panel polls before anybody has connected.",
+  "request": {
+    "method": "GET",
+    "path": "/status/?instance=acme"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "instance": "acme",
+      "clients.active": 0,
+      "clients.total": 0
+    },
+    "jsonAbsent": ["data", "error"]
+  }
+}

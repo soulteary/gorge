@@ -1,0 +1,17 @@
+{
+  "name": "a JSON body labelled form-urlencoded is decoded as JSON",
+  "description": "This is the Content-Type Phorge actually sends. PhabricatorNotificationServerRef posts through HTTPSFuture, which leaves curl's default application/x-www-form-urlencoded on a body that is really JSON, so the handler decodes the body itself instead of going through Echo's binder. The fixture exists to fail loudly if someone later 'cleans that up' into c.Bind.\n\nThe payload carries a percent sign, an ampersand and an equals sign inside a string value, and those are what give the assertion teeth. Form parsing percent-decodes and splits on separators, so '100%' is an invalid escape sequence and the request would be rejected before reaching the handler; a body with none of these characters binds into a map without complaint and reaches the hub as one garbage key, which no status code would reveal. The contract being pinned is that these bytes are opaque JSON, not form data.",
+  "request": {
+    "method": "POST",
+    "path": "/",
+    "headers": {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    "body": "{\"type\":\"message\",\"data\":{\"type\":\"notification\",\"title\":\"build 100% done: a=1 & b=2\"}}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["fingerprint"],
+    "jsonAbsent": ["data", "error"]
+  }
+}

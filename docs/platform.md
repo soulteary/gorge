@@ -4,9 +4,9 @@
 
 | 包 | 行数 | 职责 |
 |---|---|---|
-| `httpx` | 265 | HTTP 引导、中间件栈、`{data,error}` 信封与全局错误处理器 |
+| `httpx` | 311 | HTTP 引导、中间件栈、多监听器、`{data,error}` 信封与全局错误处理器 |
 | `auth` | 41 | 共享密钥中间件 |
-| `health` | 50 | 容器探针端点 |
+| `health` | 59 | 容器探针端点 |
 | `config` | 80 | 环境变量与 JSON 文件配置读取 |
 
 ## 1. httpx：统一的 HTTP 引导
@@ -22,9 +22,9 @@ RequestID → RequestLogger(slog) → Recover(slog) → BodyLimit(2M) → [域�
 - **RequestID 复用入站值**。请求头带了 `X-Request-Id` 就透传，没带才生成。一次请求跨越 Phorge 与 Go 服务时保持同一个 id，日志才能串起来。
 - **日志走 `log/slog`**。Echo 的 Recover 中间件默认用自己的 logger 打堆栈，这里通过 `LogErrorFunc` 改道到 slog，与进程其余日志汇合。响应体里永远只有一句通用文案，所以这条日志是 panic 现场的**唯一**记录。
 - **`LogErrorFunc` 返回 err 而非吞掉**。返回错误才会让 `HTTPErrorHandler` 继续接手，把 panic 转成 500 信封；吞掉的话客户端会拿到一个空响应。
-- **优雅关闭**。`Run()` 用 `signal.NotifyContext` 监听 SIGINT/SIGTERM，收到后调 `echo.Shutdown` 等待在途请求，`http.ErrServerClosed` 被归一化成 nil。
+- **优雅关闭**。`Run()` 用 `signal.NotifyContext` 监听 SIGINT/SIGTERM，收到后调 `echo.Shutdown` 等待在途请求，`http.ErrServerClosed` 被归一化成 nil。它现在只是 `return RunAll(s)` 的一层壳，见第 1.4 节。
 
-`Config.BodyLimit` 为空时取默认的 `2M`，`ShutdownTimeout` 非正时取默认的 10 秒。`Ready` 为 nil 表示服务没有外部依赖。
+`Config.BodyLimit` 为空时取默认的 `2M`，`ShutdownTimeout` 非正时取默认的 10 秒。`Ready` 为 nil 表示服务没有外部依赖。`SkipRootProbe` 把 `GET /` 让给域包，全仓库只有一个端口设它，见第 3 节。
 
 ### 1.1 响应信封
 
@@ -73,6 +73,22 @@ var statusCodes = map[int]string{ ... http.StatusRequestEntityTooLarge: CodeTooL
 
 同一个状态码，不论由 Echo 还是由 handler 产生，都报同一个码。413 是实际会发生的那一例：域级限额与传输层限额是两道独立的检查，客户端不应该需要区分是哪一道挡下的。细节见 [`modules/render.md`](modules/render.md) 第 3.2 节。
 
+### 1.4 `RunAll`：一个进程多个监听器
+
+```go
+func RunAll(servers ...*Server) error
+```
+
+notification 域引入的设施（[`modules/notification.md`](modules/notification.md)）：它一个进程要起两个端口，因为 Phorge 要求 admin 与 client 分开。`Server.Run()` 现在就是 `return RunAll(s)`，render 侧行为完全没变。
+
+三处设计选择，都是「多个监听器」这件事逼出来的：
+
+- **共用一个 `signal.NotifyContext`。** 每个端口各自注册一次信号处理，得到的是几个互相不知情的关闭流程；共用一个之后一次 SIGTERM 关掉全部。
+- **任一 listener 出错即整体退出。** 一个服务摊在几个端口上，缺任何一个都没有意义——只有 client 口活着的 notification 服务会接住浏览器连接，然后永远没有东西可以告诉它们。所以单个 listener 失败拖着整组一起停，而不是留下一个「半可达」的服务让编排继续放在轮转里。这一条是它与「起 N 个 goroutine 各跑一个 `Run()`」的关键差别：后者绑不上端口的那个静静退出，进程还在，健康探针还绿。
+- **`Shutdown` 并发做。** 等待时间是最长的那个 `ShutdownTimeout`，不是它们的和。错误用 `errors.Join` 汇总；但走「listener 报错」这一支时只返回那个根因，其余的关闭错误丢掉——它们是根因的后果，报出来只会盖住真正的第一现场。
+
+`serveErr` 那个 channel 是按 server 数量**带缓冲**的。不带缓冲的话，没被 `select` 选中的那些 goroutine 会永远卡在发送上。
+
 ## 2. auth：可选的共享密钥
 
 ```go
@@ -94,6 +110,17 @@ if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expec
 `ReadyFunc` 为 nil 表示服务没有外部依赖，起来即就绪——render 域正是这种情况，`main.go` 里显式传 `Ready: nil` 并配了注释。有依赖的模块（将来的 conduit、search）在依赖不可用时应返回 503，让编排把实例摘出轮转而不是杀掉。
 
 `httpx/errors_test.go` 的 `TestProbesStayBareUnderTheErrorHandler` 与 e2e 脚本第 1 条场景都在断言探针响应里**不出现** `"data"`。
+
+### 3.1 `skipRoot`：唯一一条豁免，只为一个端口存在
+
+`Register(e, ready, skipRoot)` 的第三个参数为 true 时**只**注册 `/healthz` 与 `/readyz`，把 `GET /` 让给域包（由 `httpx.Config.SkipRootProbe` 透传）。
+
+它存在的理由只有一条，`health.go` 的注释里也写着：Phorge 用一个纯 HTTP 的 `GET /` 去探 notification 的 client 端口，并且**把 501 当作健康信号**，拿到本包本来会返回的 200 反而判定服务器坏了（`PhabricatorNotificationServerRef::testClient()`）。
+
+两点别误读：
+
+- **这不是「可选的探针开关」。** 默认 false，除了 notification 的 client 端口没有第二个地方该设它。设错的后果不对称：该设没设，Phorge 报「Got HTTP 200, but expected HTTP 501」——会报错；不该设却设了，`GET /` 落到 404 或域路由上，而没有任何测试或探针会指向这个改动。
+- **两个容器探针照样注册。** 所以 Docker `HEALTHCHECK` 与 Kubernetes 探针不受影响，这也是豁免只挑根路径而不是整包跳过的原因。`health_test.go` 的 `TestSkipRootLeavesRootToTheCaller` 与 `TestSkipRootKeepsContainerProbes` 分别压这两半。
 
 ## 4. config：新名优先、旧名兜底
 
@@ -118,6 +145,8 @@ ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR", "LISTEN_ADDR"),
 | `platform/auth` | 100.0% |
 | `platform/config` | 100.0% |
 | `platform/health` | 100.0% |
-| `platform/httpx` | 74.1% |
+| `platform/httpx` | 97.1% |
 
-`httpx` 的缺口集中在 `Run()` 的信号循环与 `Shutdown` 路径——要起真进程才测得到，e2e 脚本在集成层面覆盖了它。
+`httpx` 从 74.1% 升到 97.1%，是 `RunAll` 那批测试带来的：原先「要起真进程才测得到」的信号循环与 `Shutdown` 路径，现在用 `:0` 端口起真 listener 加真 `SIGTERM` 覆盖了，`RunAll` 与 `shutdownAll` 都是 100%。
+
+剩下的三处缺口都不值得补，写在这里免得下一个人去追：`OK()` 只被域包调用（本包自己的测试用不到它，域测试的计数不进本包）；错误响应写失败那条 `slog.Error` 要一个已经断掉的连接；`classify()` 里 `httpErr.Message` 不是字符串的兜底分支，Echo 自己从不构造这种错误。

@@ -1,0 +1,17 @@
+{
+  "name": "a malformed message body is rejected",
+  "description": "A truncated payload is 400 ERR_BAD_REQUEST, not a 500 and not a silently dropped message. Same code the other two domains report, since the notification domain contributes no error codes of its own.",
+  "request": {
+    "method": "POST",
+    "path": "/",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{\"type\":"
+  },
+  "expect": {
+    "status": 400,
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data", "fingerprint"]
+  }
+}

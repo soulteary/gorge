@@ -1,0 +1,14 @@
+{
+  "name": "the probes survive under the WebSocket wildcard",
+  "description": "The client port registers GET /* for instance paths, and /healthz has to keep answering underneath it or the container healthcheck would read Aphlict's 501 as a failure. Echo ranks static routes above wildcards, which is what makes this work; the fixture is here because the ordering is a framework property nobody would think to re-check.",
+  "request": {
+    "method": "GET",
+    "path": "/healthz"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": { "status": "ok" },
+    "jsonAbsent": ["data", "error"],
+    "bodyNotContains": ["Use Websockets"]
+  }
+}

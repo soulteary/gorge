@@ -11,6 +11,12 @@ Each subdirectory belongs to one domain:
 |---|---|---|
 | `render/` | `gorge-render` | `go/internal/render/contract_test.go` |
 | `diff/` | `gorge-render` (same process) | `go/internal/diff/contract_test.go` |
+| `notification/admin/` | `gorge-notification`, admin port | `go/internal/notification/contract_admin_test.go` |
+| `notification/client/` | `gorge-notification`, client port | `go/internal/notification/contract_client_test.go` |
+
+The notification domain gets two directories rather than one because its two
+ports are separate listeners with separate contracts; see
+[`notification/README.md`](notification/README.md).
 
 Both Go runners are thin wrappers; the replay logic lives in
 `go/internal/contracttest/`. It is shared rather than duplicated so that the
@@ -70,6 +76,12 @@ reaches into the segment list the diff domain returns. `jsonAbsent` treats an
 out-of-range index as absent, which makes `data.parts.4` a way to assert how
 many segments came back.
 
+A key may itself contain a dot, and at each step the longest matching literal
+key wins before the path is split. That is how `clients.active` in the
+notification domain's `/status/` response is addressable: those dots are part
+of the key name, not a nesting convention. A document without dotted keys
+resolves exactly as it always did.
+
 Prefer the `html*` assertions over the `body*` ones when inspecting rendered
 markup: JSON encoders escape `<` differently, so a raw-body substring check on
 HTML is not portable between the Go and PHP runners. The `html*` group is only
@@ -109,3 +121,12 @@ A runner must start the service with the service token set to
 `contract-token`, since the fixtures authenticate with that value and one
 fixture asserts that a request without it is rejected. Everything else uses the
 service defaults.
+
+The notification domain is the exception: it has no token at all, because
+Phorge's notification client sends no credentials and a token there would
+silently reject every message it posts. Its runners ignore
+`contracttest.Token`, its fixtures send no auth header, and neither of its
+directories has an `unauthorized.json`. Its client port also answers one
+response in plain text rather than JSON, which is why the runner decodes the
+body only for fixtures that assert something about its structure — a fixture
+with just a `status` and `bodyContains` never requires JSON.

@@ -19,6 +19,7 @@ import (
 var forbiddenPrefixes = []string{
 	"github.com/soulteary/gorge/go/internal/render",
 	"github.com/soulteary/gorge/go/internal/diff",
+	"github.com/soulteary/gorge/go/internal/notification",
 	"github.com/soulteary/gorge/go/internal/contracts",
 }
 

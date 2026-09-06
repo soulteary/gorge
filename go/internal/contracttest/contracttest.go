@@ -27,6 +27,12 @@ import (
 // Token is the service token every fixture authenticates with. A runner must
 // start the handler with exactly this value: the fixtures send it, and at
 // least one of them asserts that a request without it is rejected.
+//
+// The notification domain is the exception and does not use it. Phorge's
+// notification client sends no credentials, so that domain registers no auth
+// middleware; a token there would reject every message it posts. Its runners
+// therefore ignore this constant and its fixture directories have no
+// unauthorized.json.
 const Token = "contract-token"
 
 // Fixture is one recorded request and the expectations for its response.
@@ -58,6 +64,15 @@ type Fixture struct {
 		BodyContains        []string `json:"bodyContains"`
 		BodyNotContains     []string `json:"bodyNotContains"`
 	} `json:"expect"`
+}
+
+// assertsStructure reports whether the fixture inspects the decoded body, as
+// opposed to only its status code and raw bytes.
+func (fx *Fixture) assertsStructure() bool {
+	e := &fx.Expect
+	return len(e.JSONHas) > 0 || len(e.JSONAbsent) > 0 || len(e.JSONEquals) > 0 ||
+		len(e.JSONStringContains) > 0 || len(e.HTMLContainsClasses) > 0 ||
+		len(e.HTMLContains) > 0 || len(e.HTMLNotContains) > 0
 }
 
 // Run replays every fixture in dir against handler, one subtest each.
@@ -117,6 +132,14 @@ func check(t *testing.T, fx *Fixture, rec *httptest.ResponseRecorder) {
 		if strings.Contains(rawBody, unwanted) {
 			t.Errorf("%s: response body should not contain %q", fx.Name, unwanted)
 		}
+	}
+
+	// A fixture that asserts nothing about the body's structure does not
+	// require the body to be JSON at all. The notification client port answers
+	// its 501 with Aphlict's plain-text line, which has only a status and a
+	// bodyContains to check; decoding unconditionally would fail it here.
+	if !fx.assertsStructure() {
+		return
 	}
 
 	var decoded map[string]any
@@ -211,25 +234,55 @@ func checkHTML(t *testing.T, fx *Fixture, decoded map[string]any) {
 // lookupJSONPath walks a dot-separated path through a decoded JSON document.
 // A numeric segment indexes an array, so "data.parts.0.type" reaches into the
 // segment lists the diff domain returns.
+//
+// A dot in a path is ambiguous, because a JSON key may contain one: the
+// notification admin port's GET /status/ answers a flat map whose keys are
+// literally "clients.active", "messages.in" and so on, since Phorge's cluster
+// panel reads them with idx($details, 'clients.active') and nesting them would
+// leave that panel with nothing to show. At every step the longest matching
+// literal key therefore wins, and the path is only split where no literal key
+// matches. Trying the literal first keeps every pre-existing fixture resolving
+// exactly as it did — a document with no dotted keys has nothing to match.
 func lookupJSONPath(root map[string]any, path string) (any, bool) {
-	var current any = root
-	for _, segment := range strings.Split(path, ".") {
-		switch container := current.(type) {
-		case map[string]any:
-			value, ok := container[segment]
+	return lookupIn(root, path)
+}
+
+func lookupIn(current any, path string) (any, bool) {
+	if path == "" {
+		return current, true
+	}
+
+	switch container := current.(type) {
+	case map[string]any:
+		// Longest candidate key first, shortening to the next dot each time.
+		// Backtracking matters when a prefix resolves but the rest of the path
+		// does not, which is how "history.age" is reached in a document that
+		// also has some "history" of its own.
+		for end := len(path); end > 0; end-- {
+			if end < len(path) && path[end] != '.' {
+				continue
+			}
+			value, ok := container[path[:end]]
 			if !ok {
-				return nil, false
+				continue
 			}
-			current = value
-		case []any:
-			i, err := strconv.Atoi(segment)
-			if err != nil || i < 0 || i >= len(container) {
-				return nil, false
+			rest := ""
+			if end < len(path) {
+				rest = path[end+1:]
 			}
-			current = container[i]
-		default:
+			if found, ok := lookupIn(value, rest); ok {
+				return found, true
+			}
+		}
+		return nil, false
+	case []any:
+		segment, rest, _ := strings.Cut(path, ".")
+		i, err := strconv.Atoi(segment)
+		if err != nil || i < 0 || i >= len(container) {
 			return nil, false
 		}
+		return lookupIn(container[i], rest)
+	default:
+		return nil, false
 	}
-	return current, true
 }
