@@ -1,0 +1,20 @@
+{
+  "name": "an unreachable database is an opaque 500",
+  "description": "This domain defines no error code of its own, and this fixture is what that decision looks like on the wire: the only failure either endpoint has is 'the database did not answer', and ERR_INTERNAL already says it. What the fixture really pins is what does not come back — the query, the host, the port, the driver's message. A client that needs to distinguish 'the service is broken' from 'the service cannot reach the queue' reads /readyz, which does carry a reason.",
+  "request": {
+    "method": "GET",
+    "path": "/api/webhook/stats",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 500,
+    "jsonEquals": {
+      "error.code": "ERR_INTERNAL",
+      "error.message": "internal server error"
+    },
+    "jsonAbsent": ["data"],
+    "bodyNotContains": ["3306", "herald", "SELECT", "connection refused"]
+  }
+}

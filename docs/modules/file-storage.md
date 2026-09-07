@@ -160,7 +160,19 @@ type StorageEngine interface {
 - 那条命令跑在 Phorge 应用容器里；
 - 而那个容器**要等本服务 healthy 之后才启动**。
 
-于是本服务等一张只有 Phorge 能建的表，Phorge 等本服务健康，两边都不会先动。**ping 数据库则是安全的**，因为数据库服务器是一个独立容器，两边谁都不依赖。这也正是 3.3 那个「失败也回退」存在的另一面：`bin/storage upgrade` 跑完之前 blob 写入必然失败，服务不该因此不可用，上传该落到本地磁盘去。
+于是本服务等一张只有 Phorge 能建的表，Phorge 等本服务健康，两边都不会先动。这也正是 3.3 那个「失败也回退」存在的另一面：`bin/storage upgrade` 跑完之前 blob 写入必然失败，服务不该因此不可用，上传该落到本地磁盘去。
+
+**但遵守这条规则并不足以躲开那个闭环，而这里此前写的「ping 数据库则是安全的」是错的。**独立的是数据库**服务器**，而 DSN 里带的是**库名**（`{namespace}_file`），go-sql-driver 在握手阶段就把它发过去。所以库不存在时 ping 失败在连接上：
+
+```
+GET /healthz → 200
+GET /readyz  → 503
+  reason: engine blob: ping database: Error 1049 (42000): Unknown database 'phabricator_file'
+```
+
+而那个**库**同样由 `bin/storage upgrade` 创建，跑在同一个等本服务 healthy 的容器里——于是死锁照旧，只是触发点从「表」挪到了「库」。`db-init` 帮不上忙，它那份 `db-grant.sql` 只有一条 GRANT、一个库都不建。**这在新数据卷上必然发生且不会自愈**，是实测结果而不是推断。
+
+修法在编排侧：`phorge` 对本服务的依赖改成 `service_started`（与 `gorge-webhook` 一致）。**这里的 `/readyz` 语义刻意没有动**，因为这个 503 本身是对的——库建出来之前 blob 后端确实写不进去——而那个中间状态早有兜底，上传会按 priority 下沉到本地磁盘。Phorge 等的东西从来就不是它需要的东西。完整链条与权威描述见 [`../findings.md`](../findings.md) 第 43 条与 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第 8.7 节。
 
 `Router.Ready` 与 `MySQLBlobEngine.Ready` 的注释里都写着这一条，`TestMySQLBlobReadyReportsAnUnreachableDatabase` 与 `TestReadyzReportsUnconfiguredBackends` 是它的两半：后者断言零后端时 `/healthz` 仍 200 而 `/readyz` 是 503——**「进程活着」与「能存下任何东西」必须分得开**，否则编排会把一个每传必失败的实例留在轮转里。
 

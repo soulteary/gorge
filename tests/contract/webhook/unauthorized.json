@@ -1,0 +1,14 @@
+{
+  "name": "missing service token is rejected",
+  "description": "401 ERR_UNAUTHORIZED with no data field. What the guard protects here is not a mutation — the API is read-only — but the queue's shape: how many deliveries are backing up, how many are failing, and how many hooks an install has are exactly the numbers worth knowing before attacking one. The token is checked before the path is resolved, so an unauthenticated request to a path that does not exist answers 401 rather than 404.",
+  "request": {
+    "method": "GET",
+    "path": "/api/webhook/stats"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_UNAUTHORIZED" },
+    "jsonAbsent": ["data"]
+  }
+}

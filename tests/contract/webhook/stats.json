@@ -1,0 +1,21 @@
+{
+  "name": "the queue's state is reported as four counts",
+  "description": "GET /api/webhook/stats is the only window into a service whose real work is a background loop, so its four fields are what a Phorge setup check and an operator both read. Every count is a live COUNT(*) over Phorge's own tables rather than a counter this service keeps, which is why the numbers survive a restart and include the work of every other instance. activeWebhooks excludes disabled hooks — that is the whole difference between it and what GET /api/webhook/hooks answers, and the seeded state has one hook of each kind so a transposition of the two cannot pass.",
+  "request": {
+    "method": "GET",
+    "path": "/api/webhook/stats",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.queuedCount": 3,
+      "data.sentCount": 2,
+      "data.failedCount": 1,
+      "data.activeWebhooks": 1
+    },
+    "jsonAbsent": ["error"]
+  }
+}

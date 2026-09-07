@@ -1,0 +1,16 @@
+{
+  "name": "the hook count includes disabled hooks",
+  "description": "GET /api/webhook/hooks answers every configured hook, disabled ones included, which is what tells 'no hooks yet' from 'hooks that are all switched off' — two states a setup check has to describe differently and that stats.activeWebhooks reports identically as 0. The seeded state has two hooks, one disabled, so a response of 1 here would mean this endpoint had been collapsed into the other one.",
+  "request": {
+    "method": "GET",
+    "path": "/api/webhook/hooks",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": { "data.total": 2 },
+    "jsonAbsent": ["error"]
+  }
+}

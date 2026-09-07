@@ -48,6 +48,11 @@ jobs:
             port: 8120
           - service: gorge-file-storage
             port: 8100
+          # gorge-webhook's listener is status only — its work is a background
+          # loop — so a healthcheck on this port says nothing about whether it
+          # is delivering anything. See the compose service's comment.
+          - service: gorge-webhook
+            port: 8160
 
     steps:
       - name: Checkout code
