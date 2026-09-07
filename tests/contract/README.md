@@ -14,6 +14,7 @@ Each subdirectory belongs to one domain:
 | `notification/admin/` | `gorge-notification`, admin port | `go/internal/notification/contract_admin_test.go` |
 | `notification/client/` | `gorge-notification`, client port | `go/internal/notification/contract_client_test.go` |
 | `mailer/` | `gorge-mailer` | `go/internal/mailer/contract_test.go` |
+| `file-storage/` | `gorge-file-storage` | `go/internal/filestorage/contract_test.go` |
 
 The notification domain gets two directories rather than one because its two
 ports are separate listeners with separate contracts; see
@@ -40,6 +41,7 @@ One JSON object per file:
   },
   "expect": {
     "status": 200,
+    "headerEquals": { "Content-Type": "application/json; charset=UTF-8" },
     "jsonHas": ["data.html"],
     "jsonAbsent": ["error"],
     "jsonEquals": { "data.language": "python" },
@@ -62,6 +64,7 @@ which a nested object could not express.
 | Field | Applies to | Meaning |
 |---|---|---|
 | `status` | HTTP status | Must match exactly. |
+| `headerEquals` | response headers | Each named response header must equal the given value. Header names are matched canonically, so a fixture may spell one however it likes. |
 | `jsonHas` | decoded response | Each dot-path must exist and be non-null; a string value must be non-empty. |
 | `jsonAbsent` | decoded response | Each dot-path must not exist. |
 | `jsonEquals` | decoded response | Each dot-path must equal the given value, compared as text. |
@@ -88,6 +91,19 @@ markup: JSON encoders escape `<` differently, so a raw-body substring check on
 HTML is not portable between the Go and PHP runners. The `html*` group is only
 used by the render domain, but it stays in the shared vocabulary so both
 domains describe their contracts with one set of names.
+
+`headerEquals` is the newest entry, and the file storage domain is why it
+exists. A successful `GET /api/file/blob` answers the file's raw bytes rather
+than the `{data, error}` envelope, so there is no JSON document for the
+`json*` assertions to address — and what the PHP client branches on to tell
+the two shapes apart is the `Content-Type`. That made it the one thing about
+that response which could not be expressed against a body: `bodyNotContains`
+can catch bytes that got wrapped in an envelope, but nothing about a body
+catches a response whose bytes are right and whose declared type is wrong —
+and a wrong `Content-Type` alone is enough to send a client down the
+error-parsing branch for a perfectly good file. Like the `html*` group it stays in the
+shared vocabulary even though one domain uses it, so a second domain that ever
+needs a header assertion does not invent a second name for it.
 
 ## How precise should an assertion be?
 
@@ -131,3 +147,16 @@ directories has an `unauthorized.json`. Its client port also answers one
 response in plain text rather than JSON, which is why the runner decodes the
 body only for fixtures that assert something about its structure — a fixture
 with just a `status` and `bodyContains` never requires JSON.
+
+The file storage domain needs **state prepared before the run**, which is the
+only place in this directory where that is true. Its runner must configure
+exactly one backend — `local-disk`, on an empty directory — and **pre-seed one
+object** there: the file `ab/cd/0123456789abcdef0123456789ab` under the storage
+root, holding exactly the 11 bytes `hello gorge`. The reason is structural
+rather than incidental: a fixture is a single request, so the fixture that
+reads a file cannot be the one that wrote it, and a handle minted by a write is
+random and so cannot be named by a later fixture. Local disk is what keeps this
+reproducible in any language, since a handle there is just a path and seeding is
+one `mkdir` plus one file write. See
+[`file-storage/README.md`](file-storage/README.md) for the exact requirement and
+for why its delete fixture deliberately targets a handle nothing seeds.

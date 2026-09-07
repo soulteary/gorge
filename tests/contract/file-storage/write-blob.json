@@ -1,0 +1,22 @@
+{
+  "name": "a file is written and the answer names the engine that took it",
+  "description": "The canonical write. The file is the raw request body, not base64 inside a JSON document, which is what makes this domain's contract different from every other one. The response is still the envelope, because what it reports is metadata: data.engine is as load-bearing as data.handle, since the service picks the engine when the caller does not name one and a handle is only meaningful to the engine that minted it. Phorge stores the pair.",
+  "request": {
+    "method": "POST",
+    "path": "/api/file/blob?name=note.txt&mimeType=text%2Fplain",
+    "headers": {
+      "Content-Type": "application/octet-stream",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "hello gorge"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.handle", "data.engine"],
+    "jsonEquals": {
+      "data.engine": "local-disk",
+      "data.size": 11
+    },
+    "jsonAbsent": ["error"]
+  }
+}

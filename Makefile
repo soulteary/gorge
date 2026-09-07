@@ -11,6 +11,7 @@ BASE_URL          ?= http://127.0.0.1:8140
 NOTIFY_ADMIN_URL  ?= http://127.0.0.1:22281
 NOTIFY_CLIENT_URL ?= http://127.0.0.1:22280
 MAILER_URL        ?= http://127.0.0.1:8110
+FILESTORAGE_URL   ?= http://127.0.0.1:8100
 
 .DEFAULT_GOAL := help
 
@@ -100,6 +101,10 @@ e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
 	# /readyz scenario fails: GORGE_MAILER_CONFIG='[{"key":"test","type":"test"}]'
 	# is what the compose service ships with.
 	BASE_URL=$(MAILER_URL) bash tests/e2e/mailer.sh
+	# gorge-file-storage needs a backend too, for the same reason. Local disk
+	# is the one that needs nothing external:
+	# GORGE_FILE_LOCAL_DISK_PATH=/tmp/gorge-files make run SERVICE=gorge-file-storage
+	BASE_URL=$(FILESTORAGE_URL) bash tests/e2e/file-storage.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

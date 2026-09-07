@@ -26,12 +26,15 @@
 | diff | `gorge-render`（同进程） | `:8140` | [`modules/diff.md`](modules/diff.md) | 已迁入 |
 | notification | `gorge-notification` | `:22280`（client/WS）+ `:22281`（admin） | [`modules/notification.md`](modules/notification.md) | 已迁入 |
 | mailer | `gorge-mailer` | `:8110` | [`modules/mailer.md`](modules/mailer.md) | 已迁入 |
+| file-storage | `gorge-file-storage` | `:8100` | [`modules/file-storage.md`](modules/file-storage.md) | 已迁入 |
 
 render 与 diff 共用一个二进制与一个端口：都是无外部依赖的纯计算，拆进程换不来隔离收益。路径按域命名（`/api/highlight/*`、`/api/diff/*`）正是为了让这种合并不需要改动任何一侧。
 
 notification 是第一个反例，两个方向上都是：它自己占一个二进制，因为它有进程内状态、有小时级的长连接、并且**必须不鉴权**（严格 Aphlict 兼容）；它还自己占两个端口，因为 Phorge 校验 `notification.servers` 时要求 admin 与 client 两类记录同时存在且 host:port 不重复。两个端口留在同一个进程里，是因为它们共用同一份内存里的连接表。平台层为此新增了 `httpx.RunAll` 与 `httpx.Config.SkipRootProbe`，见 [`platform.md`](platform.md) 第 1.4 与 3.1 节。
 
 mailer 同样自己占一个二进制，理由与 notification 不同：它是「有外部依赖」的第一个模块——持有适配器状态、要连出去打 SMTP 与各家 provider，于是它也是第一个 `/readyz` 真的比 `/healthz` 多说了点什么的模块（就绪 = 至少配了一个后端）。但它只占一个端口，也照常鉴权，所以没有给平台层带来任何新设施。
+
+file-storage 带进来两件仓库里此前没有的东西，而它同样**没有**给平台层新增任何设施——这三件事凑在一起才是这个模块值得单说一句的地方。第一件是**第一个数据库驱动**：`go-sql-driver/mysql` 由 `internal/filestorage/db.go` 自己 import，连接池也住在域包里，`platform/` 至今没有、也刻意不长任何数据库设施（一个域要连接池不构成共享关切，理由记在 [`findings.md`](findings.md) 第 19 条）。第二件是**第一个非 JSON 的 `/api/**` 成功响应**：读文件成功答的是原始 `application/octet-stream` 字节，失败才是信封。而这一条恰恰不需要平台层配合——`httpx` 从不强迫 handler 用 JSON 应答，handler 直接调 `c.Stream` 就行，失败路径上 `errorHandler` 照旧产出信封，见 [`platform.md`](platform.md) 第 1.1 节。
 
 **[`modules/notification.md`](modules/notification.md) 明显长于另外两份模块文档，这是刻意的**：本域迁入前带着一份独立的技术报告，那份报告写的是迁入前的包布局、现在每条路径都不存在了，所以它没有被搬进来，而是由模块文档同时充当本域的技术报告。它的前六节仍然是下面那个骨架，第 7 节之后（迁入前后的差异、排查、四层测试各守什么）是骨架之外的补充。**不要照着它把另外两份也扩写**——那两个域的技术报告问题登记在 [`findings.md`](findings.md) 第 6 条，解决方式是删掉过期报告并改指模块文档，不是加长。
 

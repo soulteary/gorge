@@ -1,6 +1,6 @@
 # Phorge 兼容契约
 
-本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的六项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
+本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的七项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
 
 | 约定 | 破坏后的表现 |
 |---|---|
@@ -10,8 +10,9 @@
 | 四、unified diff 输出格式 | 解析器接受错误的 hunk 头，然后**静默地把之后每一行都放错位置**（第 4.6 节写明了保证到哪里为止） |
 | 五、Aphlict 线兼容（通知） | 四条子约束，最坏的一条（5.4）**连错误状态码都不产生**：请求答 200、fingerprint 合法、`messages.in` 照常增长，只有消息内容被静默揉碎 |
 | 六、mailer 的错误码与字段名 | 唯一一项会**改变 PHP 侧行为**的约定：`ERR_PERMANENT_FAILURE` 决定 worker 要不要重投这封信，两个方向的误判分别是「无限重投」与「静默丢信」，都要几天后看邮件统计才发现 |
+| 七、file storage 的 handle 与 engine identifier | **既有文件变得读不出来，而且是从改动生效那一刻起、对全部存量文件同时发生**：新写入的文件一切正常，所以问题会在很久以后才以「某些旧附件 404」的形式露头。另有一条不同性质的子约束（7.7）：`/readyz` 多查一样东西会让整个栈在首次启动时**死锁** |
 
-第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。第六项的性质又不一样：它**会**产生一个明确的失败状态，只是方向是反的，所以看日志找不出问题——每条记录看起来都合理。
+第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。第六项的性质又不一样：它**会**产生一个明确的失败状态，只是方向是反的，所以看日志找不出问题——每条记录看起来都合理。第七项的时间尺度是独一份的：它破坏的是**存量数据的可达性**，而验证一次改动是否安全的常规办法（写一个文件、读回来、通过）恰恰完全看不见它——新旧两条路都自洽，只是不再互通。
 
 改动其中任何一项，都必须同步改动 PHP 侧并在这里更新说明。
 
@@ -531,6 +532,122 @@ curl -s http://127.0.0.1:22281/status/
 
 ---
 
+## 七、file storage 的 handle 与 engine identifier
+
+**Go 侧**：`go/internal/filestorage/`（`localdisk.go` / `mysqlblob.go` / `s3.go` / `http.go`）、`go/internal/contracts/filestorage.go`
+**PHP 侧**：`PhabricatorGorgeFileStorageEngine` 与 `PhabricatorGorgeFileStorageClient`
+
+这一节与前六节的性质都不同，因为它约束的**不是一次调用，是存量数据的可达性**。
+
+Phorge 对每一个文件只存一对 `(engine, handle)`。本服务不持有任何元数据，也没有第二条线索可以回退——**engine 字符串和 handle 的解读方式就是全部**。任何一处改动都不会让当前的读写失败：新写进去的文件用新规则写、用新规则读，自洽得很；只有那些用旧规则写下的存量文件，从改动生效那一刻起同时变得不可达。所以「写一个文件、读回来、通过」这个最自然的验证动作，对本节的每一条都**完全没有分辨能力**。
+
+四条路径本身（`POST` / `GET` / `DELETE /api/file/blob` 与 `GET /api/file/engines`）与端口 `:8100` 当然也是契约，`PhabricatorGorgeFileStorageClient` 按字面调它们、`TestRoutePathsAreStable` 钉着它们；但那一条破坏后会答 `ERR_NOT_FOUND`，属于第三节那种「配置指错地方」的可见故障，不是本节要防的东西。
+
+### 7.1 三个 engine identifier 字符串
+
+| identifier | 后端 | 优先级 |
+|---|---|---|
+| `blob` | Phorge `file_storageblob` 表的一行 | 1 |
+| `local-disk` | 本地磁盘上的一个文件 | 5 |
+| `amazon-s3` | 对象存储里的一个对象 | 100 |
+
+这三个字符串**被写进 Phorge 的数据库**，每个文件一条。它们不是显示名，也不是内部枚举——它们和 **Phorge 自己那几个存储引擎的 identifier 是同一批字符串**，这正是本服务写下的文件能被 Phorge 原生引擎读到、反之亦然的原因。
+
+最容易「顺手修正」的是 `blob`：它看起来该叫 `mysql`，毕竟另外两个都以介质命名。**不要改**——Phorge 的 `PhabricatorMySQLFileStorageEngine` 用的就是 `blob`。
+
+改掉任何一个的表现：Phorge 拿着旧字符串来读，`Router.GetEngine` 找不到，答 400；页面上表现为那一批附件打不开，而新上传的一切正常。
+
+### 7.2 复合 handle `engine/handle`：按**第一个**斜杠切
+
+上一节那三个字符串并不单独占一个字段。Phorge 的 `file` 表对每个文件只有一个 `storageHandle` 列，而读回字节必须同时给出引擎名——服务端不做推断（handle 形态跨后端有重叠，猜错的表现是读出**另一个文件**而不是失败）。于是引擎名只能编进 handle 里：
+
+```
+local-disk/ab/cd/0123456789abcdef0123456789ab
+blob/12345
+amazon-s3/phabricator/ab/cd/0123456789abcdef
+```
+
+**这个复合串是 PHP 侧独有的，Go 侧从头到尾没见过它。**服务答的是 `{"engine": …, "handle": …}` 两个字段（`contracts.WriteResult`），拼接与拆解都发生在 `PhabricatorGorgeFileStorageEngine`：`writeFile()` 返回 `$engine.'/'.$handle`，`parseHandle()` 再拆回来交给客户端。所以这一条**没有任何 Go 侧的测试守得住它**，它只存在于 PHP 与库里那些字符串之间。
+
+**必须按第一个斜杠切，不是最后一个，也不是 `explode('/')` 取两段。**三个 identifier 都不含斜杠而 handle 含（7.3），所以第一个斜杠是唯一无歧义的分界。按最后一个切会把 `local-disk/ab/cd/{28 hex}` 拆成引擎 `local-disk/ab/cd` 和 handle `{28 hex}`，`Router.GetEngine` 随即答 `unknown storage engine`；`explode` 取前两段则会把 handle 截成 `ab`。两种写法都能通过「写一个文件再读回来」——因为写和读用的是同一份代码——只有存量文件全数 404。
+
+`parseHandle` 还拒绝 `$slash === 0`，即以斜杠开头的串。这不是洁癖：引擎名为空会让 `GetEngine("")` 去查一个不存在的键，报出来的错说的是「未知引擎 ""」，离真正的原因（handle 在写入时就拼坏了）隔着好几步。同源的是写入侧那道检查——服务只答了 `engine` 或只答了 `handle` 时，`writeFile()` 显式抛错而不是拼出 `local-disk/`，因为那个串**非空**，基类的校验会收下它，于是一个从此读不出来的 handle 被存进库里。
+
+长度上有余量：基类要求 handle ≤255 字符，最长的组合 `amazon-s3/phabricator/{instance}/ab/cd/{16 hex}` 在 instance 名不离谱的前提下不到 60 字符。
+
+### 7.3 三种 handle 形态
+
+| 引擎 | handle | 由谁决定 |
+|---|---|---|
+| `local-disk` | `ab/cd/{28 hex}` | 与 Phorge 自己的本地磁盘引擎同布局 |
+| `blob` | 自增行 id 的十进制串（`"12345"`） | 与 Phorge 自己的 MySQL 引擎同方案 |
+| `amazon-s3` | 对象 key，见 7.4 | 与 Phorge 自己的 S3 引擎同布局 |
+
+本地磁盘那条是「同布局」而不是「碰巧相似」：两级 `ab/cd/` 目录扇出加 28 位十六进制文件名，意味着**一个由 Phorge 原生引擎写出来的存储目录，挂给本服务就能直接读**，反过来也成立。改动扇出层数、改动 hex 长度、把分隔符从 `/` 换成别的，都会让这个目录里已有的文件一个都找不到。
+
+**本地磁盘的 handle 格式校验同时还是一道安全边界，这一点必须知道，因为它看起来只是个整洁性检查。** handle 是从查询参数进来的，而 `filepath.Join(root, handle)` 会老老实实把 `../../..` 解析出去。`localHandlePattern` 是唯一挡住「读走/删掉这个进程能打开的任意文件」的东西，所以它在**读和删两条路上都校验**，`TestLocalDiskRejectsBadHandle` 逐个试过 `../../../etc/passwd` 这一类。放宽这个正则（比如为了「支持更长的 handle」）等于同时拆掉一道兼容约束和一道安全边界。
+
+blob 那条的要点是它**必须先被解析成整数再进 SQL**：MySQL 会把非数字字符串强制成 0 然后答「无此行」，于是一个畸形 handle 会报出和「文件真的被删了」一模一样的结果——两者的排查成本差着量级。`parseBlobHandle` 做这件事，`TestMySQLBlobRejectsAMalformedHandle` 守着。
+
+### 7.4 S3 的 key 前缀 `phabricator` 是 Phorge 的，不是装饰
+
+```
+phabricator[/{instance}]/ab/cd/{16 hex}
+```
+
+`phabricator` 这个前缀是 **Phorge 自己的 S3 引擎用的前缀**（沿用 Phabricator 时期的名字），不是本服务加的命名空间，也不是可以「顺手改成 gorge」的东西。中间那段可选的 `{instance}` 来自 `GORGE_FILE_INSTANCE_NAME`，是多个 Phorge 实例共用一个桶时的隔离段，与 Phorge 的 `storage.s3.bucket` 布局对应。
+
+改掉前缀之后，**桶里每一个对象都原地不动、并且不可达**——没有报错，没有迁移，没有任何一处会提示你旧对象还在那儿。对象存储按量计费，所以它们还会继续产生账单。
+
+`s3_test.go` 顶上的 `s3KeyPattern` 与 `TestS3KeyLayout` 把整个形状（含 `phabricator/` 前缀与 instance 段）钉住了。
+
+### 7.5 MySQL blob 后端与 Phorge 原生引擎**写同一张表**
+
+```
+{namespace}_file.file_storageblob
+```
+
+这不是「结构相同的另一张表」，是同一张：同一个库、同一张表、同一套「自增 id 即 handle」的方案，与 `PhabricatorMySQLFileStorageEngine` 完全重合。库名由 `GORGE_FILE_NAMESPACE` 拼成 `{namespace}_file`，因为 Phorge 就是这么拼的；`TestFileDSN` 把这条拼法钉住了。
+
+**这是一个必须知道的隐患，不是一个特性。**同时启用两侧的 MySQL 引擎，两边会各自往同一张表里 INSERT、各自拿走一段自增 id。当前不会互相覆盖（自增 id 天然不冲突），但要记住两件事：
+
+- **`bin/storage` 的维护动作与 GC 会碰这些行。**它们是 Phorge 的工具，按 Phorge 的账本行事——本服务写下的行在那本账里没有特殊标记，也不该有。
+- **`file_storageblob` 这张表由 Phorge 的 `bin/storage upgrade` 创建**，本服务从不建表。表还不存在的那段时间里，每一次 blob 写入都会失败——这正是 `Router.Write` 必须在写失败时回退到下一个引擎的原因（见 [`../../docs/modules/file-storage.md`](../../docs/modules/file-storage.md) 第 3.3 节），也是下面 7.7 的前提。
+
+### 7.6 二进制传输约定：**按状态码分支，不要按 body 是否为空分支**
+
+这是本节唯一一条约束**当次调用**的子项，也是 PHP 客户端最容易写错的地方：
+
+| 情形 | 响应 |
+|---|---|
+| `GET /api/file/blob` 成功 | 原始 `application/octet-stream` 字节，**不套信封** |
+| `GET /api/file/blob` 失败 | `{data, error}` 信封（404 `ERR_NOT_FOUND` 居多） |
+| 其余三条路径的成功与失败 | 一律信封 |
+
+这是全仓库 `/api/**` 里**唯一**一个成功响应不是信封的端点（平台层为它没改任何代码，理由见 [`../../docs/platform.md`](../../docs/platform.md) 第 1.1 节）。所以 PHP 侧的判据只能是**状态码**：200 就把 body 当文件交出去，其余一律交给信封解析器。
+
+**不能拿「body 是不是空的」当判据**，因为 **0 字节文件是一个合法的 200 加一个空 body**——Phorge 真的存空文件。照 body 判的客户端会把一个正常的空文件报成错误，而这种文件在库里通常只有零星几个，问题会以「偶发的、无法复现的附件损坏」形式出现。
+
+`Content-Length` 在引擎知道长度时会带上（这是客户端区分「完整文件」与「被截断的文件」的唯一依据），引擎不知道长度时干脆不带——猜一个比不给更坏。契约固件 `read-blob.json` 用 `headerEquals` 同时断言 `Content-Type` 与 `Content-Length`，`read-blob-missing.json` 断言失败那半仍是信封；两份是一对，缺一份就只守住了一半。
+
+### 7.7 `/readyz` **不能**检查 `file_storageblob` 是否存在
+
+这条与前六条不同：破坏它不会让文件读不出来，会让**整个栈在第一次启动时死锁**。
+
+就绪判据只有两条：至少注册了一个引擎，以及持有连接的引擎能连上（当前只有 blob 引擎，它做一次 `db.PingContext`）。看起来「顺手」该加的那第三条——查一下 `file_storageblob` 在不在——是一个闭环：
+
+- 这张表由 Phorge 的 `bin/storage upgrade` 创建；
+- 那条命令跑在 Phorge 应用容器里；
+- 而那个容器**要等本服务 healthy 之后才启动**。
+
+于是本服务等一张只有 Phorge 能建的表，Phorge 等本服务健康，谁都不会先动，两个容器一起停在启动阶段。
+
+**ping 数据库是安全的**，因为数据库服务器是一个独立容器，谁都不依赖。`Router.Ready` 与 `MySQLBlobEngine.Ready` 的注释里都写着这一条，`TestMySQLBlobReadyReportsAnUnreachableDatabase` 断言 ping 失败会被如实报出来。
+
+同一个道理的推论：**也不要在启动时 ping**。`OpenDB` 用 `sql.Open` 而它是惰性的，所以数据库还没起来时服务照常启动、照常答 `/healthz`，由 `/readyz` 去报告连不上——这正是编排区分「正在启动」与「坏了」所需要的。在启动路径上 ping 只会让一个「慢」的依赖把容器打进重启循环。
+
+---
+
 ## 附：鉴权与响应信封
 
 `PhabricatorGorgeRenderClient` 依赖以下两点，改动会直接打断 PHP 侧：
@@ -570,9 +687,11 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 
 `ERR_INTERNAL` 的 `message` 恒为一句通用文案，panic 值与堆栈只进 `slog` 日志。**排查 500 要看服务日志，不要指望响应体。**
 
-域级错误码有三个，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，以及 mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
+域级错误码有四个，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)，以及 file-storage 域的 `ERR_NO_ENGINE`(503)。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
 
 mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另外 mailer 域的后端失败一律落在 422 或 502，**不落 500**——那里的 500 只意味着服务自己出了问题。
+
+`ERR_NO_ENGINE` 与它们又不同：它区分的是**「一次都没试」与「试了并且坏了」**。503 意味着没有任何已配置的后端会接下这个文件（一个后端都没配，或者这个大小没有后端能收），是一个运维改配置就能解决的状态，也是 Phorge 侧 setup check 唯一能据以行动的写失败；而某个后端真的坏了落 500。把两者混成一个码，「服务没配好」与「存储挂了」在 PHP 侧就不可分了。
 
 **diff 域刻意没有域级错误码。**两个引擎都没有可报告的失败模式：prose 引擎是全函数，unified 引擎唯一会拒绝的是过大的输入，而那已经是 `ERR_TOO_LARGE` 了。在那里造一个码，它永远不会被返回。新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。
 
@@ -580,6 +699,9 @@ mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另�
 
 **健康探针不套信封**：`GET /`、`GET /healthz`、`GET /readyz` 返回裸 `{"status":"ok"}`。这是给容器探针和负载均衡用的，不要「顺手统一」成信封格式。
 
-本附录讲的是 `/api/**`，即 render、diff 与 mailer 三个域——三者的鉴权与信封口径完全一致（`ERR_TOO_LARGE` 的来源除外：mailer 的传输层上限是 `10M` 而非 `2M`，且它没有域级字节检查，正文超限是静默截断而不是拒绝）。
+本附录讲的是 `/api/**`，即 render、diff、mailer 与 file-storage 四个域——四者的鉴权口径完全一致，信封口径有一处**记录在案的例外**，另外传输上限各不相同：
+
+- **例外只有一个**：file-storage 的 `GET /api/file/blob` **成功**时答原始 `application/octet-stream` 字节而非信封，失败仍是信封。所以那一条路径上按状态码分支，别按 body 形状分支，理由与陷阱见第七节 7.6。除它之外，本附录对四个域一字不差地成立——包括 file-storage 自己的另外三条路径，以及它端口上任何由框架产生的响应（`TestUnknownPathKeepsTheEnvelope` 断言这一点）。
+- **`ERR_TOO_LARGE` 的来源**：render / diff 的传输层上限是 `2M` 并另有域级字节检查；mailer 是 `10M`，没有域级字节检查，正文超限是静默截断而不是拒绝；file-storage 是 **`16M`**（文件是裸请求体），它的「域级」检查是各存储引擎自己的 `MaxFileSize()`——只有在请求**指名了引擎**时才答 413，未指名而所有引擎都收不下时答的是 503 `ERR_NO_ENGINE`。
 
 **notification 的两个端口不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。

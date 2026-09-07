@@ -1,0 +1,16 @@
+{
+  "name": "deleting bytes that are already gone succeeds",
+  "description": "The handle here is deliberately one no runner seeds, so this fixture pins idempotency rather than deletion. Phorge removes the bytes and the row that points at them in one sequence: if this answered 404 for bytes that had already been lost, that row could never be retired and the file would haunt the database forever. It also keeps the fixture order-independent — a fixture that deleted the seeded object would break read-blob.json depending on which ran first.",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/file/blob?engine=local-disk&handle=ef/01/0123456789abcdef0123456789ab",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": { "data.status": "deleted" },
+    "jsonAbsent": ["error"]
+  }
+}

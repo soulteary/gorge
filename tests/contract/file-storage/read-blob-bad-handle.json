@@ -1,0 +1,16 @@
+{
+  "name": "a read of a handle no engine could have minted is still a 404",
+  "description": "The same handle delete-blob-bad-handle.json answers 400 for. Read collapses 'malformed' and 'gone' into 404 on purpose: the caller holds one engine/handle pair per file and cannot act on the difference either way. This fixture exists to keep that asymmetry a decision instead of a regression — the obvious tidy-up is to make both endpoints answer the same code, and this pair is what says no. For the local disk backend the same validation is also a security boundary: filepath.Join resolves a '..' segment, so the handle pattern is what stops a read from escaping the storage root.",
+  "request": {
+    "method": "GET",
+    "path": "/api/file/blob?engine=local-disk&handle=not-a-handle",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 404,
+    "jsonEquals": { "error.code": "ERR_NOT_FOUND" },
+    "jsonAbsent": ["data"]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "naming an engine overrides the priority order",
+  "description": "Phorge names an engine when the file's engine is already recorded against it, so the bytes have to land there and nowhere else. The service must not quietly fall through to another engine for a named write: that would leave the recorded engine pointing at nothing.",
+  "request": {
+    "method": "POST",
+    "path": "/api/file/blob?engine=local-disk",
+    "headers": {
+      "Content-Type": "application/octet-stream",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "hello gorge"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.handle"],
+    "jsonEquals": { "data.engine": "local-disk" },
+    "jsonAbsent": ["error"]
+  }
+}

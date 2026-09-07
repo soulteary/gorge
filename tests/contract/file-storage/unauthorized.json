@@ -1,0 +1,15 @@
+{
+  "name": "missing service token is rejected on the binary endpoint",
+  "description": "The read endpoint is the one where a missing guard leaks file contents rather than metadata, so this is the path the fixture uses. The answer is the envelope even though a successful read here is raw bytes: a caller that ignored the status code must not be able to mistake an error document for a file, which is also why the response carries no data field.",
+  "request": {
+    "method": "GET",
+    "path": "/api/file/blob?engine=local-disk&handle=ab/cd/0123456789abcdef0123456789ab"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_UNAUTHORIZED" },
+    "jsonAbsent": ["data"],
+    "bodyNotContains": ["hello gorge"]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "a read answers the raw bytes, outside the envelope",
+  "description": "The one success response in /api/** that is not the {data, error} envelope, and the reason the contract vocabulary grew a header assertion. The Content-Type is what the PHP client branches on: parseBinaryResponse takes the body as the file when the status is 200 and hands anything else to the envelope parser. A service that wrapped these bytes in JSON would break every download without changing a status code. Note the handle in the query string: it contains slashes, which is why it is a query parameter and not a path segment. The runner must have seeded this object; see README.md.",
+  "request": {
+    "method": "GET",
+    "path": "/api/file/blob?engine=local-disk&handle=ab/cd/0123456789abcdef0123456789ab",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "headerEquals": {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": "11"
+    },
+    "bodyContains": ["hello gorge"],
+    "bodyNotContains": ["\"data\"", "\"error\""]
+  }
+}

@@ -1,0 +1,767 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge File Storage API
+  description: |
+    HTTP contract for the `gorge-file-storage` binary, which serves the file
+    storage domain: the *bytes* of Phorge's files go in, and come back out.
+
+    This service owns no metadata. A file's name, size, MIME type and the
+    `(engine, handle)` pair that points here all live in Phorge's own database.
+    What crosses this API is a byte stream and an opaque handle, and a handle
+    is only meaningful to the engine that minted it — which is why every read
+    and every delete has to name the engine as well. Nothing is inferred.
+
+    **Three response shapes coexist here, one more than in any other gorge
+    service.** Getting the distinction wrong is the failure this document
+    exists to prevent:
+
+    - `/api/**` endpoints return the `{data, error}` envelope, with exactly one
+      of the two keys populated. This holds for failures the service never
+      reached a handler for — an unknown path, a body over the transport limit,
+      a recovered panic — because `httpx` replaces the framework's default
+      error handler.
+    - **A successful `GET /api/file/blob` is the one exception in all of
+      `/api/**`.** It answers the file's raw bytes as
+      `application/octet-stream`, with no envelope and no JSON at all. Every
+      *failure* of that same endpoint answers the envelope.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them.
+
+    A client therefore branches on the **status code**, never on the shape of
+    the body: 200 means the body is the file, anything else means the body is
+    an error envelope. In particular it must not branch on whether the body is
+    empty, because a zero-byte file is a legitimate 200 with an empty body.
+
+    The transport body limit is `16M` rather than the platform's `2M`, since
+    the file arrives as the raw request body. That is not a file size limit:
+    Phorge's chunked storage engine splits anything over 8 MB into 4 MB chunks
+    before it reaches this service, so 16M is roughly twice the largest single
+    request that can legitimately arrive.
+
+    The schemas under `components.schemas` mirror
+    `go/internal/contracts/filestorage.go`, which is the single source of truth
+    shared by the Go service, the PHP adapter and the contract fixtures under
+    `tests/contract/file-storage/`. The handle formats and engine identifiers
+    are a separate, stricter contract, documented in
+    `compat/phorge/README.md` section 7 — breaking one of those makes existing
+    files unreadable without producing an error anywhere.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8100
+    description: Local development
+
+tags:
+  - name: file
+    description: File bytes and the backends that hold them
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/file/blob:
+
+    post:
+      tags: [file]
+      summary: Store the bytes of one file
+      description: |
+        Takes the file as the **raw request body** — not base64 inside a JSON
+        document. That is what makes this domain's contract different from
+        every other one in the repository: base64 costs a third more bytes and
+        forces both sides to hold the whole file in memory to encode and decode
+        it.
+
+        A `Content-Length` is required, and a request without one is refused
+        with 400 rather than silently buffered. Two reasons, both hard: S3
+        needs the length to sign the request without buffering the body, and a
+        backend's size limit has to be applied before the first byte is read,
+        or it is only a slower way of failing. Every real caller sends one —
+        Phorge's `HTTPSFuture` and curl both set it for a body they hold in
+        memory or on disk.
+
+        **Without `engine`** the service picks a backend: it tries the
+        configured engines in ascending priority order, skipping any whose size
+        limit the file exceeds, and **moves on to the next one when a write
+        fails** rather than failing the request. The concrete case that matters
+        is a Phorge deployment whose `bin/storage upgrade` has not run yet —
+        `file_storageblob` does not exist, so every blob write fails and the
+        upload has to land on local disk instead.
+
+        The fall-through is bounded: the bytes only exist once, so an engine
+        that failed after consuming more than the rewind budget (the largest
+        size limit among the configured engines) cannot be followed by another,
+        and the request fails. A partially written local-disk or S3 object is
+        not retryable at any budget.
+
+        **With `engine`** the bytes go to that backend and nowhere else, with
+        no fall-through. Phorge names an engine when the file's engine is
+        already recorded against it, and quietly landing those bytes somewhere
+        else would leave that record pointing at nothing.
+
+        The response is the envelope, because what it reports is metadata.
+        `data.engine` is as load-bearing as `data.handle`: the service chooses
+        the engine when the caller does not, and Phorge stores the pair.
+      operationId: writeBlob
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - name: engine
+          in: query
+          required: false
+          description: |
+            Write to this backend only, bypassing the priority order and the
+            fall-through. An identifier no configured backend answers to is a
+            400, not a substitution.
+          schema:
+            $ref: '#/components/schemas/EngineIdentifier'
+        - name: name
+          in: query
+          required: false
+          description: |
+            The file's name, as Phorge knows it. Advisory: no backend stores it
+            and **it is never part of a handle**. A handle derived from a
+            caller-supplied name would be a path traversal waiting to happen.
+          schema:
+            type: string
+          example: note.txt
+        - name: mimeType
+          in: query
+          required: false
+          description: |
+            The MIME type Phorge detected. Advisory: only the S3 backend keeps
+            it, as the object's `Content-Type`. Nothing in this service reads it
+            back — a read always answers `application/octet-stream` — but it is
+            what makes an object served straight from the bucket, or inspected
+            in a console, arrive as something other than an unknown download.
+          schema:
+            type: string
+          example: text/plain
+      requestBody:
+        required: true
+        description: The file's bytes, verbatim.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: A backend stored the file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResponse'
+              example:
+                data:
+                  handle: ab/cd/0123456789abcdef0123456789ab
+                  engine: local-disk
+                  size: 11
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/NoEngine'
+
+    get:
+      tags: [file]
+      summary: Read the bytes of one file
+      description: |
+        **The one endpoint under `/api/**` whose success response is not the
+        `{data, error}` envelope.** A 200 carries the file's bytes as
+        `application/octet-stream` and nothing else. Every failure — including
+        a failure of this endpoint — carries the envelope.
+
+        So the client branches on the status code and only then looks at the
+        body. Branching on "is the body empty" is wrong: a zero-byte file is a
+        legitimate 200 with an empty body, and that is a file Phorge really
+        stores.
+
+        The response carries a `Content-Length` whenever the backend knows the
+        object's length, which is what lets the client tell a complete file from
+        a truncated one. When the backend cannot know the length without
+        reading the whole object, the header is omitted and the response is
+        chunked — guessing a length would be worse than not sending one.
+
+        Both query parameters are required. The engine is not inferred from the
+        handle: handle formats overlap between backends — a blob handle is a
+        bare integer — so guessing would sometimes read the *wrong file* rather
+        than fail, which is the only outcome worse than an error.
+
+        Every read failure is reported as 404, including a malformed handle and
+        a backend that is unreachable. The caller holds one `(engine, handle)`
+        pair per file and has nothing else to try, so the distinction is not
+        one it can act on; the detail goes to the service log.
+      operationId: readBlob
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - $ref: '#/components/parameters/EngineParam'
+        - $ref: '#/components/parameters/HandleParam'
+      responses:
+        '200':
+          description: |
+            The file's bytes. **Not JSON, and not the envelope.** The
+            `Content-Type` is always `application/octet-stream`, whatever the
+            file actually is: this service does not store MIME types, and Phorge
+            is what sets the Content-Type on the response it serves to a
+            browser.
+          headers:
+            Content-Length:
+              description: |
+                The object's length in bytes. Present whenever the backend knows
+                it, which is every backend for every object it holds intact;
+                absent when the backend reports an unknown length.
+              required: false
+              schema:
+                type: integer
+                format: int64
+              example: 11
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [file]
+      summary: Remove the bytes of one file
+      description: |
+        **Idempotent by contract.** Deleting an object that is not there
+        succeeds, in every backend, and answers the same
+        `{"data": {"status": "deleted"}}` as a delete that removed something.
+
+        This is not leniency for its own sake. Phorge deletes the bytes and the
+        row that points at them in one sequence, so an error for bytes that are
+        already gone would leave it holding a row it can never retire — a file
+        that haunts the database forever, referring to nothing.
+
+        The consequence for a caller is that a 200 here means "the object is not
+        there any more", not "the object was there and is now gone". Nothing in
+        this API distinguishes the two, deliberately.
+
+        The two query parameters are required for the same reason as on read: a
+        request missing either, or naming an unknown engine, is a 400. So is a
+        *malformed* handle — one no backend could have minted — which is the
+        one asymmetry with read, where the same handle answers 404.
+
+        That asymmetry is deliberate and it follows from the idempotency above.
+        Read cannot act on the difference between "malformed" and "gone", so it
+        collapses both into 404. Delete reports "gone" as success, which leaves
+        a malformed handle as the only failure that is *not* a backend fault —
+        so a 500 there would tell an operator the service is broken when the
+        caller sent nonsense. A 500 from this endpoint therefore means one
+        thing only: the backend failed to delete an object that may still be
+        there, and Phorge must not retire the row pointing at it.
+      operationId: deleteBlob
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - $ref: '#/components/parameters/EngineParam'
+        - $ref: '#/components/parameters/HandleParam'
+      responses:
+        '200':
+          description: The object is not there any more
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResponse'
+              example:
+                data:
+                  status: deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/file/engines:
+    get:
+      tags: [file]
+      summary: List the configured backends
+      description: |
+        Reports the backends **in the order a write will try them** — lowest
+        priority number first — not in configuration order. That makes a
+        deployment's routing verifiable from outside instead of implied, and
+        Phorge's setup check reads it to tell "the service is up" from "the
+        service is up and can store something".
+
+        `sizeLimit` is `0` for a backend that has none, which is why `canWrite`
+        is a separate field: "unlimited" and "refuses writes" would otherwise be
+        the same value.
+
+        Credentials never appear. An entry carries only the four keys below.
+
+        An empty array is a legitimate answer: a service with no backend
+        configured starts, serves this endpoint and reports itself not ready.
+      operationId: listEngines
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The backend list, in write order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnginesResponse'
+              example:
+                data:
+                  - identifier: blob
+                    priority: 1
+                    canWrite: true
+                    sizeLimit: 1000000
+                  - identifier: local-disk
+                    priority: 5
+                    canWrite: true
+                    sizeLimit: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: |
+        Always succeeds while the process is serving. Never authenticated.
+
+        It reports nothing about the backends, deliberately. Use `/readyz` for
+        that: a container healthcheck pointed here would report healthy for a
+        service that has no backend configured and fails every upload.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once at least one backend is registered **and** every backend
+        holding a connection can reach it. In practice that second half means
+        the MySQL blob backend, which answers by pinging the database; local
+        disk and S3 have nothing to probe. The whole probe is bounded by a
+        5-second timeout.
+
+        This is the probe container orchestration should be pointed at. A
+        service with no backend configured is a legitimate state to boot into —
+        the configuration may still be being written — but it must not read as
+        healthy, or orchestration keeps an instance in rotation that fails every
+        file it is handed.
+
+        **It deliberately does not check whether Phorge's `file_storageblob`
+        table exists.** That table is created by `bin/storage upgrade`, which
+        runs inside the Phorge application container, and that container waits
+        for this service to be healthy before it starts. A readiness probe that
+        required the table would deadlock the stack on first boot: Phorge waits
+        for this service, this service waits for a table only Phorge can create.
+        Pinging the database is safe because the database server is a separate
+        container that depends on neither.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: No backend is configured, or a configured one is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+                reason: no storage engines configured
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form, and what the PHP client uses. When the server's
+        configured token is empty, all requests pass unauthenticated.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        Fallback for callers that cannot set headers. Checked only when
+        `X-Service-Token` is absent. It is most useful on the read endpoint, for
+        pulling one file out of storage with a curl one-liner.
+
+  parameters:
+
+    EngineParam:
+      name: engine
+      in: query
+      required: true
+      description: |
+        The backend that minted the handle. Required, not inferred: a handle is
+        meaningless without it, and handle formats overlap between backends, so
+        a guess could read the wrong file instead of failing.
+      schema:
+        $ref: '#/components/schemas/EngineIdentifier'
+
+    HandleParam:
+      name: handle
+      in: query
+      required: true
+      description: |
+        The opaque handle the write returned. It travels as a query parameter
+        rather than a path segment because **a handle contains slashes** — a
+        local disk handle is `ab/cd/{28 hex}` and an S3 key is
+        `phabricator/ab/cd/{16 hex}` — and a path segment would have to be
+        escaped by every client that ever calls this service.
+
+        The formats are part of the compatibility contract, not an
+        implementation detail; see `compat/phorge/README.md` section 7. The
+        local disk pattern is also validated on read and delete as a security
+        boundary, since `filepath.Join` would otherwise resolve `..` out of the
+        storage root.
+      schema:
+        type: string
+      example: ab/cd/0123456789abcdef0123456789ab
+
+  schemas:
+
+    EngineIdentifier:
+      type: string
+      description: |
+        The backend's identifier on the wire. **These strings are a
+        compatibility contract**: Phorge records one against every file written
+        here, and they match Phorge's own storage engine identifiers. Changing
+        one makes every existing file written by that backend unreadable,
+        without an error anywhere.
+      enum:
+        - blob
+        - local-disk
+        - amazon-s3
+      example: local-disk
+
+    WriteResult:
+      type: object
+      required: [handle, engine, size]
+      properties:
+        handle:
+          type: string
+          description: |
+            How to read the bytes back. Opaque above the backend that minted it:
+            a row id for `blob`, `ab/cd/{28 hex}` for `local-disk`, an object key
+            for `amazon-s3`.
+          example: ab/cd/0123456789abcdef0123456789ab
+        engine:
+          $ref: '#/components/schemas/EngineIdentifier'
+        size:
+          type: integer
+          format: int64
+          description: |
+            The length the caller declared, echoed back. `0` is a legitimate
+            value: Phorge stores empty files.
+          example: 11
+
+    DeleteResult:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: |
+            Always `deleted`, including when the object was already gone. The
+            delete is idempotent.
+          enum: [deleted]
+
+    EngineInfo:
+      type: object
+      required: [identifier, priority, canWrite, sizeLimit]
+      properties:
+        identifier:
+          $ref: '#/components/schemas/EngineIdentifier'
+        priority:
+          type: integer
+          description: |
+            The order a write tries the backends, **lowest first**: `blob` is 1,
+            `local-disk` is 5, `amazon-s3` is 100. Small files land in the
+            database, where Phorge's own backups already cover them; everything
+            else falls to local disk; object storage wins only when it is the
+            sole backend configured.
+          example: 5
+        canWrite:
+          type: boolean
+          description: |
+            Whether the backend accepts writes. Separate from `sizeLimit`
+            because a backend turned off by a zero size limit must not be
+            indistinguishable from one with no limit at all.
+        sizeLimit:
+          type: integer
+          format: int64
+          description: |
+            The largest file this backend will take, in bytes, or `0` for no
+            limit. A file over every configured backend's limit is a 503
+            `ERR_NO_ENGINE`, not a 413.
+          example: 0
+
+    WriteResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/WriteResult'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    DeleteResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/DeleteResult'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    EnginesResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/EngineInfo'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        data:
+          nullable: true
+          description: Always null on error.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code; clients branch on this, not on the message.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            # Only reachable on the health paths; see the 404 response, which
+            # explains why a wrong method under /api/file/** answers 404.
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_TOO_LARGE
+            - ERR_INTERNAL
+            # The file storage domain's only code.
+            - ERR_NO_ENGINE
+        message:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        reason:
+          type: string
+          description: Present only when `status` is not `ok`.
+      description: |
+        Bare probe payload, deliberately outside the `{data, error}` envelope.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    BadRequest:
+      description: |
+        The request is at fault and no backend was asked to do anything. Three
+        ways to get here:
+
+        - a write with no `Content-Length`, which cannot be signed for S3 nor
+          size-checked before it is read;
+        - a read or delete missing `engine` or `handle`, both of which are
+          required;
+        - an `engine` no configured backend answers to. This is 400 rather than
+          404 because the request is at fault, not the path — a 404 here would
+          look to a client like a base URL joined wrongly, which is the
+          diagnosis `ERR_NOT_FOUND` is reserved for.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_BAD_REQUEST
+              message: both the engine and handle query parameters are required
+
+    Unauthorized:
+      description: |
+        Missing or invalid service token.
+
+        The answer is the envelope even on the read endpoint, whose successful
+        response is raw bytes: a caller that ignored the status code must not be
+        able to mistake an error document for a file.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: |
+        Either the object is not there, or no route matched — the same code
+        covers both, and the status is the only thing a client needs.
+
+        **On `GET /api/file/blob`, every read failure is this**: a handle that
+        was never minted, a handle that is malformed, or a backend that is
+        unreachable. The caller has one `(engine, handle)` pair per file and
+        nothing else to try, so the distinction is not actionable; the detail is
+        in the service log.
+
+        As a routing answer it is what a caller that appends a trailing slash or
+        joins the base URL wrongly receives. Two quirks are worth knowing,
+        because both look like the wrong status at first glance:
+
+        - Under `/api/file/**` the token is checked before the path is resolved,
+          so an unauthenticated request to a non-existent path answers 401, not
+          404.
+        - Also under `/api/file/**`, a documented path called with an
+          unregistered method answers 404 rather than 405, because the group
+          matches every method in order to authenticate them.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: 'open file: no such file or directory'
+
+    TooLarge:
+      description: |
+        A size refusal. Two independent sources, and a client does not need to
+        tell them apart:
+
+        - **The named engine's own limit.** A write to `?engine=blob` of a file
+          over `GORGE_FILE_MYSQL_BLOB_MAX_SIZE` is refused here rather than left
+          to the backend, so that "too large for this backend" answers 413 like
+          every other size refusal in the repository instead of a 500 the caller
+          cannot act on. Note that this only applies to a *named* engine: an
+          unnamed write over every backend's limit is a 503 `ERR_NO_ENGINE`,
+          because nothing was attempted.
+        - **The transport limit**, `16M` for this service rather than the
+          platform's `2M`, because the file is the raw request body. Raising it
+          does not enable larger files: Phorge chunks anything over 8 MB before
+          it gets here, so the limit is a guard against a caller that ignores
+          the chunking.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_TOO_LARGE
+              message: file of 5000000 bytes exceeds the limit of engine blob (1000000 bytes)
+
+    NoEngine:
+      description: |
+        **The file storage domain's only error code.** No configured backend
+        will take this file, so **nothing was attempted** — which is a different
+        statement from "the write was attempted and failed", and the reason this
+        is 503 rather than 500.
+
+        Two ways to reach it, and the message distinguishes them by carrying the
+        size:
+
+        - no backend is configured at all, which is also what `/readyz` reports;
+        - a backend is configured but the file is larger than every backend's
+          size limit. The deployment stores files, just not this one.
+
+        Both are configuration problems an operator fixes, and both are
+        actionable by a Phorge setup check — which is precisely why this code
+        was not collapsed into the platform's. A backend that was tried and
+        broke is a 500 instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NO_ENGINE
+              message: no writable storage engine is available for a file of 5000000 bytes
+
+    InternalError:
+      description: |
+        The request failed for a reason the client cannot act on: every eligible
+        backend was tried and failed, a delete failed, a recovered panic.
+
+        `ERR_INTERNAL` always carries the same generic `message`. Panic values,
+        stack traces and the per-engine errors behind a failed write are written
+        to the service log instead, so a 5xx body never describes the service's
+        internals. **A 500 from a write means a backend broke; a 503 means none
+        was tried.**
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: internal server error

@@ -1,0 +1,17 @@
+{
+  "name": "a read without an engine is 400",
+  "description": "The engine is required, not inferred. Handle formats overlap between backends — a blob handle is a bare integer and nothing stops it looking like something else's — so guessing would sometimes read the wrong file rather than fail, which is the one outcome worse than an error.",
+  "request": {
+    "method": "GET",
+    "path": "/api/file/blob?handle=ab/cd/0123456789abcdef0123456789ab",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

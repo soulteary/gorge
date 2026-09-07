@@ -134,6 +134,71 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- gorge-file-storage: the bytes of Phorge's files ---
+  #
+  # Also a process of its own, and the only service here that can be given a
+  # database. It is not given one in this stack: this compose file is the Go
+  # service layer, with no Phorge and no MySQL, so the blob backend has nothing
+  # to point at and stays off. Local disk is what makes the service usable on
+  # its own, and a deployment alongside Phorge adds the MySQL settings — see
+  # .env.example.
+  #
+  # The healthcheck probes /readyz for the same reason the mailer's does, plus
+  # one of its own: with a database configured, /readyz is what reports the
+  # database being unreachable. It deliberately does *not* report whether
+  # Phorge's `file_storageblob` table exists — see docs/modules/file-storage.md
+  # section 3.5 for why that check would deadlock a full stack.
+  gorge-file-storage:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-file-storage
+        PORT: 8100
+    image: ghcr.io/soulteary/gorge-file-storage:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8100"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # The in-container path, not a host path: it is where the volume below
+      # is mounted. The image creates it owned by the unprivileged user, which
+      # is what lets a fresh named volume be writable at all.
+      GORGE_FILE_LOCAL_DISK_PATH: ${GORGE_FILE_LOCAL_DISK_PATH:-/var/lib/gorge/files}
+      # Blank host = the blob backend is not registered. Point it at Phorge's
+      # database to turn it on, and read the double-write warning in
+      # compat/phorge/README.md section 7 first.
+      GORGE_FILE_MYSQL_HOST: ${GORGE_FILE_MYSQL_HOST:-}
+      GORGE_FILE_MYSQL_PORT: ${GORGE_FILE_MYSQL_PORT:-3306}
+      GORGE_FILE_MYSQL_USER: ${GORGE_FILE_MYSQL_USER:-phorge}
+      GORGE_FILE_MYSQL_PASS: ${GORGE_FILE_MYSQL_PASS:-}
+      GORGE_FILE_NAMESPACE: ${GORGE_FILE_NAMESPACE:-phorge}
+      GORGE_FILE_MYSQL_BLOB_MAX_SIZE: ${GORGE_FILE_MYSQL_BLOB_MAX_SIZE:-1000000}
+      # All five S3 settings are required together, or the backend stays off.
+      GORGE_FILE_S3_BUCKET: ${GORGE_FILE_S3_BUCKET:-}
+      GORGE_FILE_S3_ACCESS_KEY: ${GORGE_FILE_S3_ACCESS_KEY:-}
+      GORGE_FILE_S3_SECRET_KEY: ${GORGE_FILE_S3_SECRET_KEY:-}
+      GORGE_FILE_S3_REGION: ${GORGE_FILE_S3_REGION:-}
+      GORGE_FILE_S3_ENDPOINT: ${GORGE_FILE_S3_ENDPOINT:-}
+      GORGE_FILE_INSTANCE_NAME: ${GORGE_FILE_INSTANCE_NAME:-}
+    volumes:
+      # Named rather than a bind mount, because the files have to outlive the
+      # container and nothing on the host needs to read them.
+      - gorge_files:/var/lib/gorge/files
+    ports:
+      - "${GORGE_FILE_STORAGE_PORT:-8100}:8100"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8100/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
 networks:
   gorge:
     driver: bridge
+
+volumes:
+  # The local disk backend's storage. Losing it loses every file written
+  # through that backend: the handles stay in Phorge's database and resolve to
+  # nothing, so the files are gone while the site still lists them.
+  gorge_files:

@@ -1,0 +1,17 @@
+{
+  "name": "a read that fails still answers the envelope",
+  "description": "The other half of the mixed contract, and the pair to read-blob.json: success is bytes, failure is JSON. Both halves have to hold or the PHP client cannot branch on the status code — it would have to guess whether a body is a file or an error document. Every read failure is reported as 404, including a malformed handle and an unreachable backend, because the caller holds one engine/handle pair per file and has nothing else to try; the detail is in the service log.",
+  "request": {
+    "method": "GET",
+    "path": "/api/file/blob?engine=local-disk&handle=ef/01/0123456789abcdef0123456789ab",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 404,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_NOT_FOUND" },
+    "jsonAbsent": ["data"]
+  }
+}

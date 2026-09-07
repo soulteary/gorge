@@ -97,6 +97,16 @@ func TestAssertsStructure(t *testing.T) {
 		t.Error("status and bodyContains alone must not require a JSON body")
 	}
 
+	// The file storage domain answers a successful read as raw
+	// application/octet-stream, and its fixture asserts the Content-Type plus
+	// the bytes. Decoding that body would fail on any file that is not
+	// coincidentally JSON, so headerEquals has to stay outside this predicate
+	// the way bodyContains is.
+	fx.Expect.HeaderEquals = map[string]string{"Content-Type": "application/octet-stream"}
+	if fx.assertsStructure() {
+		t.Error("a headerEquals assertion must not require a JSON body")
+	}
+
 	fx.Expect.JSONEquals = map[string]any{"fingerprint": "x"}
 	if !fx.assertsStructure() {
 		t.Error("a jsonEquals assertion requires a JSON body")
