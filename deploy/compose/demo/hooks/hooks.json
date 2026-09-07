@@ -1,0 +1,12 @@
+[
+  {
+    "id": "gorge-demo",
+    "execute-command": "/bin/sh",
+    "pass-arguments-to-command": [
+      { "source": "string", "name": "-c" },
+      { "source": "string", "name": "echo \"[webhook-receiver] gorge-webhook 投递成功，收到一条 Herald webhook payload\"" }
+    ],
+    "include-command-output-in-response": true,
+    "response-message": "ok"
+  }
+]

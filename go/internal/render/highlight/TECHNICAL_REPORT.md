@@ -260,7 +260,7 @@ Chroma 本身就是 Pygments 的 Go 移植，使用 `pygments` style 时会生�
 
 采用多阶段构建：
 
-- **构建阶段**：基于 `golang:1.26-alpine3.22`，使用 `CGO_ENABLED=0` 静态编译，`-ldflags="-s -w"` 去除调试信息和符号表以缩小二进制体积。
+- **构建阶段**：基于 `golang:1.27-alpine3.22`，使用 `CGO_ENABLED=0` 静态编译，`-ldflags="-s -w"` 去除调试信息和符号表以缩小二进制体积。
 - **运行阶段**：基于 `alpine:3.20`，仅包含编译后的二进制和 CA 证书。
 
 内置 Docker `HEALTHCHECK`，每 10 秒检查一次 `/healthz` 端点。

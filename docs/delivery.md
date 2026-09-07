@@ -18,7 +18,7 @@ docker build -t gorge-conduit --build-arg SERVICE=gorge-conduit go/   # 将来�
 
 多阶段构建：
 
-- **构建阶段** `golang:1.26-alpine3.22`。先 `COPY go.mod go.sum` 再 `go mod download`，然后才 `COPY .`，让依赖层在源码变动时仍能命中缓存。编译参数 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`：静态链接、抹掉构建路径、去符号表。
+- **构建阶段** `golang:1.27-alpine3.22`。先 `COPY go.mod go.sum` 再 `go mod download`，然后才 `COPY .`，让依赖层在源码变动时仍能命中缓存。编译参数 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`：静态链接、抹掉构建路径、去符号表。
 - **运行阶段** `alpine:3.22`。只带二进制与 CA 证书，以 uid 10001 的非 root 用户 `gorge` 运行。healthcheck 用的 wget 由 busybox 自带，不额外装包。
 
 两处针对 Docker 语义的处理，都在注释里写了原因：

@@ -1,0 +1,268 @@
+# Gorge 轻量测试 demo —— 把「刻意留给使用者自建」的后端一起拉起来
+# ==================================================================
+#
+#   cd deploy/compose/demo && cp .env.demo .env && docker compose up -d --build
+#
+# 这份文件与仓库根 deploy/compose/docker-compose.yml 是**两回事**，它不是生产
+# 编排：为了「跑起来就能验」，它把生产编排刻意不声明的搜索/邮件/webhook 后端
+# 全部塞了进来（Meilisearch、Elasticsearch、OwlMail、soulteary/webhook 接收端、
+# 一个预置了 herald schema 的 MySQL），并只起真正依赖它们的三个 gorge 服务：
+#
+#   gorge-search   —— 同时挂 Meilisearch 与 Elasticsearch 两个后端（fan-out）
+#   gorge-mailer   —— 投递到 OwlMail 的 SMTP，邮件在 OwlMail Web UI 里可见
+#   gorge-webhook  —— 从 seed 进 MySQL 的 herald 队列里读一条请求，POST 到
+#                     soulteary/webhook 接收端
+#
+# 数据都在容器/命名卷里，`docker compose down -v` 会一并清掉 —— 这正是它能
+# 出现在这里、而生产编排里不能的原因（生产编排的注释解释了为什么搜索集群等
+# 存储不该埋进服务层的 compose）。
+#
+# build.context 指向 ../../../go，与生产编排同一份 Dockerfile / 同一个 module，
+# 通过 SERVICE build arg 选二进制；本机没构建过时也可直接拉 ghcr 上的镜像。
+
+name: gorge-demo
+
+x-gorge-build: &gorge-build
+  context: ../../../go
+  dockerfile: Dockerfile
+
+services:
+  # ---------------------------------------------------------------------------
+  # 后端一：Meilisearch —— gorge-search 的搜索后端之一
+  # ---------------------------------------------------------------------------
+  meili:
+    image: getmeili/meilisearch:v1.10
+    restart: unless-stopped
+    environment:
+      # demo 用主密钥；gorge-search 侧的 apiKey 必须与它一致。
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-demo-master-key}
+      MEILI_ENV: development
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili_data:/meili_data
+    ports:
+      # 仅回环，方便宿主上直接 curl 排障；服务间用服务名 meili:7700 互访。
+      - "127.0.0.1:${MEILI_PUBLISH_PORT:-7700}:7700"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 10
+    networks: [gorge-demo]
+
+  # ---------------------------------------------------------------------------
+  # 后端二：Elasticsearch —— gorge-search 的另一个搜索后端
+  # ---------------------------------------------------------------------------
+  es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.24
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      # demo 关掉安全，省掉证书与密码；ES_VERSION=7 走 gorge-search 的 >=5 分支。
+      xpack.security.enabled: "false"
+      # 单节点小内存，跑得动就行。
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "127.0.0.1:${ES_PUBLISH_PORT:-9200}:9200"
+    healthcheck:
+      # 等到 yellow/green 即认为可用（单节点副本分片会停在 yellow，属正常）。
+      test: ["CMD-SHELL", "curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=1s' >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 20
+    networks: [gorge-demo]
+
+  # ---------------------------------------------------------------------------
+  # 后端三：OwlMail —— 测试邮箱，作为 gorge-mailer 的 SMTP 接收端
+  #   SMTP 1025（应用投递到这里）/ Web UI + API 1080（人看、脚本断言）
+  # ---------------------------------------------------------------------------
+  owlmail:
+    image: ghcr.io/soulteary/owlmail:latest
+    restart: unless-stopped
+    environment:
+      # 绑定到 0.0.0.0，否则默认只听 localhost，同网络的 gorge-mailer 连不上。
+      MAILDEV_IP: 0.0.0.0
+      MAILDEV_WEB_IP: 0.0.0.0
+      MAILDEV_SMTP_PORT: "1025"
+      MAILDEV_WEB_PORT: "1080"
+    ports:
+      # Web UI 发布到宿主，浏览器打开 http://127.0.0.1:1080 看收到的邮件。
+      - "127.0.0.1:${OWLMAIL_WEB_PORT:-1080}:1080"
+      # SMTP 也发布，方便宿主上用 swaks 直接投递验证。
+      - "127.0.0.1:${OWLMAIL_SMTP_PORT:-1025}:1025"
+    networks: [gorge-demo]
+
+  # ---------------------------------------------------------------------------
+  # 后端四：soulteary/webhook —— webhook 接收端，gorge-webhook 的投递目标
+  #   收到 POST 后执行一条 hook（这里只打印 payload），/health 用作探针。
+  # ---------------------------------------------------------------------------
+  webhook-receiver:
+    image: ghcr.io/soulteary/webhook:latest
+    restart: unless-stopped
+    command: ["-verbose", "-hooks", "/etc/webhook/hooks.json", "-hotreload"]
+    volumes:
+      - ./hooks:/etc/webhook:ro
+    ports:
+      - "127.0.0.1:${WEBHOOK_RECEIVER_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9000/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 10
+    networks: [gorge-demo]
+
+  # ---------------------------------------------------------------------------
+  # 后端五：MySQL —— 只为 gorge-webhook 提供 {namespace}_herald 库
+  #   entrypoint 之外由 initdb 脚本建库、建 herald_webhook / herald_webhookrequest
+  #   两张表并塞入一条指向 webhook-receiver 的 hook + 一条 queued 请求。
+  #   这不是完整的 Phorge 库，只是让 gorge-webhook 的 /readyz 通过并能真正投递一次。
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-demo-root}
+      MYSQL_USER: ${MYSQL_USER:-phorge}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-phorge}
+      # 建库交给 seed 脚本（要按 {namespace}_herald 命名，用 MYSQL_DATABASE
+      # 建不出带前缀的库名），这里只创建普通账号。
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # *.sql 会在**首次**初始化（数据卷为空）时按文件名顺序执行。
+      # 改了 seed 想重来：docker compose down -v 再 up。
+      - ./seed:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${MYSQL_PUBLISH_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      start_period: 20s
+      retries: 20
+    networks: [gorge-demo]
+
+  # ===========================================================================
+  # gorge 服务层：只起依赖上面这些后端的三个
+  # ===========================================================================
+
+  # gorge-search 同时挂 Meilisearch 与 Elasticsearch 两个后端。
+  # 两个都带 read+write：写入会 fan-out 到两边，查询走列表里第一个能答的 read
+  # 后端、其余作为失败回落链。用一份 GORGE_SEARCH_BACKENDS JSON 表达。
+  gorge-search:
+    build:
+      <<: *gorge-build
+      args:
+        SERVICE: gorge-search
+        PORT: 8120
+    image: ghcr.io/soulteary/gorge-search:${GORGE_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      meili:
+        condition: service_healthy
+      es:
+        condition: service_healthy
+    environment:
+      GORGE_LISTEN_ADDR: ":8120"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # 一份 JSON 配两个后端。注意 meilisearch 用 apiKey、elasticsearch 用 version；
+      # 两者都用容器内的服务名寻址。索引名统一 phabricator（各后端默认值也是它）。
+      GORGE_SEARCH_BACKENDS: >-
+        [{"type":"meilisearch","hosts":["meili:7700"],"index":"phabricator","apiKey":"${MEILI_MASTER_KEY:-demo-master-key}","roles":["read","write"]},
+         {"type":"elasticsearch","hosts":["es:9200"],"index":"phabricator","version":7,"roles":["read","write"]}]
+    ports:
+      - "127.0.0.1:${GORGE_SEARCH_PUBLISH_PORT:-8120}:8120"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8120/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks: [gorge-demo]
+
+  # gorge-mailer 投递到 OwlMail 的 SMTP。用扁平的 MAILER_TYPE + SMTP_* 即可，
+  # OwlMail 不需要认证，protocol 留空（明文）。
+  gorge-mailer:
+    build:
+      <<: *gorge-build
+      args:
+        SERVICE: gorge-mailer
+        PORT: 8110
+    image: ghcr.io/soulteary/gorge-mailer:${GORGE_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - owlmail
+    environment:
+      GORGE_LISTEN_ADDR: ":8110"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      MAILER_TYPE: smtp
+      MAILER_KEY: owlmail
+      SMTP_HOST: owlmail
+      SMTP_PORT: "1025"
+    ports:
+      - "127.0.0.1:${GORGE_MAILER_PORT:-8110}:8110"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8110/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks: [gorge-demo]
+
+  # gorge-webhook 从 MySQL 的 phabricator_herald 队列读请求，POST 到 webhook-receiver。
+  # 它没有可回退的本地后端：/readyz 探的是能否连上 {namespace}_herald 库。
+  # namespace 必须与 seed 建的库名前缀一致（这里是 phabricator → phabricator_herald）。
+  gorge-webhook:
+    build:
+      <<: *gorge-build
+      args:
+        SERVICE: gorge-webhook
+        PORT: 8160
+    image: ghcr.io/soulteary/gorge-webhook:${GORGE_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      webhook-receiver:
+        condition: service_healthy
+    environment:
+      GORGE_LISTEN_ADDR: ":8160"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      GORGE_WEBHOOK_MYSQL_HOST: mysql
+      GORGE_WEBHOOK_MYSQL_PORT: "3306"
+      GORGE_WEBHOOK_MYSQL_USER: ${MYSQL_USER:-phorge}
+      GORGE_WEBHOOK_MYSQL_PASS: ${MYSQL_PASSWORD:-phorge}
+      # 库名前缀，必须与 seed/herald.sql 里建的 `phabricator_herald` 一致。
+      GORGE_WEBHOOK_NAMESPACE: ${GORGE_WEBHOOK_NAMESPACE:-phabricator}
+      # demo 里把轮询调快一点，几秒内就能看到那条 seed 请求被投递。
+      GORGE_WEBHOOK_POLL_INTERVAL_MS: "1000"
+    ports:
+      - "127.0.0.1:${GORGE_WEBHOOK_PORT:-8160}:8160"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8160/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+    networks: [gorge-demo]
+
+networks:
+  gorge-demo:
+    driver: bridge
+
+volumes:
+  meili_data:
+  es_data:
+  mysql_data:

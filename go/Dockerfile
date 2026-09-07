@@ -6,10 +6,15 @@
 #
 # A single Dockerfile serves every binary under ./cmd; SERVICE selects which.
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.27
+# The official golang image only publishes Alpine variants for the two most
+# recent Alpine releases, so the builder tracks its own Alpine version
+# (currently 3.24 — golang:1.27 has no -alpine3.22 tag). The final runtime image
+# below still pins ALPINE_VERSION independently.
+ARG BUILDER_ALPINE_VERSION=3.24
 ARG ALPINE_VERSION=3.22
 
-FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
+FROM golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION} AS builder
 
 ARG SERVICE=gorge-render
 
