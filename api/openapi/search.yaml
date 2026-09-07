@@ -1,0 +1,1007 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Search API
+  description: |
+    HTTP contract for the `gorge-search` binary, which serves the search
+    domain: Phorge's fulltext documents and queries in, PHIDs and index
+    lifecycle answers out, across whichever store a deployment configured —
+    Elasticsearch, Meilisearch, or the in-memory backend used for wiring
+    checks.
+
+    **This service owns no index.** It is a protocol translation layer in front
+    of a store it does not run, which is why the compose file declares no
+    Elasticsearch container and why readiness says nothing about the cluster's
+    health.
+
+    Two response shapes coexist deliberately:
+
+    - `/api/**` endpoints return the `{data, error}` envelope. Exactly one of
+      the two keys is populated. This holds for failures the service never
+      reached a handler for — an unknown path, a body over the transport limit,
+      a recovered panic — because `httpx` replaces the framework's default
+      error handler.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them.
+
+    `/readyz` carries more information here than in the render service, and in
+    the same way it does in the mailer: it reports whether any *readable*
+    backend is configured, which is the one failure mode that otherwise looks
+    completely healthy while every query fails.
+
+    The schemas under `components.schemas` mirror
+    `go/internal/contracts/search.go`, which is the single source of truth
+    shared by the Go service, the PHP engine and the contract fixtures under
+    `tests/contract/search/`. Every field name below is camelCase and every one
+    of them is a compatibility surface — with a single documented exception,
+    `storage_bytes`, described on `IndexStats`.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8120
+    description: Local development
+
+tags:
+  - name: documents
+    description: Writing and searching documents
+  - name: index
+    description: Index lifecycle and diagnostics
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/search/index:
+    post:
+      tags: [documents]
+      summary: Index one document
+      description: |
+        Writes the document to **every** backend holding the `write` role, and
+        reports a failure if any of them refused. Two write backends is how a
+        replacement index gets built beside a live one.
+
+        Having no write backend at all is an error rather than a no-op.
+        Answering "indexed" to a request that stored nothing is this domain's
+        most dangerous failure mode: a full reindex of a large install would
+        run to completion, report success for every document, and leave the
+        index empty.
+
+        The write is not synchronous with searchability. Elasticsearch's
+        refresh is near-real-time, so a query issued immediately afterwards may
+        not see the document yet.
+      operationId: indexDocument
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Document'
+      responses:
+        '200':
+          description: Every write backend accepted the document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexAckResponse'
+              example:
+                data:
+                  phid: PHID-TASK-abc123
+                  status: indexed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/IndexFailed'
+
+  /api/search/query:
+    post:
+      tags: [documents]
+      summary: Search for documents
+      description: |
+        Goes to the first backend holding the `read` role that answers; the
+        rest are a failover chain.
+
+        **The answer is PHIDs, never document bodies.** Phorge loads the
+        objects itself through its own Query classes, and that is where its
+        visibility policies are applied. A search backend that returned content
+        would be handing out objects the viewer may not be allowed to see.
+
+        An empty body is a valid request, not an error: Phorge's search UI
+        opens on an unfiltered listing, which arrives here as a query with no
+        text and no filters.
+      operationId: searchQuery
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchQuery'
+      responses:
+        '200':
+          description: A backend answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResultsResponse'
+              example:
+                data:
+                  phids:
+                    - PHID-TASK-abc123
+                    - PHID-DREV-def456
+                  count: 2
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/SearchFailed'
+
+  /api/search/init:
+    post:
+      tags: [index]
+      summary: Create the index
+      description: |
+        **Destructive.** Drops the index and everything in it, then recreates
+        it from the configuration this service builds today. A full reindex has
+        to follow.
+
+        That is the backends' behaviour rather than a choice made here, and it
+        is why this endpoint is reachable only from `bin/search` and never from
+        anything Phorge does while serving a page.
+
+        `docTypes` is required. An Elasticsearch mapping is built per document
+        type, so an empty list creates an index that accepts no document type
+        the deployment actually indexes — a failure that would only surface
+        once per document, long after `bin/search` reported the index built.
+      operationId: initIndex
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocTypesRequest'
+      responses:
+        '200':
+          description: Every write backend created the index
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InitAckResponse'
+              example:
+                data:
+                  status: initialized
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/InitFailed'
+
+  /api/search/exists:
+    get:
+      tags: [index]
+      summary: Whether the index exists
+      description: |
+        Asks the first readable backend, and is read by `bin/search`: its init
+        workflow calls `indexExists()` to decide whether there is anything to
+        create.
+
+        Note that Phorge's `PhabricatorGorgeSearchSetupCheck` does **not** read
+        it. That check only probes `/healthz` for reachability and `/readyz`
+        for "at least one readable backend is configured", so a running service
+        with no index at all passes setup checks and reports every search as an
+        empty result. Finding out about that is `bin/search`'s job, not the
+        web UI's.
+
+        A store that cannot be reached answers 502, not `exists: false`. The
+        two mean different things and only one of them means "recreate the
+        index", which is the most destructive operation this domain offers.
+      operationId: indexExists
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The backend answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexPresenceResponse'
+              example:
+                data:
+                  exists: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/CheckFailed'
+
+  /api/search/sane:
+    post:
+      tags: [index]
+      summary: Whether the live index still matches this service's configuration
+      description: |
+        Compares the live mapping and settings against the ones this service
+        would create today, on the first readable backend only. A `false` from
+        any backend means the same thing — reindex — so asking the rest would
+        turn one clear answer into a partial one.
+
+        **`false` is a normal answer, not an error.** It is the designed signal
+        that a mapping changed and a reindex is due, which is exactly what a
+        deployment upgrading into the CJK subfield sees.
+
+        `docTypes` is required, and the reason is stronger than on `/init`: the
+        comparison is built from the types it is given, so an empty list builds
+        an empty expectation that *any* index satisfies — including one with no
+        mapping at all. The answer would be a confident `sane: true` to a
+        question nobody asked properly. The pre-monorepo service accepted an
+        empty list; this rejection is a deliberate tightening.
+      operationId: indexIsSane
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocTypesRequest'
+      responses:
+        '200':
+          description: The backend answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexSanityResponse'
+              example:
+                data:
+                  sane: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/CheckFailed'
+
+  /api/search/stats:
+    get:
+      tags: [index]
+      summary: Index statistics
+      description: |
+        Reports the first readable backend that can produce statistics. A
+        backend that fails is skipped rather than reported, because this feeds
+        a status panel, where a second opinion is more useful than an error.
+
+        When no backend can answer at all the result is a 502, not an empty
+        map: a status panel renders a missing document count as zero, and an
+        index reporting zero documents is what an administrator reacts to by
+        reindexing.
+      operationId: indexStats
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: A backend produced statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexStatsResponse'
+              example:
+                data:
+                  queries: 1843
+                  documents: 120411
+                  deleted: 92
+                  storage_bytes: 483920128
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/StatsFailed'
+
+  /api/search/backends:
+    get:
+      tags: [index]
+      summary: Describe the configured backends
+      description: |
+        One entry per configured backend, in the order they are tried.
+
+        **A diagnostics endpoint with no consumer in Phorge.** The PHP client
+        defines `getBackends()`, but nothing calls it. The cluster panel does
+        reach this service, but for `/stats`; its backend *columns* come from
+        `PhabricatorGorgeSearchHost::getStatusViewColumns()`, which reads the
+        local `cluster.search` configuration and makes no HTTP request.
+
+        So this is what answers "which backends does the running service
+        actually believe it has" — a different question from "what is in the
+        config file", and the only way to tell the two apart.
+
+        Credentials never appear here, and that is not decoration. The output
+        of a diagnostics endpoint is exactly what ends up pasted into a ticket,
+        a log or a support thread, so an `apiKey` leaking into it leaks
+        wherever those go.
+      operationId: listBackends
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The configured backends
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendListResponse'
+              example:
+                data:
+                  - type: elasticsearch
+                    hosts: ['es1:9200', 'es2:9200']
+                    index: phabricator
+                    version: 7
+                    roles: [read, write]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: |
+        Always succeeds while the process is serving. Never authenticated.
+
+        It reports nothing about the backends, deliberately. Use `/readyz` for
+        that; a container healthcheck pointed here would report healthy for a
+        service that answers every single query with a 502.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once at least one backend holds the `read` role. This is the
+        probe container orchestration should be pointed at.
+
+        It deliberately does **not** dial Elasticsearch or Meilisearch.
+        Readiness would then flip with every third-party hiccup, and the
+        per-host health table plus the failover chain already exist to absorb
+        exactly that. So a 200 here means "this service can attempt a search",
+        not "the next search will succeed" — and, more usefully, a 503 here
+        always means "misconfigured", never "the cluster is having a moment".
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: No backend is configured, or none holds the read role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+                reason: no search backends configured
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form, and what the PHP client uses. When the server's
+        configured token is empty, all requests pass unauthenticated.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        Fallback for callers that cannot set headers. Checked only when
+        `X-Service-Token` is absent.
+
+  schemas:
+
+    DocumentField:
+      type: object
+      required: [name, corpus]
+      properties:
+        name:
+          type: string
+          description: |
+            A `PhabricatorSearchDocumentFieldType` value, and therefore one of
+            the four-character names below rather than a readable label. It
+            reaches the index as a literal key, so a document written under one
+            spelling is unfindable by a query written under another — with no
+            error on either side.
+          enum: [titl, body, cmnt, full, core]
+          example: titl
+        corpus:
+          type: string
+          description: The indexable text.
+          example: Login redirect drops the query string
+        aux:
+          type: string
+          description: |
+            Auxiliary PHID carried alongside the corpus, such as the author of
+            an indexed comment.
+          example: PHID-USER-alice
+
+    DocumentRelation:
+      type: object
+      required: [name, relatedPHID]
+      properties:
+        name:
+          type: string
+          description: |
+            A `PhabricatorSearchRelationship` value, with the same
+            character-for-character constraint as `DocumentField.name`.
+          enum: [auth, book, revw, subs, comm, ownr, proj, repo, open, clos, unow]
+          example: auth
+        relatedPHID:
+          type: string
+          example: PHID-USER-alice
+        rtype:
+          type: string
+          description: PHID type of the related object.
+          example: USER
+        timestamp:
+          type: integer
+          format: int64
+          description: |
+            Epoch seconds. When non-zero it is indexed under `<name>_ts`, which
+            is how the `open` and `clos` relationships carry the moment a
+            document changed state.
+          example: 1700000000
+
+    Document:
+      type: object
+      required: [phid, type]
+      description: |
+        One indexable object, mirroring `PhabricatorSearchAbstractDocument`.
+      properties:
+        phid:
+          type: string
+          description: |
+            The document's identity in the index. Required, because there is no
+            default: a write without one would either overwrite a document
+            keyed on the empty string or create one nothing can find again.
+          example: PHID-TASK-abc123
+        type:
+          type: string
+          description: |
+            The PHID type, which doubles as the Elasticsearch mapping type.
+            Required for the same reason: a document without one has no mapping
+            to be written under. This is why an index has to be initialised for
+            the document types a deployment actually indexes.
+          example: TASK
+        title:
+          type: string
+          example: Login redirect drops the query string
+        dateCreated:
+          type: integer
+          format: int64
+          example: 1700000000
+        dateModified:
+          type: integer
+          format: int64
+          example: 1700000600
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentField'
+        relationships:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentRelation'
+
+    SearchQuery:
+      type: object
+      description: |
+        The parameters of a `PhabricatorSavedQuery`, flattened. Every property
+        is optional: an empty object is the unfiltered listing Phorge's search
+        UI opens on.
+      properties:
+        query:
+          type: string
+          description: |
+            Free text. Matched against the `titl`, `body` and `cmnt` corpora
+            across all of their analysed subfields, including the `cjk` one
+            that makes Chinese, Japanese and Korean text findable.
+          example: login redirect
+        types:
+          type: array
+          items:
+            type: string
+          description: Restricts to these PHID types.
+          example: [TASK, DREV]
+        authorPHIDs:
+          type: array
+          items:
+            type: string
+        ownerPHIDs:
+          type: array
+          items:
+            type: string
+        subscriberPHIDs:
+          type: array
+          items:
+            type: string
+        projectPHIDs:
+          type: array
+          items:
+            type: string
+        repositoryPHIDs:
+          type: array
+          items:
+            type: string
+        statuses:
+          type: array
+          items:
+            type: string
+        withAnyOwner:
+          type: boolean
+          description: |
+            "Owned by anyone", expressed as the presence of the `ownr`
+            relationship. Not redundant with `ownerPHIDs`, and it overrides
+            it — matching the PHP query builder. Dropping this field from the
+            wire silently turns the filter into "all".
+        withUnowned:
+          type: boolean
+          description: |
+            "Owned by nobody", expressed as the absence of the `ownr`
+            relationship. The third of the three owner states Phorge's query UI
+            offers, and the one most easily lost by assuming `ownerPHIDs`
+            covers them all.
+        exclude:
+          type: string
+          description: |
+            A PHID to drop from the results. Phorge passes the object being
+            viewed, so that "similar objects" does not list the object itself.
+          example: PHID-TASK-abc123
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    DocTypesRequest:
+      type: object
+      required: [docTypes]
+      properties:
+        docTypes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: |
+            The document types the index is built for. Rejected when empty on
+            both endpoints that take it; see their descriptions for why the
+            consequence differs.
+          example: [TASK, DREV, CMIT, PSTE, WIKI, USER, PROJ]
+
+    IndexAck:
+      type: object
+      required: [phid, status]
+      properties:
+        phid:
+          type: string
+          description: |
+            Echoed back so a caller pipelining writes can tell which document
+            was acknowledged.
+        status:
+          type: string
+          example: indexed
+
+    SearchResults:
+      type: object
+      required: [phids, count]
+      properties:
+        phids:
+          type: array
+          items:
+            type: string
+          description: |
+            The whole answer. See the endpoint description for why no document
+            content appears here.
+        count:
+          type: integer
+          description: |
+            `len(phids)` for this page, **not** a total hit count. A caller
+            paginating on it will not learn how many results exist.
+
+    InitAck:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: initialized
+
+    IndexPresence:
+      type: object
+      required: [exists]
+      properties:
+        exists:
+          type: boolean
+
+    IndexSanity:
+      type: object
+      required: [sane]
+      properties:
+        sane:
+          type: boolean
+
+    IndexStats:
+      type: object
+      additionalProperties: true
+      description: |
+        An open map rather than a fixed object, because the keys are the
+        backend's and the two backends do not agree: Elasticsearch reports
+        `queries`, `documents`, `deleted` and `storage_bytes`, while
+        Meilisearch reports `documents` and `indexing`. Declaring the union
+        would mean quietly answering zero for whichever half is missing, and
+        zero documents is what an administrator reacts to by reindexing.
+
+        `storage_bytes` is **the one snake_case name on this service's wire**.
+        It predates the monorepo and Phorge's cluster panel reads it by that
+        spelling; renaming it to `storageBytes` leaves the storage column blank
+        without producing any error anywhere.
+      example:
+        documents: 120411
+        storage_bytes: 483920128
+
+    BackendInfo:
+      type: object
+      additionalProperties: true
+      description: |
+        An open map for the same reason as `IndexStats`, and for one more: the
+        two backends do not even agree on their host key. Elasticsearch reports
+        `hosts` as a list, because it fans out and keeps a per-host health
+        table; Meilisearch reports a single `host` string. Both always carry
+        `type`, `index` and `roles`.
+
+        `roles` is what the fan-out reads: a document is written to every
+        backend holding `write`, while a query goes to the first holding `read`
+        that answers.
+
+        Credentials never appear here.
+      example:
+        type: elasticsearch
+        hosts: ['es1:9200']
+        index: phabricator
+        version: 7
+        roles: [read, write]
+
+    IndexAckResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/IndexAck'
+
+    SearchResultsResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/SearchResults'
+
+    InitAckResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/InitAck'
+
+    IndexPresenceResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/IndexPresence'
+
+    IndexSanityResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/IndexSanity'
+
+    IndexStatsResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/IndexStats'
+
+    BackendListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendInfo'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code; clients branch on this, not on the message.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            # Only reachable on the health paths; see the 404 response, which
+            # explains why a wrong method under /api/search/** answers 404.
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_TOO_LARGE
+            - ERR_INTERNAL
+            # Search-domain codes, all five predating the monorepo and all 502.
+            - ERR_INDEX_FAILED
+            - ERR_SEARCH_FAILED
+            - ERR_INIT_FAILED
+            - ERR_CHECK_FAILED
+            - ERR_STATS_FAILED
+        message:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        reason:
+          type: string
+          description: Present only when `status` is not `ok`.
+      description: |
+        Bare probe payload, deliberately outside the `{data, error}` envelope.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    BadRequest:
+      description: |
+        The request never reached a store. Either the body is not valid JSON,
+        or a required field is missing: `phid` and `type` on a document,
+        `docTypes` on init and sanity.
+
+        This is 400 rather than one of the 502 codes on purpose: nothing
+        downstream has judged anything, so the failure is not the store's.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_BAD_REQUEST
+              message: phid is required
+
+    Unauthorized:
+      description: Missing or invalid service token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: |
+        No route matched. Paths are matched exactly, so this is what a caller
+        that appends a trailing slash or joins the base URL wrongly receives —
+        which makes it the most diagnostic code for a misconfigured
+        `cluster.search` entry.
+
+        Two quirks of the routing are worth knowing, because both look like the
+        wrong status at first glance:
+
+        - Under `/api/search/**` the token is checked before the path is
+          resolved, so an unauthenticated request to a non-existent path
+          answers 401, not 404.
+        - Also under `/api/search/**`, a documented path called with the wrong
+          method answers 404 rather than 405, because the group matches every
+          method in order to authenticate them.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: Not Found
+
+    TooLarge:
+      description: |
+        The request body exceeded the platform's 2M transport limit. This
+        service sets no domain-level size limit of its own: a document's size
+        is Phorge's business, and a corpus large enough to matter is a store
+        configuration question rather than a wire one.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_TOO_LARGE
+              message: Request Entity Too Large
+
+    IndexFailed:
+      description: |
+        A store refused the write, or no backend holds the `write` role at all.
+
+        The second case is deliberately an error rather than a silent success.
+        A reindex that reported "indexed" for every document while storing none
+        would run to completion and leave the index empty.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INDEX_FAILED
+              message: 'all elasticsearch hosts failed: dial tcp: connection refused'
+
+    SearchFailed:
+      description: |
+        Every readable backend failed, or none is configured.
+
+        **This code exists to prevent a worse answer.** A query against a dead
+        cluster must not be a 200 with an empty result list: that is
+        indistinguishable from "nothing matched", and Phorge's search page
+        would render its empty state for an outage — the one outcome nobody
+        investigates.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_SEARCH_FAILED
+              message: 'all fulltext search backends failed: dial tcp: connection refused'
+
+    InitFailed:
+      description: |
+        The index could not be created, or no backend holds the `write` role.
+
+        `bin/search init` has to stop here. Reporting success would send an
+        administrator on to a full reindex against an index that does not
+        exist, which then fails once per document for as long as the reindex
+        runs.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INIT_FAILED
+              message: 'elasticsearch: PUT /phabricator: 400 Bad Request'
+
+    CheckFailed:
+      description: |
+        The index could not be inspected — shared by `/exists` and `/sane`,
+        because both mean the same thing to the caller.
+
+        **"I could not ask" is not `exists: false` and not `sane: false`.**
+        Both of those readings tell an administrator to rebuild the index,
+        which is the most expensive and most destructive thing this domain can
+        be told to do, and neither should ever be triggered by a connection
+        error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_CHECK_FAILED
+              message: no healthy hosts for role "read"
+
+    StatsFailed:
+      description: |
+        No backend could produce statistics.
+
+        Reported rather than answered with an empty map, because a status panel
+        renders a missing document count as zero, and an index reporting zero
+        documents is what an administrator reacts to by reindexing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_STATS_FAILED
+              message: no search backend could report index statistics
+
+    InternalError:
+      description: |
+        The request failed for a reason the client cannot act on — a recovered
+        panic, an unexpected handler error.
+
+        `ERR_INTERNAL` always carries the same generic `message`. Panic values,
+        stack traces and internal error strings are written to the service log
+        instead, so a 5xx body never describes the service's internals. Note
+        that backend failures are **not** 500s: all five of them are 502,
+        because they mean a store misbehaved rather than that this service
+        broke, and a 500 would send whoever is debugging to the wrong logs.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: internal server error

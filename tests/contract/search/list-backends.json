@@ -1,0 +1,18 @@
+{
+  "name": "the configured backends are described without credentials",
+  "description": "data is a list, one entry per backend, and every entry carries type, index and roles. The host key is deliberately not pinned: Elasticsearch reports \"hosts\" as a list because it fans out and keeps a per-host health table, while Meilisearch reports a single \"host\" string, and forcing them into one shape would misdescribe whichever backend lost. What is pinned is the absence of apiKey. This is a diagnostics endpoint — Phorge defines getBackends() but never calls it, and the cluster panel renders local configuration instead — and the output of a diagnostics endpoint is what gets pasted into tickets, logs and support threads, so a credential must never appear in any response here.",
+  "request": {
+    "method": "GET",
+    "path": "/api/search/backends",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.type", "data.0.index", "data.0.roles"],
+    "jsonAbsent": ["error", "data.0.apiKey"],
+    "bodyNotContains": ["apiKey", "master_key", "password"]
+  }
+}

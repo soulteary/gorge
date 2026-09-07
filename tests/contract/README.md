@@ -14,10 +14,17 @@ Each subdirectory belongs to one domain:
 | `notification/admin/` | `gorge-notification`, admin port | `go/internal/notification/contract_admin_test.go` |
 | `notification/client/` | `gorge-notification`, client port | `go/internal/notification/contract_client_test.go` |
 | `mailer/` | `gorge-mailer` | `go/internal/mailer/contract_test.go` |
+| `search/` | `gorge-search` | `go/internal/search/contract_test.go` |
+| `search/unavailable/` | `gorge-search`, backend that fails | `go/internal/search/contract_test.go` |
 
 The notification domain gets two directories rather than one because its two
 ports are separate listeners with separate contracts; see
-[`notification/README.md`](notification/README.md).
+[`notification/README.md`](notification/README.md). The search domain gets two
+for a different reason: its engine picks a backend by role and never by
+anything in the request, so a store that answers and a store that refuses are
+two service configurations rather than two request bodies, and the five 502
+domain codes are only reachable from the second. See
+[`search/README.md`](search/README.md).
 
 Both Go runners are thin wrappers; the replay logic lives in
 `go/internal/contracttest/`. It is shared rather than duplicated so that the

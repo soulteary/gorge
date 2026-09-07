@@ -1,0 +1,13 @@
+{
+  "name": "service token may travel in the query string",
+  "description": "The header is the normal channel and what the PHP client uses, but callers that cannot set headers may pass ?token=. Both must be accepted.",
+  "request": {
+    "method": "GET",
+    "path": "/api/search/exists?token=contract-token"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.exists"],
+    "jsonAbsent": ["error"]
+  }
+}

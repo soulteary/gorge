@@ -1,0 +1,21 @@
+{
+  "name": "a Chinese document is indexed",
+  "description": "The same write with a Han corpus. It is a fixture of its own because CJK text is the one payload whose handling this service added on top of Phorge's: it must survive the wire as UTF-8 and reach the cjk subfield. Nothing here can prove the analyser chain is right — only Elasticsearch can, which is what tests/e2e/search.sh checks — but it does pin that a Han title is an ordinary document and not a 400.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/index",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"phid\":\"PHID-TASK-contract2\",\"type\":\"TASK\",\"title\":\"登录跳转丢失查询参数\",\"dateCreated\":1700000000,\"dateModified\":1700000000,\"fields\":[{\"name\":\"titl\",\"corpus\":\"登录跳转丢失查询参数\"},{\"name\":\"body\",\"corpus\":\"用户在预发环境复现了这个问题。\"}]}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": {
+      "data.phid": "PHID-TASK-contract2",
+      "data.status": "indexed"
+    },
+    "jsonAbsent": ["error"]
+  }
+}

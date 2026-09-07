@@ -1,0 +1,18 @@
+{
+  "name": "an empty query is a listing, not an error",
+  "description": "Phorge's search UI opens on an unfiltered listing, which arrives here as a query with no text and no filters. Rejecting it would blank that page, so the empty body is a legitimate request and the answer is the newest documents. This is the one request shape most likely to be mistaken for a bug and hardened away.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/query",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.phids", "data.count"],
+    "jsonAbsent": ["error"]
+  }
+}

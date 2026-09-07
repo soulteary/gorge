@@ -55,7 +55,7 @@ render 域替换的是一次 `fork` + Python 解释器初始化，省下的是�
 - 交付形态与仓库里其他服务对齐——同一份参数化 `go/Dockerfile`、同一个 `httpx` 引导、同一批探针路径（见 [`../delivery.md`](../delivery.md)）；
 - Aphlict 的 `bin/aphlict start` 那套 pidfile + 日志文件的进程管理不再需要，日志直接进 stdout 交给容器运行时收（这也是 Aphlict 配置里 `logs` 与 `pidfile` 两个键被丢掉的原因，见第 4.5 节）。
 
-代价是引入了一条兼容边界，而它的形状是三个域里最难受的：Aphlict 的线协议既被 PHP 侧调用、又被浏览器里的 `JX.Aphlict` 调用，两侧都不读本服务的错误信息。
+代价是引入了一条兼容边界，而它的形状是各域里最难受的：Aphlict 的线协议既被 PHP 侧调用、又被浏览器里的 `JX.Aphlict` 调用，两侧都不读本服务的错误信息。
 
 ### 1.2 负责与不负责
 
@@ -434,7 +434,7 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 
 **没变的是设计判断本身**：一个 hub 接住两个端口、fingerprint 网格防环、history 双上限、每连接一条 goroutine、`writeMu` 与 `mu` 分开、`CheckOrigin` 放行。这些在旧报告里的推理仍然成立，本文第 3 节是把它们对着当前代码重新讲了一遍。
 
-旧报告里另外几处不要照抄：它说指纹空间是 5.6×10²⁷（实际 55¹⁶ ≈ 7×10²⁷）、说 `version: 8` 与 Aphlict 一致（`phorge-fork` 里那份报 7，见第 3.6 节）、并且列举了一批当时同仓库的兄弟服务（`gorge-db-api`、`gorge-mailer` 之类），本仓库里目前只有 render、diff、notification 三个域两个二进制。
+旧报告里另外几处不要照抄：它说指纹空间是 5.6×10²⁷（实际 55¹⁶ ≈ 7×10²⁷）、说 `version: 8` 与 Aphlict 一致（`phorge-fork` 里那份报 7，见第 3.6 节）、并且列举了一批当时同仓库的兄弟服务（`gorge-db-api` 之类），本仓库当前实际有哪些域与二进制见 [`../README.md`](../README.md) 的模块表。
 
 ## 8. 排查时的三处反直觉
 

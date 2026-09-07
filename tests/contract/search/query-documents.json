@@ -1,0 +1,18 @@
+{
+  "name": "a query answers with PHIDs only",
+  "description": "The whole point of the response shape: phids and a count, never document bodies. Phorge loads the objects itself through its own query classes, which is what keeps its policy checks in the loop — a backend that returned content would be handing out objects the viewer may not be allowed to see. This fixture asserts the shape, not which documents came back, because every fixture in this directory runs against one shared index and none of them may depend on another having run first.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/query",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"query\":\"redirect\",\"types\":[\"TASK\"],\"authorPHIDs\":[\"PHID-USER-alice\"],\"projectPHIDs\":[\"PHID-PROJ-web\"],\"limit\":20,\"offset\":0}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.phids", "data.count"],
+    "jsonAbsent": ["error", "data.documents", "data.results"]
+  }
+}

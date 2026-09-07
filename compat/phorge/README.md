@@ -1,6 +1,6 @@
 # Phorge 兼容契约
 
-本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的六项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
+本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的七项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。
 
 | 约定 | 破坏后的表现 |
 |---|---|
@@ -10,8 +10,9 @@
 | 四、unified diff 输出格式 | 解析器接受错误的 hunk 头，然后**静默地把之后每一行都放错位置**（第 4.6 节写明了保证到哪里为止） |
 | 五、Aphlict 线兼容（通知） | 四条子约束，最坏的一条（5.4）**连错误状态码都不产生**：请求答 200、fingerprint 合法、`messages.in` 照常增长，只有消息内容被静默揉碎 |
 | 六、mailer 的错误码与字段名 | 唯一一项会**改变 PHP 侧行为**的约定：`ERR_PERMANENT_FAILURE` 决定 worker 要不要重投这封信，两个方向的误判分别是「无限重投」与「静默丢信」，都要几天后看邮件统计才发现 |
+| 七、search 的字段名与分析器链 | 五条子约束，全部是「写得进去、答 200、就是查不到」型。7.3 的 4 字符字段名与 7.5 的 `cjk` 子字段是其中最安静的两条：索引照常增长、每条路径照常 200，只有检索结果悄悄变空 |
 
-第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。第六项的性质又不一样：它**会**产生一个明确的失败状态，只是方向是反的，所以看日志找不出问题——每条记录看起来都合理。
+第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。第六项的性质又不一样：它**会**产生一个明确的失败状态，只是方向是反的，所以看日志找不出问题——每条记录看起来都合理。第七项则是把「静默」推到了另一个维度：破坏之后**写入侧一切正常**，索引在长大、统计在增加、集群面板全绿，错的只是「写进去的键」与「查出来的键」对不上，而没有任何一层会去比对这两者。
 
 改动其中任何一项，都必须同步改动 PHP 侧并在这里更新说明。
 
@@ -531,9 +532,164 @@ curl -s http://127.0.0.1:22281/status/
 
 ---
 
+## 七、search 的字段名与分析器链：五条约定
+
+**Go 侧**：`go/internal/search/http.go`（七条路由）、`go/internal/search/esquery/builder.go`（16 个四字符常量与 `cjk` 子字段名）、`go/internal/search/engine/backend.go`（默认索引名）、`go/internal/search/engine/elasticsearch/backend.go`（`buildIndexConfig()` 与 `buildSearchSpec()`）、`go/internal/contracts/search.go`
+**PHP 侧**：`PhabricatorGorgeFulltextStorageEngine`、`PhabricatorGorgeSearchClient`、`PhabricatorSearchDocumentFieldType`、`PhabricatorSearchRelationship`
+（参考实现见 `phorge-fork/src/applications/search/`）
+
+第六节是唯一一节会改变 PHP 侧**行为**的，本节回到另一个极端：**五条全部是「写得进去、答 200、就是查不到」型。**判据与第五节相同——不是「PHP 会不会报错」，而是「破坏之后还有谁能发现」。
+
+先说清本节五条共同的形状，因为它是这一整节的组织原则：**写入侧与查询侧是两条独立的路径，各自都能独立地完全正常。**一份文档按 `titl` 写进去、一个查询按 `title` 查出来，两侧都合法、都答 200，索引在长大、`/api/search/stats` 的文档数在上涨、集群面板全绿。Elasticsearch 对「查一个不存在的字段」不报错，它只是不匹配；而**没有任何一层会去比对「写进去的键」与「查出来的键」**。所以本节守的不是某个值「对不对」，是两条路径上的**同一个名字有没有分叉**。
+
+按发现难度从易到难：
+
+| 约束 | 破坏之后谁会发现 |
+|---|---|
+| 7.1 七条路径 | PHP 客户端拿到 `ERR_NOT_FOUND` 并抛异常，setup check 与 `bin/search` 当场报错 |
+| 7.4 默认索引名 `phabricator` | `indexExists()` 答 false，看起来像「索引还没建」——**而按这个读数去 `bin/search init` 会把它变回静默**：新索引建出来了、是空的、没有一处再报错 |
+| 7.2 wire 字段名 camelCase | 没人报错。改掉的那个字段静默变成零值，其余字段照常 |
+| 7.3 16 个四字符名 | **没有任何一处发现。**写入答 200、索引在长大、检索结果悄悄变空 |
+| 7.5 `cjk` 子字段 | 没有任何一处发现，而且**只有中文用户看得见**——英文检索的每一项指标都不动 |
+
+7.3 与 7.5 是本节最安静的两条，也是顶部那张总表点名的两条。它们比 5.4 更难发现的地方在于：5.4 至少让浏览器收到一条形状可疑的消息，而这两条的症状是「搜不到」——**而「搜不到」是搜索功能的一个正常输出**，没有用户会为它提工单。
+
+### 7.1 七条路径
+
+`PhabricatorGorgeFulltextStorageEngine` 按字面调这七条，路径按**域**命名而非按二进制命名（理由同第三节）：
+
+| 方法 | 路径 | PHP 侧调用点 |
+|---|---|---|
+| POST | `/api/search/index` | `reindexAbstractDocument()` |
+| POST | `/api/search/query` | `executeSearch()` |
+| POST | `/api/search/init` | `initIndex()` |
+| GET | `/api/search/exists` | `indexExists()` |
+| GET | `/api/search/stats` | `getIndexStats()` |
+| POST | `/api/search/sane` | `indexIsSane()` |
+| GET | `/api/search/backends` | `PhabricatorGorgeSearchClient::getBackends()`，**目前没有调用者** |
+
+`TestRoutePathsAreStable` 断言这七条仍注册着。
+
+最后一条要说明白，免得下一个人照着一句好听的注释去推断它的地位：`getBackends()` 定义了，但**PHP 侧没有任何地方调它**。集群面板那一页确实会打本服务，但打的是 `/stats`（`PhabricatorConfigClusterSearchController` → `getEngine()->getIndexStats()`）；后端**那几列**来自 `PhabricatorGorgeSearchHost::getStatusViewColumns()`，而那个方法只读本地的 `cluster.search` 配置，一个 HTTP 请求都不发。所以 `/api/search/backends` 是一条**诊断端点**：它回答的是「跑着的服务自己认为它有哪些后端」，与「配置文件里写了什么」是两个问题——而这是唯一能把两者分开的办法，也正是它值得留着的理由。
+
+这不改变它的契约地位（PHP 侧的方法签名在那儿，删掉路径它就断了），但确实改变了「凭据泄进它会怎样」的推理：后果不是「被打印在一个网页上」，而是「出现在任何一次诊断输出、日志与工单附件里」。后者已经足够，**不需要靠前者那个假前提来加强**——`tests/contract/search/list-backends.json` 的 `jsonAbsent: ["data.0.apiKey"]` 该留着，理由换成真的那个。
+
+（顺带划清一条边界，因为两者容易混：`/stats` 的 `storage_bytes` **确实**被面板渲染成「Storage Used」那一列，见 7.2。「面板读 `/stats`」是真的，「面板读 `/backends`」是假的。）
+
+方法与鉴权的两个细节与 render / mailer 一致，见文末附录：分组鉴权早于路由解析，所以不带 token 打不存在的路径答 401 而非 404；同样在这个分组下方法用错答 404 而非 405。
+
+### 7.2 wire 字段名一律 camelCase，`storage_bytes` 是唯一的例外
+
+字段名声明在 [`go/internal/contracts/search.go`](../../go/internal/contracts/search.go)，按契约层的规则**改一个字段名就是一次兼容性变更**。`PhabricatorGorgeFulltextStorageEngine` 把 `PhabricatorSearchAbstractDocument` 与 `PhabricatorSavedQuery` 直接摊成数组、按这些键拼，所以这些名字**就是线上契约本身**，不是本服务的命名风格：
+
+| 位置 | 字段 |
+|---|---|
+| 文档 | `phid` / `type` / `title` / `dateCreated` / `dateModified` / `fields` / `relationships` |
+| field | `name` / `corpus` / `aux` |
+| relationship | `name` / `relatedPHID` / `rtype` / `timestamp` |
+| 查询 | `query` / `types` / `authorPHIDs` / `ownerPHIDs` / `subscriberPHIDs` / `projectPHIDs` / `repositoryPHIDs` / `statuses` / `withAnyOwner` / `withUnowned` / `exclude` / `offset` / `limit` |
+| 应答 | `phids` / `count` / `exists` / `sane` / `status` / `docTypes` |
+
+改名的表现是那个字段**静默变成零值**，其余字段照常工作。这比整条请求失败更难查，因为症状是局部的：把 `relatedPHID` 改成 `phid`，文档照常入索引、只是所有关系都空了，于是「按作者筛」要等到下一次全量重建之后才开始返回空——而那时改动已经过去很久。两个布尔值尤其容易被当成冗余而丢掉：`withAnyOwner` 与 `withUnowned` 是 Phorge 的查询 UI 三个所有者状态里的后两个（「任何人拥有」与「没有人拥有」），它们在索引里表达为 `ownr` 关系的**存在与不存在**，而不是一个 PHID 列表。所以它们既不能从 `ownerPHIDs` 推出来，丢掉之后也不报错——**两者都静默退化成「不筛选」，也就是「全部」**，而「全部」是一个看起来完全合理的结果集。
+
+**`storage_bytes` 是本服务线上唯一一个 snake_case 名字，这是刻意保留的。**它早于 monorepo，PHP 侧按这个拼法读。改成 `storageBytes` 的表现是集群面板的存储列变空——而 `IndexStats` 是一张**开放 map**，多一个键少一个键都不是错误，所以这一次改名连一个类型错误都产生不了。**不要「顺手统一」它。**（`tests/e2e/search.sh` 第 16 条断言响应里不出现 `storageBytes`，这是唯一一处会当场拦下这次「统一」的地方。）
+
+### 7.3 16 个四字符名必须与 PHP 常量逐字符相等
+
+`titl` / `body` / `cmnt` / `full` / `core`，以及 `auth` / `book` / `revw` / `subs` / `comm` / `ownr` / `proj` / `repo` / `open` / `clos` / `unow`——5 个字段名加 11 个关系名，一共 16 个。**这些不是本服务选的缩写风格，是 `PhabricatorSearchDocumentFieldType` 与 `PhabricatorSearchRelationship` 的常量值**，而 `buildDocSpec()` 把它们当作顶层键原样写进索引，所以**它们就是索引里的键**。
+
+16 个全部集中在 `esquery/builder.go` 一处。`TestNamesMatchThePHPConstants` 把每一个都对着 PHP 常量名钉住，`TestTheListsCoverEveryConstant` 另外断言每个名字**恰好四个字符**且互不重复。
+
+改一个值而不改 PHP 常量，就是本节开头那个形状的最纯粹版本：写入侧按新拼法写、Phorge 的查询侧按常量拼法查，**两侧都答 200，交集是空集**。既有索引里的存量文档一并变得查不到，而没有任何一层会说出这件事。
+
+三条从这一条推出来的、同样属于契约的东西：
+
+- **最后三个关系名不是指向另一个对象的链接，是文档自己的状态标记。**`open` / `clos` 说它是开着还是关了，`unow` 说它没有所有者。所以「查开着的文档」在查询侧是一次 `exists` 检查而不是 term 匹配——这个区别本身就是契约，写成 term 匹配需要一个值，而这些键在索引里没有值可匹配。
+- **带时间戳的关系额外写一个 `<name>_ts` 键**，`open` 与 `clos` 靠它携带状态改变的时刻。这个键名是从关系名拼出来的，所以它随 7.3 一起漂移；而它比本节其余部分更安静一档，因为**本服务从不读回它**——查询侧一处都没用到它（无查询文本时排序用的是 `dateCreated`）。所以这一处漂移在今天不产生任何可观测的差别，只会在将来某个真的去读它的东西上浮出来。写着它是为了不必将来再考古一次；别因为「没人用」就把它删掉。
+- **`AllFields()` 与 `AllRelationships()` 这两个列表也是契约**，理由与名字本身不同：mapping 是从它们生成的，**漏一项就是那个字段永远没有 mapping**，写进去的文档按集群 dynamic mapping 猜出来的类型入索引。这同样不报错。
+
+### 7.4 默认索引名 `phabricator`
+
+`engine.DefaultIndexName`，与 Phorge 自带的 `PhabricatorElasticFulltextStorageEngine` 用的名字相同。这条的价值是**存量**：一个已经在跑 Elasticsearch 的 Phorge 装置改配 `type: gorge` 之后指向同一份数据，不需要搬索引。
+
+它是本节唯一一条破坏之后**会先给出一个信号**的：换掉默认值，`indexExists()` 在新名字上答 false。但这个信号的标准处置方式会把它变回静默——「索引不存在」的反应是 `bin/search init`，而那会**成功地**建出一个空索引，旧索引带着全部数据留在原地、没有一处再提到它。之后每一次检索都答 200 加空列表，直到有人跑完一次 `bin/search index --all --force`。
+
+所以这条要记的不是「别改索引名」——按部署需要改是合理的，`deploy/compose/.env.example` 里写了怎么改——而是**改名不是一次配置调整，是一次数据迁移**，它的收尾是一次全量重建。
+
+### 7.5 `cjk` 子字段：mapping 里要有它，查询侧要点它的名
+
+这是迁入时补上的能力，也是本节最安静的一条。它有**两半**，各自都能独立地静默失效。
+
+**上半：mapping。**`buildIndexConfig()` 给 `titl` / `body` / `cmnt` 三个语料字段各挂一个 `cjk` 子字段（与既有的 `raw` / `keywords` / `stems` 并列），分析器是 `cjk_text`：
+
+```go
+filterCJKBigram: map[string]any{"type": "cjk_bigram", "output_unigrams": true},
+
+analyzerCJKText: map[string]any{
+	"tokenizer": "standard",
+	"filter":    []string{"cjk_width", "lowercase", filterCJKBigram},
+},
+```
+
+`cjk_width` 与 `cjk_bigram` 都是 Elasticsearch **内置**的 filter，这条链不需要 `analysis-icu`、也不需要 `smartcn`。它存在的理由是另外三条链（`english_exact` / `letter_stop` / `english_stem`）全是英文链，而它们对 CJK 失效的方向恰好相反：`letter_stop` 背后的 `letter` tokenizer 把一整串汉字当成**一个不可分的 token**，所以「跳转」什么都匹配不上；另两条背后的 `standard` tokenizer 把它**碎成单字**，所以「跳转」匹配每一份含「跳」或「转」的文档。一个太严一个太松，**而两者都答 200**。`output_unigrams: true` 是这条链上唯一一个非默认选项，它保留单字，否则二元切分会让「猫」在一份明写着这个字的文档里一无所获。
+
+**下半：查询侧的点名。**`buildSearchSpec()` 为它**另起一条 should 子句**，而不是往既有那条 `english_exact` 子句上加字段：
+
+```go
+bq.AddShould(map[string]any{
+	"simple_query_string": map[string]any{
+		"query": q.Query,
+		"fields": []string{
+			esquery.FieldTitle + "." + esquery.SubfieldCJK + "^4",
+			esquery.FieldBody + "." + esquery.SubfieldCJK + "^3",
+			esquery.FieldComment + "." + esquery.SubfieldCJK + "^1.2",
+		},
+		"analyzer":         analyzerCJKText,
+		"default_operator": "and",
+	},
+})
+```
+
+另起一条的理由是**分析器是子句的属性，不是字段的属性**：用 `english_exact` 去打一个按二元组建索引的字段，中文被切成单字，评分基本等于随机。
+
+**这两半的失效方式不同，要分开记，因为它们的症状差一个量级：**
+
+- **摘掉 mapping 里的子字段**：中文检索退化成三条英文链凑巧能匹配到的东西。每条路径照常 200，索引照常增长，只有中文结果悄悄变空或变成噪声。
+- **保留子字段、把那条 should 子句删掉**：`titl.*` 那条 must 子句仍然通过通配符**覆盖到** `cjk` 子字段，所以中文还搜得到——**丢掉的是排序**。这是本节最容易被误判的一处：它看起来「还能用」，所以最可能被当成冗余删掉，而它的症状是中文语料上的相关度排序崩掉，没有任何一项指标会动。
+- **反过来那个方向一样安静**：一个在 mapping 里存在、而查询侧一处都没点到名的子字段是一次**彻底的空操作**——索引为它多占空间、多花索引时间，检索结果一个字节都不变。所以「加了子字段」与「加了子字段并且它真的在被查」是两件事，只有后者有效果，而两者在任何一处观测上都长得一样。
+
+**顺带一条会报错的：改分析器链强制全量重建索引。**`IndexIsSane()` 拿 `configDeepMatch(actual, b.buildIndexConfig(docTypes))` 比对线上 mapping 与本服务**今天**会建出的配置，所以只要 `buildIndexConfig()` 变了——加一个子字段、动一个 filter 的顺序都算——**所有既有索引立刻报 not sane**，必须 `bin/search init` 加 `bin/search index --all --force` 重建。
+
+**这一条与本节其余部分正好相反：它明确报 false，不是静默失效。**本文件一贯区分这两类，所以要写明白：它是可接受的迁移代价而不是缺陷，`indexIsSane()` 的存在正是为了让这类改动有一个可报告的信号。代价是大库上 `index --all --force` 属于小时级操作、期间检索结果不完整，所以它必须写进 `DOCKER.md` 与模块文档，登记在 [`../../docs/findings.md`](../../docs/findings.md) 第 18 条。
+
+（`bin/search ngrams` 在本引擎下**不适用**。它是 Ferret（MySQL）专属路径，`PhabricatorSearchNgrams` 与 `PhabricatorFerretEngine` 全在 MySQL 侧。旧 `phorge/DOCKER.md` 里那套「跑 ngrams 启用中文搜索」的说法在这个引擎下是误导，不要照抄。）
+
+### 改动本节任何一条之后怎么验证
+
+7.1 与 7.2 靠固件：`tests/contract/search/` 的 17 份加 `unavailable/` 的 6 份，路径、字段名与五个域级错误码都在其中。7.3 靠 `esquery/builder_test.go` 那两个测试，它们是这 16 个名字唯一的守卫——**别把那张对照表简化成一个字符串列表**，表里的 `phpConstant` 列是它的全部价值，它让「改了值」在失败信息里直接指向要同步改的那个 PHP 常量。
+
+7.5 的两半各有守卫，都在 `engine/elasticsearch/backend_test.go`：断言 mapping 里三个语料字段都带 `cjk` 子字段且分析器是 `cjk_text`（上半）、断言第二条 should 子句的 `analyzer` 与三个 `*.cjk` 字段都在（下半）。另有两条断言「删掉子字段的索引必须报 not sane」与「删掉分析器的索引必须报 not sane」——**这两条守的是 `configDeepMatch` 本身不被削弱**，因为削弱它是让一次强制重建「消失」的最省事的办法。
+
+对着跑起来的实例，最短路径是拿一份中文文档走一圈：
+
+```bash
+curl -s -X POST -H 'X-Service-Token: dev-token' \
+  -d '{"phid":"PHID-TASK-cjk","type":"TASK","title":"登录跳转丢失查询参数",
+       "fields":[{"name":"titl","corpus":"登录跳转丢失查询参数"}]}' \
+  http://127.0.0.1:8120/api/search/index
+
+# 两字查询必须命中（这是 cjk 子字段唯一的存在理由）
+curl -s -X POST -H 'X-Service-Token: dev-token' \
+  -d '{"query":"跳转"}' http://127.0.0.1:8120/api/search/query
+```
+
+`tests/e2e/search.sh` 第 11、12 两条场景跑的就是这一圈。**但它只在真的 Elasticsearch 上有意义**：内存 `test` 后端做的是大小写不敏感的子串扫描、根本不过分析器，所以它会把这两条**答对**而什么都没证明——脚本因此在识别出 `"type":"test"` 之后把它们 **skip 而不是 pass**，理由写在脚本第 11 条的注释里。**别把那个 skip 改成 pass**：本节最安静的一条会因此获得一个看起来像覆盖的守卫。
+
+---
+
 ## 附：鉴权与响应信封
 
-`PhabricatorGorgeRenderClient` 依赖以下两点，改动会直接打断 PHP 侧：
+三个 PHP 客户端（Render / Mailer / Search，共同的请求构建与信封解析已抽到 `PhabricatorGorgeServiceClient` 基类）依赖以下两点，改动会直接打断 PHP 侧：
 
 **鉴权**：请求头 `X-Service-Token` 优先，查询参数 `?token=` 兜底；服务端 token 配置为空时全部放行。PHP 客户端走的是请求头。
 
@@ -554,7 +710,7 @@ curl -s http://127.0.0.1:22281/status/
 | `ERR_TOO_LARGE` | 413 | 请求体超限 |
 | `ERR_INTERNAL` | 500 | panic 或其他非预期失败 |
 
-`ERR_NOT_FOUND` 对 PHP 侧最有诊断价值：`gorge.render.uri` 尾部多一个斜杠、或 base URL 拼接出双斜杠时，拿到的就是它。两个路由细节别误判（对 `/api/highlight/**` 与 `/api/diff/**` 两个分组都成立）：分组的鉴权早于路由解析，不带 token 打不存在的路径返回 401 而不是 404；同样在这两个分组下方法用错返回 404 而不是 405（分组为了鉴权匹配了所有方法），所以 `ERR_METHOD_NOT_ALLOWED` 实际只在健康探针路径上见得到。
+`ERR_NOT_FOUND` 对 PHP 侧最有诊断价值：`gorge.render.uri` 尾部多一个斜杠、或 base URL 拼接出双斜杠时，拿到的就是它；`cluster.search` 条目的 host/port 拼错时同理。两个路由细节别误判（对 `/api/highlight/**`、`/api/diff/**`、`/api/mailer/**`、`/api/search/**` 四个分组都成立）：分组的鉴权早于路由解析，不带 token 打不存在的路径返回 401 而不是 404；同样在这些分组下方法用错返回 404 而不是 405（分组为了鉴权匹配了所有方法），所以 `ERR_METHOD_NOT_ALLOWED` 实际只在健康探针路径上见得到。
 
 `ERR_TOO_LARGE` 有**三个**来源，同码是刻意的，PHP 客户端按码分支即可，不需要知道是哪一道：
 
@@ -570,9 +726,11 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 
 `ERR_INTERNAL` 的 `message` 恒为一句通用文案，panic 值与堆栈只进 `slog` 日志。**排查 500 要看服务日志，不要指望响应体。**
 
-域级错误码有三个，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，以及 mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
+域级错误码有八个，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)，以及 search 域的 `ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED`（均 502）。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
 
-mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另外 mailer 域的后端失败一律落在 422 或 502，**不落 500**——那里的 500 只意味着服务自己出了问题。
+mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另外 mailer 域的后端失败一律落在 422 或 502，**不落 500**——那里的 500 只意味着服务自己出了问题。search 域的五个同理：全部 502，500 在那个域只意味着服务自己坏了。
+
+**但 search 那五个目前在 PHP 侧没有消费者。**`PhabricatorGorgeSearchClient` 没有覆盖 `newServiceErrorException()`（`PhabricatorGorgeMailerClient` 覆盖了，因为 6.2 那两个码必须分道），所以十一个码全部塌成同一个通用异常，码本身只作为文本活在异常消息里。这是当前**刻意保留**的行为，登记在 [`../../docs/findings.md`](../../docs/findings.md) 第 21 条——记录事实，不是提议改 Go 侧。五个码分开的价值在 `bin/search` 与运维读日志时兑现，不在 PHP 的异常分支上。
 
 **diff 域刻意没有域级错误码。**两个引擎都没有可报告的失败模式：prose 引擎是全函数，unified 引擎唯一会拒绝的是过大的输入，而那已经是 `ERR_TOO_LARGE` 了。在那里造一个码，它永远不会被返回。新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。
 
@@ -580,6 +738,6 @@ mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另�
 
 **健康探针不套信封**：`GET /`、`GET /healthz`、`GET /readyz` 返回裸 `{"status":"ok"}`。这是给容器探针和负载均衡用的，不要「顺手统一」成信封格式。
 
-本附录讲的是 `/api/**`，即 render、diff 与 mailer 三个域——三者的鉴权与信封口径完全一致（`ERR_TOO_LARGE` 的来源除外：mailer 的传输层上限是 `10M` 而非 `2M`，且它没有域级字节检查，正文超限是静默截断而不是拒绝）。
+本附录讲的是 `/api/**`，即 render、diff、mailer 与 search 四个域——四者的鉴权与信封口径完全一致，只有 `ERR_TOO_LARGE` 的来源不同：mailer 的传输层上限是 `10M` 而非 `2M`（base64 让附件涨三分之一），且它没有域级字节检查，正文超限是静默截断而不是拒绝；search 用平台默认的 `2M`，也没有域级字节检查——一份文档多大是 Phorge 的事，而语料大到成问题时那是存储的配置问题，不是线上的。
 
 **notification 的两个端口不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。

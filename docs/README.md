@@ -26,6 +26,7 @@
 | diff | `gorge-render`（同进程） | `:8140` | [`modules/diff.md`](modules/diff.md) | 已迁入 |
 | notification | `gorge-notification` | `:22280`（client/WS）+ `:22281`（admin） | [`modules/notification.md`](modules/notification.md) | 已迁入 |
 | mailer | `gorge-mailer` | `:8110` | [`modules/mailer.md`](modules/mailer.md) | 已迁入 |
+| search | `gorge-search` | `:8120` | [`modules/search.md`](modules/search.md) | 已迁入 |
 
 render 与 diff 共用一个二进制与一个端口：都是无外部依赖的纯计算，拆进程换不来隔离收益。路径按域命名（`/api/highlight/*`、`/api/diff/*`）正是为了让这种合并不需要改动任何一侧。
 
@@ -33,7 +34,9 @@ notification 是第一个反例，两个方向上都是：它自己占一个二�
 
 mailer 同样自己占一个二进制，理由与 notification 不同：它是「有外部依赖」的第一个模块——持有适配器状态、要连出去打 SMTP 与各家 provider，于是它也是第一个 `/readyz` 真的比 `/healthz` 多说了点什么的模块（就绪 = 至少配了一个后端）。但它只占一个端口，也照常鉴权，所以没有给平台层带来任何新设施。
 
-**[`modules/notification.md`](modules/notification.md) 明显长于另外两份模块文档，这是刻意的**：本域迁入前带着一份独立的技术报告，那份报告写的是迁入前的包布局、现在每条路径都不存在了，所以它没有被搬进来，而是由模块文档同时充当本域的技术报告。它的前六节仍然是下面那个骨架，第 7 节之后（迁入前后的差异、排查、四层测试各守什么）是骨架之外的补充。**不要照着它把另外两份也扩写**——那两个域的技术报告问题登记在 [`findings.md`](findings.md) 第 6 条，解决方式是删掉过期报告并改指模块文档，不是加长。
+search 是「有外部依赖」的第二个模块，也因此走的是与 mailer 完全相同的路：一个二进制、一个端口、照常鉴权、`/readyz` 报「至少配了一个可读后端」、healthcheck 打 `/readyz` 而不是 `/healthz`。它没有给平台层带来新设施，这本身是个结论——**「有外部依赖」这一类现在有两个成员，两次都没需要新东西**，所以下一个这类域可以直接照 mailer 或 search 的骨架来。两处差异值得知道：它的外部依赖是**存储**而不是投递通道，所以 `deploy/compose/docker-compose.yml` 刻意不声明 Elasticsearch 容器（把存储埋进服务层的编排文件会让 `docker compose down -v` 变成一种丢索引的方式）；而它的就绪判据与 mailer 一样刻意**不拨测**下游，理由见 [`modules/mailer.md`](modules/mailer.md) 与 [`modules/search.md`](modules/search.md) 各自的第 2 节。
+
+**[`modules/notification.md`](modules/notification.md) 明显长于其余模块文档，这是刻意的**：本域迁入前带着一份独立的技术报告，那份报告写的是迁入前的包布局、现在每条路径都不存在了，所以它没有被搬进来，而是由模块文档同时充当本域的技术报告。它的前六节仍然是下面那个骨架，第 7 节之后（迁入前后的差异、排查、四层测试各守什么）是骨架之外的补充。**不要照着它把其余几份也扩写**——过期技术报告的问题登记在 [`findings.md`](findings.md) 第 6 条，解决方式是删掉过期报告并改指模块文档，不是加长。
 
 ## 阅读顺序
 
@@ -47,12 +50,25 @@ mailer 同样自己占一个二进制，理由与 notification 不同：它是�
 
 **准备改通知服务的端口、路由或响应形状**：先读 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 5 节。这个域的失败模式是三个里最难发现的——PHP 侧不读本服务的响应体、还把异常整个吞掉，而其中最坏的一条（5.4）破坏之后**连错误都不产生**：请求答 200、计数照常增长、集群面板双绿，只有消息内容被静默揉碎。
 
+**准备改搜索服务的字段名、四字符常量或分析器链**：先读 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第七节。那一节五条**全部**是「写得进去、答 200、就是查不到」型：写入侧与查询侧是两条独立的路径，各自都能独立地完全正常，而没有任何一层会去比对「写进去的键」与「查出来的键」。唯一的例外是分析器链——改它会让所有既有索引明确报 not sane 并强制一次全量重建，那一条**会**报错。
+
 ## 新增一个模块时
 
 1. 在 `modules/` 下加一份 `<域名>.md`，按下面的骨架写；
 2. 在本文件的模块表里加一行；
 3. 若该模块引入了新的跨模块设施（比如平台层新增一个包），补 [`platform.md`](platform.md)；
 4. 该模块自己的偏差与待办，在 [`findings.md`](findings.md) 里新开一节，不要混进别的模块。
+
+**另外，下面这几处跨模块文档带着会过期的计数，每次迁入都要重数一遍**——它们在前几次迁入里连着漏了几回，所以单列出来：
+
+| 位置 | 会过期的东西 |
+|---|---|
+| [`architecture.md`](architecture.md) 第 1 节 | 二进制数、域数、生产/测试代码行数、契约固件数、e2e 脚本数 |
+| [`architecture.md`](architecture.md) 第 2、3.1、3.2 节 | 仓库结构树、`forbiddenPrefixes` 列表、`internal/contracts` 的行数 |
+| [`testing.md`](testing.md) 第 4、5 节 | 各包覆盖率与固件数 |
+| [`../compat/phorge/README.md`](../compat/phorge/README.md) 附录 | 域级错误码总数、「本附录讲哪几个域」那句 |
+
+行数与固件数**用 `find` / `wc` 数，不要估**。根 [`../README.md`](../README.md) 与 [`delivery.md`](delivery.md) 曾经也在这张表里，现在已经改成不点名数量的写法，所以不必再随迁入维护。
 
 模块文档骨架：
 
