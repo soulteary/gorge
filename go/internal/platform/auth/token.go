@@ -6,7 +6,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 )
@@ -21,21 +21,19 @@ const QueryParamName = "token"
 // Token returns middleware that rejects requests not presenting the expected
 // shared secret. An empty token disables the check entirely, which is what
 // makes local development and the compose defaults work without ceremony.
-func Token(expected string) echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			if expected == "" {
-				return next(c)
-			}
-			presented := c.Request().Header.Get(HeaderName)
-			if presented == "" {
-				presented = c.QueryParam(QueryParamName)
-			}
-			if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) != 1 {
-				return httpx.Fail(c, http.StatusUnauthorized,
-					httpx.CodeUnauthorized, "missing or invalid service token")
-			}
-			return next(c)
+func Token(expected string) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if expected == "" {
+			return c.Next()
 		}
+		presented := c.Get(HeaderName)
+		if presented == "" {
+			presented = c.Query(QueryParamName)
+		}
+		if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) != 1 {
+			return httpx.Fail(c, http.StatusUnauthorized,
+				httpx.CodeUnauthorized, "missing or invalid service token")
+		}
+		return c.Next()
 	}
 }

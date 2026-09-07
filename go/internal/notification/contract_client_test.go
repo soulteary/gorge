@@ -21,10 +21,10 @@ func TestClientContractFixtures(t *testing.T) {
 	// Echo instances, so the client fixtures need their own server rather
 	// than sharing the admin runner's.
 	srv := httpx.New(httpx.Config{ListenAddr: ":0", SkipRootProbe: true})
-	RegisterClientRoutes(srv.Echo(), &ClientDeps{Hub: hub.New()})
+	RegisterClientRoutes(srv.App(), &ClientDeps{Hub: hub.New()})
 
 	// The successful handshake is absent on purpose: httptest.ResponseRecorder
 	// does not implement http.Hijacker, so an upgrade cannot complete in
 	// memory and the 101 is covered by tests/e2e/notification.sh instead.
-	contracttest.Run(t, srv.Echo(), clientFixtureDir)
+	contracttest.Run(t, srv.App(), clientFixtureDir)
 }

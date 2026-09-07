@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/notification/hub"
 	"github.com/soulteary/gorge/go/internal/notification/peer"
@@ -26,28 +26,47 @@ func silenceLogs(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 }
 
+// result carries one app.Test response, the app.Test stand-in for
+// httptest.ResponseRecorder.
+type result struct {
+	Code int
+	Body string
+}
+
 // newAdminServer builds the admin port the way cmd/gorge-notification does, so
 // the middleware stack and the global error handler in play are the real ones.
 // That matters more here than in the other domains: the point of these tests is
 // which responses escape the envelope the error handler would otherwise impose.
-func newAdminServer(t *testing.T) (*echo.Echo, *hub.Hub, *peer.List) {
+func newAdminServer(t *testing.T) (*fiber.App, *hub.Hub, *peer.List) {
 	t.Helper()
 	silenceLogs(t)
 
 	messages := hub.New()
 	peers := peer.NewList()
 
-	e := httpx.New(httpx.Config{}).Echo()
-	RegisterAdminRoutes(e, &AdminDeps{Hub: messages, Peers: peers})
-	return e, messages, peers
+	app := httpx.New(httpx.Config{}).App()
+	RegisterAdminRoutes(app, &AdminDeps{Hub: messages, Peers: peers})
+	return app, messages, peers
 }
 
-func postTo(e *echo.Echo, target, body string) *httptest.ResponseRecorder {
+func dispatch(t *testing.T, app *fiber.App, req *http.Request) result {
+	t.Helper()
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	_ = resp.Body.Close()
+	return result{Code: resp.StatusCode, Body: string(body)}
+}
+
+func postTo(t *testing.T, app *fiber.App, target, body string) result {
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return dispatch(t, app, req)
 }
 
 // postAsPhorge posts the way Phorge really does: a raw JSON body labelled with
@@ -55,12 +74,10 @@ func postTo(e *echo.Echo, target, body string) *httptest.ResponseRecorder {
 // place. Tests that mean to exercise the Content-Type constraint have to use
 // this rather than postTo, whose application/json a binder would handle
 // correctly.
-func postAsPhorge(e *echo.Echo, target, body string) *httptest.ResponseRecorder {
+func postAsPhorge(t *testing.T, app *fiber.App, target, body string) result {
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return dispatch(t, app, req)
 }
 
 // illegalEscapeText is a message field carrying a percent sign that is not a
@@ -74,31 +91,29 @@ func postAsPhorge(e *echo.Echo, target, body string) *httptest.ResponseRecorder 
 // payload that has one — it is the whole guard.
 const illegalEscapeText = "build 100% done"
 
-func getFrom(e *echo.Echo, target string) *httptest.ResponseRecorder {
+func getFrom(t *testing.T, app *fiber.App, target string) result {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return dispatch(t, app, req)
 }
 
 // decodeBare fails the test unless the body is a single JSON object with no
 // envelope around it. Phorge indexes these keys off the top level, so an "data"
 // or "error" wrapper here would make every field unreachable without any error
 // being raised on either side.
-func decodeBare(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+func decodeBare(t *testing.T, rec result) map[string]any {
 	t.Helper()
 
-	decoder := json.NewDecoder(strings.NewReader(rec.Body.String()))
+	decoder := json.NewDecoder(strings.NewReader(rec.Body))
 	var body map[string]any
 	if err := decoder.Decode(&body); err != nil {
-		t.Fatalf("response is not JSON: %v (body %q)", err, rec.Body.String())
+		t.Fatalf("response is not JSON: %v (body %q)", err, rec.Body)
 	}
 	if decoder.More() {
-		t.Errorf("expected exactly one JSON document, got %q", rec.Body.String())
+		t.Errorf("expected exactly one JSON document, got %q", rec.Body)
 	}
 	for _, key := range []string{"data", "error"} {
 		if _, wrapped := body[key]; wrapped {
-			t.Fatalf("response must not be wrapped in the %q envelope: %q", key, rec.Body.String())
+			t.Fatalf("response must not be wrapped in the %q envelope: %q", key, rec.Body)
 		}
 	}
 	return body
@@ -109,7 +124,7 @@ func decodeBare(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 func TestPostMessageAnswersABareReceipt(t *testing.T) {
 	e, messages, peers := newAdminServer(t)
 
-	rec := postTo(e, "/?instance=default",
+	rec := postTo(t, e, "/?instance=default",
 		`{"type":"notification","key":"123","subscribers":["PHID-USER-aaa"]}`)
 
 	if rec.Code != http.StatusOK {
@@ -136,7 +151,7 @@ func TestPostMessageAnswersABareReceipt(t *testing.T) {
 func TestStatusIsBareAndFlat(t *testing.T) {
 	e, _, _ := newAdminServer(t)
 
-	rec := getFrom(e, "/status/")
+	rec := getFrom(t, e, "/status/")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -149,7 +164,7 @@ func TestStatusIsBareAndFlat(t *testing.T) {
 		"history.size", "history.age",
 	} {
 		if _, present := body[key]; !present {
-			t.Errorf("missing key %q in %q", key, rec.Body.String())
+			t.Errorf("missing key %q in %q", key, rec.Body)
 		}
 	}
 	if body["instance"] != defaultInstance {
@@ -160,7 +175,7 @@ func TestStatusIsBareAndFlat(t *testing.T) {
 func TestStatusReportsTheRequestedInstance(t *testing.T) {
 	e, _, _ := newAdminServer(t)
 
-	body := decodeBare(t, getFrom(e, "/status/?instance=prod"))
+	body := decodeBare(t, getFrom(t, e, "/status/?instance=prod"))
 	if body["instance"] != "prod" {
 		t.Errorf("instance = %v, want prod", body["instance"])
 	}
@@ -169,9 +184,9 @@ func TestStatusReportsTheRequestedInstance(t *testing.T) {
 func TestStatusCountsAPublishedMessage(t *testing.T) {
 	e, _, _ := newAdminServer(t)
 
-	postTo(e, "/", `{"type":"notification"}`)
+	postTo(t, e, "/", `{"type":"notification"}`)
 
-	body := decodeBare(t, getFrom(e, "/status/"))
+	body := decodeBare(t, getFrom(t, e, "/status/"))
 	if body["messages.in"] != float64(1) {
 		t.Errorf("messages.in = %v, want 1", body["messages.in"])
 	}
@@ -207,11 +222,10 @@ func TestContentTypeIsIgnored(t *testing.T) {
 			if contentType != "" {
 				req.Header.Set("Content-Type", contentType)
 			}
-			rec := httptest.NewRecorder()
-			e.ServeHTTP(rec, req)
+			rec := dispatch(t, e, req)
 
 			if rec.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+				t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body)
 			}
 
 			history := messages.GetHistory(time.Now().Add(-time.Second))
@@ -231,7 +245,7 @@ func TestContentTypeIsIgnored(t *testing.T) {
 func TestMessageAlreadyStampedIsNotRepublished(t *testing.T) {
 	e, messages, peers := newAdminServer(t)
 
-	rec := postTo(e, "/", `{"type":"notification","touched":["`+peers.Fingerprint()+`"]}`)
+	rec := postTo(t, e, "/", `{"type":"notification","touched":["`+peers.Fingerprint()+`"]}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
@@ -261,19 +275,19 @@ func TestMalformedBodiesFailInTheEnvelope(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e, _, _ := newAdminServer(t)
 
-			rec := postTo(e, "/", tt.body)
+			rec := postTo(t, e, "/", tt.body)
 			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d (%s)", rec.Code, rec.Body.String())
+				t.Fatalf("expected 400, got %d (%s)", rec.Code, rec.Body)
 			}
 
 			var body struct {
 				Error *httpx.Error `json:"error"`
 			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			if err := json.Unmarshal([]byte(rec.Body), &body); err != nil {
 				t.Fatalf("response is not JSON: %v", err)
 			}
 			if body.Error == nil {
-				t.Fatalf("expected an error envelope, got %q", rec.Body.String())
+				t.Fatalf("expected an error envelope, got %q", rec.Body)
 			}
 			if body.Error.Code != httpx.CodeBadRequest {
 				t.Errorf("code = %q, want %q", body.Error.Code, httpx.CodeBadRequest)
@@ -287,7 +301,7 @@ func TestStatusWithoutTrailingSlashIsNotFound(t *testing.T) {
 
 	// Phorge always calls getURI('/status/'), so the trailing slash is part of
 	// the contract rather than a convenience.
-	if rec := getFrom(e, "/status"); rec.Code != http.StatusNotFound {
+	if rec := getFrom(t, e, "/status"); rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for /status, got %d", rec.Code)
 	}
 }
@@ -295,7 +309,7 @@ func TestStatusWithoutTrailingSlashIsNotFound(t *testing.T) {
 func TestUnknownAdminPathIsNotFound(t *testing.T) {
 	e, _, _ := newAdminServer(t)
 
-	if rec := getFrom(e, "/something"); rec.Code != http.StatusNotFound {
+	if rec := getFrom(t, e, "/something"); rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", rec.Code)
 	}
 }
@@ -308,12 +322,12 @@ func TestAdminProbesAnswer(t *testing.T) {
 	e, _, _ := newAdminServer(t)
 
 	for _, path := range []string{"/", "/healthz", "/readyz"} {
-		rec := getFrom(e, path)
+		rec := getFrom(t, e, path)
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s: expected 200, got %d", path, rec.Code)
 		}
 		if body := decodeBare(t, rec); body["status"] != "ok" {
-			t.Errorf("%s: expected a bare status, got %q", path, rec.Body.String())
+			t.Errorf("%s: expected a bare status, got %q", path, rec.Body)
 		}
 	}
 }

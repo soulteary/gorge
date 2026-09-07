@@ -15,6 +15,7 @@ package contracttest
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/gofiber/fiber/v3"
 )
 
 // Token is the service token every fixture authenticates with. A runner must
@@ -81,8 +84,8 @@ func (fx *Fixture) assertsStructure() bool {
 		len(e.HTMLContains) > 0 || len(e.HTMLNotContains) > 0
 }
 
-// Run replays every fixture in dir against handler, one subtest each.
-func Run(t *testing.T, handler http.Handler, dir string) {
+// Run replays every fixture in dir against app, one subtest each.
+func Run(t *testing.T, app *fiber.App, dir string) {
 	t.Helper()
 
 	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
@@ -112,29 +115,39 @@ func Run(t *testing.T, handler http.Handler, dir string) {
 			for k, v := range fx.Request.Headers {
 				req.Header.Set(k, v)
 			}
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+			// Timeout disabled: a highlight fixture can take longer than the
+			// 1s app.Test default, and these run in-process against a handler
+			// that never blocks on the network.
+			resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+			if err != nil {
+				t.Fatalf("%s: app.Test failed: %v", fx.Name, err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("%s: reading response body: %v", fx.Name, err)
+			}
+			_ = resp.Body.Close()
 
-			check(t, &fx, rec)
+			check(t, &fx, resp, body)
 		})
 	}
 }
 
-func check(t *testing.T, fx *Fixture, rec *httptest.ResponseRecorder) {
+func check(t *testing.T, fx *Fixture, resp *http.Response, body []byte) {
 	t.Helper()
 
-	if rec.Code != fx.Expect.Status {
+	if resp.StatusCode != fx.Expect.Status {
 		t.Errorf("%s: expected status %d, got %d (body: %s)",
-			fx.Name, fx.Expect.Status, rec.Code, rec.Body.String())
+			fx.Name, fx.Expect.Status, resp.StatusCode, string(body))
 	}
 
 	for name, want := range fx.Expect.HeaderEquals {
-		if got := rec.Header().Get(name); got != want {
+		if got := resp.Header.Get(name); got != want {
 			t.Errorf("%s: expected header %s to be %q, got %q", fx.Name, name, want, got)
 		}
 	}
 
-	rawBody := rec.Body.String()
+	rawBody := string(body)
 	for _, want := range fx.Expect.BodyContains {
 		if !strings.Contains(rawBody, want) {
 			t.Errorf("%s: response body should contain %q", fx.Name, want)
@@ -155,7 +168,7 @@ func check(t *testing.T, fx *Fixture, rec *httptest.ResponseRecorder) {
 	}
 
 	var decoded map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("%s: response is not a JSON object: %v", fx.Name, err)
 	}
 

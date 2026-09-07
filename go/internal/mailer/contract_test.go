@@ -21,7 +21,7 @@ func TestContractFixtures(t *testing.T) {
 	// answers, and a fixture that waited on them would make the suite slow for
 	// nothing.
 	srv := httpx.New(httpx.Config{ListenAddr: ":0", BodyLimit: TransportBodyLimit})
-	RegisterRoutes(srv.Echo(), &Deps{
+	RegisterRoutes(srv.App(), &Deps{
 		Dispatcher: newTestDispatcher(t,
 			MailerSpec{Key: "test-mailer", Type: "test", Priority: 100},
 			MailerSpec{Key: "rejects", Type: "test", Priority: 50,
@@ -33,5 +33,5 @@ func TestContractFixtures(t *testing.T) {
 		BodyLimit: DefaultBodyLimit,
 	})
 
-	contracttest.Run(t, srv.Echo(), fixtureDir)
+	contracttest.Run(t, srv.App(), fixtureDir)
 }

@@ -8,7 +8,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/platform/auth"
@@ -46,17 +46,17 @@ type Deps struct {
 // PhabricatorGorgeFulltextStorageEngine calls them as written. The health
 // probes are not registered here — the platform's httpx.New already did that,
 // and registering them twice makes Echo panic at startup.
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/search")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/search")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/index", indexDocument(deps))
-	g.POST("/query", searchQuery(deps))
-	g.POST("/init", initIndex(deps))
-	g.GET("/exists", indexExists(deps))
-	g.GET("/stats", indexStats(deps))
-	g.POST("/sane", indexIsSane(deps))
-	g.GET("/backends", listBackends(deps))
+	g.Post("/index", indexDocument(deps))
+	g.Post("/query", searchQuery(deps))
+	g.Post("/init", initIndex(deps))
+	g.Get("/exists", indexExists(deps))
+	g.Get("/stats", indexStats(deps))
+	g.Post("/sane", indexIsSane(deps))
+	g.Get("/backends", listBackends(deps))
 }
 
 // bindJSON decodes the request body, distinguishing a malformed payload from a
@@ -74,10 +74,10 @@ func RegisterRoutes(e *echo.Echo, deps *Deps) {
 // from "already answered". Getting that wrong appends a second JSON document
 // to a response that has already been sent — which is not a status code
 // anyone sees, just two objects in one body.
-func bindJSON(c echo.Context, dst any) (bool, error) {
-	if err := c.Bind(dst); err != nil {
-		var httpErr *echo.HTTPError
-		if errors.As(err, &httpErr) && httpErr.Code != http.StatusBadRequest {
+func bindJSON(c fiber.Ctx, dst any) (bool, error) {
+	if err := c.Bind().Body(dst); err != nil {
+		var fiberErr *fiber.Error
+		if errors.As(err, &fiberErr) && fiberErr.Code != http.StatusBadRequest {
 			return false, err
 		}
 		return false, httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
@@ -85,8 +85,8 @@ func bindJSON(c echo.Context, dst any) (bool, error) {
 	return true, nil
 }
 
-func indexDocument(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func indexDocument(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		var doc contracts.Document
 		if ok, err := bindJSON(c, &doc); !ok {
 			return err
@@ -111,8 +111,8 @@ func indexDocument(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func searchQuery(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func searchQuery(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		var q contracts.SearchQuery
 		if ok, err := bindJSON(c, &q); !ok {
 			return err
@@ -130,8 +130,8 @@ func searchQuery(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func initIndex(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func initIndex(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		var req contracts.DocTypesRequest
 		if ok, err := bindJSON(c, &req); !ok {
 			return err
@@ -148,8 +148,8 @@ func initIndex(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func indexExists(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func indexExists(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		exists, err := deps.Engine.IndexExists()
 		if err != nil {
 			return httpx.Fail(c, http.StatusBadGateway, CodeCheckFailed, err.Error())
@@ -158,8 +158,8 @@ func indexExists(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func indexStats(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func indexStats(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		stats, err := deps.Engine.IndexStats()
 		if err != nil {
 			return httpx.Fail(c, http.StatusBadGateway, CodeStatsFailed, err.Error())
@@ -168,8 +168,8 @@ func indexStats(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func indexIsSane(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func indexIsSane(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		var req contracts.DocTypesRequest
 		if ok, err := bindJSON(c, &req); !ok {
 			return err
@@ -193,8 +193,8 @@ func indexIsSane(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func listBackends(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func listBackends(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		return httpx.OK(c, deps.Engine.BackendInfo())
 	}
 }

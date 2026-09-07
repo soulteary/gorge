@@ -3,7 +3,7 @@ package hub
 import (
 	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/fasthttp/websocket"
 )
 
 // Listener is one WebSocket client and the set of PHIDs it has subscribed to.

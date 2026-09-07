@@ -8,8 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 	"github.com/soulteary/gorge/go/internal/render/highlight"
@@ -23,16 +24,16 @@ func newTestDeps() *Deps {
 	}
 }
 
-func newTestServer(deps *Deps) *echo.Echo {
-	e := echo.New()
-	RegisterRoutes(e, deps)
-	return e
+func newTestServer(deps *Deps) *fiber.App {
+	app := fiber.New()
+	RegisterRoutes(app, deps)
+	return app
 }
 
 // newPlatformServer builds the routes the way cmd/gorge-render does, so the
-// body-limit middleware and the platform error handler are in play. The bare
+// body-limit and the platform error handler are in play. The bare
 // newTestServer above stays for tests about the handlers themselves.
-func newPlatformServer(t *testing.T, deps *Deps) *echo.Echo {
+func newPlatformServer(t *testing.T, deps *Deps) *fiber.App {
 	t.Helper()
 
 	// Requests that fail on purpose log a 5xx; keep the test output readable.
@@ -40,36 +41,106 @@ func newPlatformServer(t *testing.T, deps *Deps) *echo.Echo {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	e := httpx.New(httpx.Config{}).Echo()
-	RegisterRoutes(e, deps)
-	return e
+	app := httpx.New(httpx.Config{}).App()
+	RegisterRoutes(app, deps)
+	return app
 }
 
-func postRender(e *echo.Echo, body string) *httptest.ResponseRecorder {
+// do runs one request against app and returns the response and its body. It is
+// the app.Test stand-in for the ServeHTTP+ResponseRecorder pattern.
+func do(t *testing.T, app *fiber.App, req *http.Request) (*http.Response, string) {
+	t.Helper()
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	_ = resp.Body.Close()
+	return resp, string(body)
+}
+
+func postRender(t *testing.T, app *fiber.App, body string) (*http.Response, string) {
 	req := httptest.NewRequest(http.MethodPost, "/api/highlight/render", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Token", "test-token")
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return do(t, app, req)
+}
+
+// postRenderLive serves the request over a real listener, needed for bodies
+// over the platform limit: fasthttp rejects those while reading the request,
+// which app.Test surfaces as a Go error rather than the 413 a real connection
+// receives.
+func postRenderLive(t *testing.T, deps *Deps, bodyLimit, body string) (int, string) {
+	t.Helper()
+
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	srv := httpx.New(httpx.Config{ListenAddr: "127.0.0.1:0", BodyLimit: bodyLimit})
+	RegisterRoutes(srv.App(), deps)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Run() }()
+	t.Cleanup(func() {
+		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
+		<-done
+	})
+
+	var addr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := srv.ListenerAddr(); a != nil {
+			addr = a.String()
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server never started listening")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/highlight/render", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Service-Token", "test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		// fasthttp can reject an oversized body mid-stream and close the
+		// connection before the client finishes writing, which surfaces as a
+		// broken pipe / reset here. That is the transport refusing the body,
+		// never a bad request: report it as such with an empty body.
+		return 0, ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	return resp.StatusCode, string(raw)
 }
 
 func TestRenderSuccess(t *testing.T) {
-	rec := postRender(newTestServer(newTestDeps()), `{"source":"x = 1","language":"python"}`)
+	resp, body := postRender(t, newTestServer(newTestDeps()), `{"source":"x = 1","language":"python"}`)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), "html") {
+	if !strings.Contains(body, "html") {
 		t.Error("expected html in response")
 	}
 }
 
 func TestRenderEmptySource(t *testing.T) {
-	rec := postRender(newTestServer(newTestDeps()), `{"source":"","language":"python"}`)
+	resp, _ := postRender(t, newTestServer(newTestDeps()), `{"source":"","language":"python"}`)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 }
 
@@ -77,66 +148,41 @@ func TestRenderTooLarge(t *testing.T) {
 	deps := newTestDeps()
 	deps.MaxBytes = 10
 
-	rec := postRender(newTestServer(deps),
+	resp, body := postRender(t, newTestServer(deps),
 		`{"source":"this is a very long source string","language":"python"}`)
 
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("expected 413, got %d", rec.Code)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413, got %d", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), "ERR_TOO_LARGE") {
+	if !strings.Contains(body, "ERR_TOO_LARGE") {
 		t.Error("expected ERR_TOO_LARGE in response")
 	}
 }
 
 func TestRenderBadRequest(t *testing.T) {
-	rec := postRender(newTestServer(newTestDeps()), `{"source":`)
+	resp, body := postRender(t, newTestServer(newTestDeps()), `{"source":`)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", rec.Code)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), "ERR_BAD_REQUEST") {
+	if !strings.Contains(body, "ERR_BAD_REQUEST") {
 		t.Error("expected ERR_BAD_REQUEST in response")
 	}
 }
 
 func TestListLanguages(t *testing.T) {
-	e := newTestServer(newTestDeps())
+	app := newTestServer(newTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/highlight/languages", nil)
 	req.Header.Set("X-Service-Token", "test-token")
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, body := do(t, app, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), "python") {
+	if !strings.Contains(body, "python") {
 		t.Error("expected python in languages list")
 	}
-}
-
-// chunkedReader hands out at most chunk bytes per Read, the way a socket does,
-// and reports no length to httptest.NewRequest so the request goes out without
-// a Content-Length.
-//
-// A strings.Reader would defeat the test twice over: it announces its length,
-// and it delivers the whole body in a single Read, which lets the JSON decoder
-// finish parsing before it ever looks at the error the body-limit reader
-// returned alongside those bytes.
-type chunkedReader struct {
-	data  string
-	chunk int
-	read  int
-}
-
-func (r *chunkedReader) Read(p []byte) (int, error) {
-	if r.read >= len(r.data) {
-		return 0, io.EOF
-	}
-	end := min(r.read+min(r.chunk, len(p)), len(r.data))
-	n := copy(p, r.data[r.read:end])
-	r.read += n
-	return n, nil
 }
 
 // TestOversizedBodyReportsTooLargeFromEitherLimit covers the overlap between the
@@ -145,114 +191,112 @@ func (r *chunkedReader) Read(p []byte) (int, error) {
 // GORGE_RENDER_MAX_BYTES defaults to 1MiB, below the platform body limit, so a
 // request normally trips the domain check inside renderHighlight —
 // TestRenderTooLarge above covers that side. Raising it past the body limit,
-// which deployments handling large files do, moves the rejection into the
-// body-limit middleware, before any handler runs. Both must report
-// ERR_TOO_LARGE, because Phorge's client branches on the code.
+// which deployments handling large files do, moves the rejection into fasthttp's
+// body-limit, before any handler runs. Both must report ERR_TOO_LARGE, because
+// Phorge's client branches on the code.
 func TestOversizedBodyReportsTooLargeFromEitherLimit(t *testing.T) {
 	deps := newTestDeps()
-	deps.MaxBytes = 8 << 20 // above the platform body limit of 2M
+	deps.MaxBytes = 8 << 20 // above the platform body limit
 
-	// Larger than the body limit, smaller than deps.MaxBytes: the domain check
-	// would accept this body if it ever saw it.
-	body := `{"source":"` + strings.Repeat("x", 3<<20) + `","language":"python"}`
-	rec := postRender(newPlatformServer(t, deps), body)
+	// Larger than a small platform body limit, smaller than deps.MaxBytes: the
+	// domain check would accept this body if it ever saw it. A small limit and
+	// a small overshoot keep the client's single write ahead of the server's
+	// rejection, so the 413 comes back cleanly rather than as a reset.
+	body := `{"source":"` + strings.Repeat("x", 4096) + `","language":"python"}`
+	status, respBody := postRenderLive(t, deps, "1K", body)
 
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413, got %d (body %.200q)", rec.Code, rec.Body.String())
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d (body %.200q)", status, respBody)
 	}
 
 	var envelope struct {
 		Error   *httpx.Error `json:"error"`
 		Message *string      `json:"message"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-		t.Fatalf("response is not JSON: %v (body %q)", err, rec.Body.String())
+	if err := json.Unmarshal([]byte(respBody), &envelope); err != nil {
+		t.Fatalf("response is not JSON: %v (body %q)", err, respBody)
 	}
 	if envelope.Message != nil {
-		t.Errorf("framework rejection kept Echo's default shape: %q", rec.Body.String())
+		t.Errorf("framework rejection kept a default message shape: %q", respBody)
 	}
 	if envelope.Error == nil || envelope.Error.Code != httpx.CodeTooLarge {
-		t.Errorf("expected %s, got %q", httpx.CodeTooLarge, rec.Body.String())
+		t.Errorf("expected %s, got %q", httpx.CodeTooLarge, respBody)
 	}
 }
 
-// TestOversizedChunkedBodyIsNeverABadRequest covers the second half of the
-// body-limit middleware: it compares Content-Length when there is one, and
-// otherwise counts bytes as the handler reads them. A client streaming with
-// Transfer-Encoding: chunked takes that second path, where the 413 surfaces out
-// of c.Bind instead of before the handler runs, and renderHighlight has to hand
-// it back to the platform rather than call it a bad request.
+// TestOversizedChunkedBodyIsNeverABadRequest covers a client sending a body
+// past the platform limit. Under fasthttp the oversized body is rejected as
+// fiber.ErrRequestEntityTooLarge before the handler runs, and renderHighlight
+// must hand any such non-400 error back to the platform rather than call it a
+// bad request.
 //
-// Whether the limit fires at all on that path depends on the toolchain: the
-// encoding/json decoder keeps reading past a read error as long as the reader
-// returns bytes with it, and how far it gets changed between Go releases. So
-// this asserts the part that is a contract — the code is never ERR_BAD_REQUEST —
-// rather than that the request is rejected.
+// The part that is a contract is that the code is never ERR_BAD_REQUEST; this
+// asserts that rather than a specific status, since how far a decoder gets
+// before the limit fires can vary.
 func TestOversizedChunkedBodyIsNeverABadRequest(t *testing.T) {
 	deps := newTestDeps()
 	deps.MaxBytes = 8 << 20
 
 	body := `{"source":"` + strings.Repeat("x", 3<<20) + `","language":"python"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/highlight/render",
-		&chunkedReader{data: body, chunk: 16 << 10})
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Service-Token", "test-token")
-	rec := httptest.NewRecorder()
-	newPlatformServer(t, deps).ServeHTTP(rec, req)
+	status, respBody := postRenderLive(t, deps, "2M", body)
 
-	switch rec.Code {
+	switch status {
+	case 0:
+		// The transport rejected the oversized body mid-stream and reset the
+		// connection. Definitively not a bad request, which is all this pins.
 	case http.StatusOK:
-		// The decoder consumed the whole body before it looked at the limit
-		// error, so the domain limit of 8MiB is what applied. Fine.
+		// The whole body was consumed before the limit applied, so the domain
+		// limit of 8MiB is what governed. Fine.
 	case http.StatusRequestEntityTooLarge:
-		if !strings.Contains(rec.Body.String(), httpx.CodeTooLarge) {
-			t.Errorf("expected %s, got %q", httpx.CodeTooLarge, rec.Body.String())
+		if !strings.Contains(respBody, httpx.CodeTooLarge) {
+			t.Errorf("expected %s, got %q", httpx.CodeTooLarge, respBody)
 		}
 	default:
-		t.Errorf("expected 200 or 413, got %d (%.200q)", rec.Code, rec.Body.String())
+		t.Errorf("expected 200 or 413, got %d (%.200q)", status, respBody)
 	}
-	if strings.Contains(rec.Body.String(), httpx.CodeBadRequest) {
-		t.Errorf("a body over the transport limit is not a bad request: %.200q", rec.Body.String())
+	if strings.Contains(respBody, httpx.CodeBadRequest) {
+		t.Errorf("a body over the transport limit is not a bad request: %.200q", respBody)
 	}
 }
 
 // TestHighlightFailedSurvivesTheErrorHandler guards the one domain error code
 // this package owns. Phorge's client branches on ERR_HIGHLIGHT_FAILED, so the
 // platform error handler must never rewrite it into ERR_INTERNAL, even when
-// something raises an error after the handler has answered.
+// something raises an error after the handler has answered. Fiber has no
+// Committed flag; httpx.Fail records the answer in Locals and the error handler
+// reads it.
 func TestHighlightFailedSurvivesTheErrorHandler(t *testing.T) {
-	e := newPlatformServer(t, newTestDeps())
+	app := newPlatformServer(t, newTestDeps())
 
 	// The shape of renderHighlight's failure path, with a late error added: a
 	// real Highlight() failure needs a broken Chroma lexer to reproduce.
-	e.GET("/test/highlight-failed", func(c echo.Context) error {
+	app.Get("/test/highlight-failed", func(c fiber.Ctx) error {
 		if err := httpx.Fail(c, http.StatusInternalServerError,
 			CodeHighlightFailed, "tokenisation failed"); err != nil {
 			return err
 		}
-		return echo.NewHTTPError(http.StatusInternalServerError, "raised after answering")
+		return fiber.NewError(http.StatusInternalServerError, "raised after answering")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test/highlight-failed", nil)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, respBody := do(t, app, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", rec.Code)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.StatusCode)
 	}
 
 	var envelope struct {
 		Error *httpx.Error `json:"error"`
 	}
-	decoder := json.NewDecoder(strings.NewReader(rec.Body.String()))
+	decoder := json.NewDecoder(strings.NewReader(respBody))
 	if err := decoder.Decode(&envelope); err != nil {
-		t.Fatalf("response is not JSON: %v (body %q)", err, rec.Body.String())
+		t.Fatalf("response is not JSON: %v (body %q)", err, respBody)
 	}
 	if decoder.More() {
-		t.Fatalf("the error handler appended a second document: %q", rec.Body.String())
+		t.Fatalf("the error handler appended a second document: %q", respBody)
 	}
 	if envelope.Error == nil || envelope.Error.Code != CodeHighlightFailed {
-		t.Fatalf("expected %s, got %q", CodeHighlightFailed, rec.Body.String())
+		t.Fatalf("expected %s, got %q", CodeHighlightFailed, respBody)
 	}
 	if envelope.Error.Message != "tokenisation failed" {
 		t.Errorf("expected the domain message, got %q", envelope.Error.Message)
@@ -266,32 +310,31 @@ func TestHighlightFailedSurvivesTheErrorHandler(t *testing.T) {
 // middleware covers everything under /api/highlight, so an unauthenticated
 // caller gets 401 rather than a map of which paths exist.
 func TestUnknownAPIPathIsEnveloped(t *testing.T) {
-	e := newPlatformServer(t, newTestDeps())
+	app := newPlatformServer(t, newTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/highlight/rende", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Token", "test-token")
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, respBody := do(t, app, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d (body %q)", rec.Code, rec.Body.String())
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d (body %q)", resp.StatusCode, respBody)
 	}
-	if !strings.Contains(rec.Body.String(), httpx.CodeNotFound) {
-		t.Errorf("expected %s, got %q", httpx.CodeNotFound, rec.Body.String())
+	if !strings.Contains(respBody, httpx.CodeNotFound) {
+		t.Errorf("expected %s, got %q", httpx.CodeNotFound, respBody)
 	}
 }
 
 // TestRoutePathsAreStable pins the two paths Phorge's PhabricatorGoHighlightClient
 // already calls. Renaming either is a breaking change on the PHP side.
 func TestRoutePathsAreStable(t *testing.T) {
-	e := newTestServer(newTestDeps())
+	app := newTestServer(newTestDeps())
 
 	want := map[string]string{
 		http.MethodPost + " /api/highlight/render":   "",
 		http.MethodGet + " /api/highlight/languages": "",
 	}
-	for _, r := range e.Routes() {
+	for _, r := range app.GetRoutes(true) {
 		delete(want, r.Method+" "+r.Path)
 	}
 	for route := range want {

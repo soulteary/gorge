@@ -22,12 +22,12 @@ func TestAdminContractFixtures(t *testing.T) {
 	//
 	// httptest serves this in memory, so the listen address is never used.
 	srv := httpx.New(httpx.Config{ListenAddr: ":0"})
-	RegisterAdminRoutes(srv.Echo(), &AdminDeps{
+	RegisterAdminRoutes(srv.App(), &AdminDeps{
 		Hub: hub.New(),
 		// A peer list with no peers still mints this server's fingerprint,
 		// which is the whole of the POST / receipt.
 		Peers: peer.NewList(),
 	})
 
-	contracttest.Run(t, srv.Echo(), adminFixtureDir)
+	contracttest.Run(t, srv.App(), adminFixtureDir)
 }

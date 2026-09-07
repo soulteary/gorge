@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/contrib/v3/websocket"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/notification/hub"
 )
@@ -20,16 +20,6 @@ const useWebsocketsBody = "HTTP/501 Use Websockets\n"
 // defaultReplayAge, in milliseconds, bounds a replay request that names no age.
 const defaultReplayAge = 60000
 
-var upgrader = websocket.Upgrader{
-	// Browsers reach this port from the Phorge origin, which is never this
-	// server's own: the client port is a separate host and port by design, and
-	// Phorge hands the browser its address explicitly. gorilla's default
-	// same-origin check would reject every real connection. Nothing here is
-	// authenticated and no credentials are read, so this is the posture Aphlict
-	// had rather than a relaxation of one.
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
 // ClientDeps is everything the client routes need.
 type ClientDeps struct {
 	Hub *hub.Hub
@@ -39,45 +29,37 @@ type ClientDeps struct {
 //
 // Two routes, because the instance travels in the path: Phorge's
 // getWebsocketURI() appends ~{instance}/ when cluster.instance is set, so the
-// wildcard catches those while / serves the single-instance case. Echo ranks
+// wildcard catches those while / serves the single-instance case. Fiber ranks
 // static routes above the wildcard, so /healthz and /readyz keep answering
 // underneath it. The one route that has to give way is the platform's GET /
 // probe, which is what httpx.Config.SkipRootProbe exists for.
-func RegisterClientRoutes(e *echo.Echo, deps *ClientDeps) {
-	e.GET("/", serveClient(deps))
-	e.GET("/*", serveClient(deps))
+func RegisterClientRoutes(app fiber.Router, deps *ClientDeps) {
+	h := serveClient(deps)
+	app.Get("/", h)
+	app.Get("/*", h)
 }
 
-func serveClient(deps *ClientDeps) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		req := c.Request()
-
-		if !websocket.IsWebSocketUpgrade(req) {
-			// A compatibility constraint, not an unimplemented endpoint: Phorge
-			// probes this port with a plain GET / and reads 501 as the healthy
-			// answer, reporting "Got HTTP 200, but expected HTTP 501" for
-			// anything else (PhabricatorNotificationServerRef::testClient).
-			return c.String(http.StatusNotImplemented, useWebsocketsBody)
+// serveClient is the client-port handler. It answers a plain GET with 501 and
+// upgrades a WebSocket request onto the hub.
+//
+// The contrib upgrader is built once and only invoked after the upgrade check,
+// so the non-WebSocket 501 path — the one Phorge probes — never touches it and
+// keeps answering with Aphlict's exact body rather than the upgrader's 426.
+func serveClient(deps *ClientDeps) fiber.Handler {
+	// Origins is left empty so every origin is accepted, and AllowEmptyOrigin is
+	// true for non-browser clients: this reproduces gorilla's CheckOrigin=>true
+	// posture Aphlict had. Nothing here is authenticated.
+	upgrade := websocket.New(func(c *websocket.Conn) {
+		// The instance was resolved from the request path in the outer handler
+		// and stashed in Locals, which the contrib Conn copies off the
+		// fiber.Ctx before fasthttp recycles it. Reading c.Params("*") here is
+		// unreliable across the hijack, so the path is parsed while the
+		// fiber.Ctx is still live.
+		instance, _ := c.Locals(localInstance).(string)
+		if instance == "" {
+			instance = defaultInstance
 		}
-
-		conn, err := upgrader.Upgrade(c.Response(), req, nil)
-		if err != nil {
-			// Upgrade has already answered; there is nothing left to write.
-			slog.Warn("websocket upgrade failed", "uri", req.RequestURI, "error", err)
-			return nil
-		}
-
-		// The handshake went straight onto the hijacked connection, so
-		// echo.Response never saw it and still believes nothing has been sent.
-		// Marking it committed is what keeps the global error handler from
-		// serialising an error envelope onto a connection that now belongs to
-		// the WebSocket, which is what a panic in the read loop below would
-		// otherwise cause. The status is set for the access log's benefit.
-		c.Response().Committed = true
-		c.Response().Status = http.StatusSwitchingProtocols
-
-		instance := parseInstance(req.URL.Path)
-		listener := hub.NewListener(deps.Hub.NextID(), conn)
+		listener := hub.NewListener(deps.Hub.NextID(), c.Conn)
 		deps.Hub.AddListener(instance, listener)
 		slog.Info("client connected",
 			"listener", listener.ID(), "instance", instance, "remote", listener.RemoteAddr())
@@ -89,9 +71,37 @@ func serveClient(deps *ClientDeps) echo.HandlerFunc {
 		}()
 
 		readLoop(deps.Hub, listener)
-		return nil
+	}, websocket.Config{AllowEmptyOrigin: true})
+
+	return func(c fiber.Ctx) error {
+		if !websocket.IsWebSocketUpgrade(c) {
+			// A compatibility constraint, not an unimplemented endpoint: Phorge
+			// probes this port with a plain GET / and reads 501 as the healthy
+			// answer, reporting "Got HTTP 200, but expected HTTP 501" for
+			// anything else (PhabricatorNotificationServerRef::testClient).
+			//
+			// httpx.markCommitted is set through SendString's Status path so the
+			// platform error handler never re-envelopes this body; the handler
+			// returns nil regardless.
+			return c.Status(http.StatusNotImplemented).SendString(useWebsocketsBody)
+		}
+		// The instance travels in the request path (Phorge's getWebsocketURI
+		// encodes it as ~{instance}/). Resolve it here, while the fiber.Ctx is
+		// live, and hand it to the hijacked handler through Locals.
+		c.Locals(localInstance, parseInstance(c.Path()))
+		// The handshake is hijacked by the upgrader, which owns the connection
+		// for its whole lifetime. On a rejected handshake it returns a
+		// *fiber.Error that the platform error handler answers; on a clean
+		// upgrade it returns nil after the read loop ends. Either way the
+		// response was written on the hijacked connection, not through httpx.
+		return upgrade(c)
 	}
 }
+
+// localInstance is the Locals key the client-port handler uses to carry the
+// resolved Phorge instance from the live request into the hijacked WebSocket
+// handler.
+const localInstance = "notification_instance"
 
 // readLoop serves a client's commands until it goes away, which is the whole
 // lifetime of the connection and therefore of the request handler.

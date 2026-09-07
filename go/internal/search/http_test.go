@@ -8,8 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 	"github.com/soulteary/gorge/go/internal/search/engine"
@@ -23,7 +24,7 @@ const testToken = "test-token"
 // It takes a slice rather than a variadic list because "no backends at all" is
 // a state under test here, and a variadic helper cannot tell it apart from
 // "the caller wants the default".
-func newServerWith(t *testing.T, defs []engine.BackendDef) *echo.Echo {
+func newServerWith(t *testing.T, defs []engine.BackendDef) *fiber.App {
 	t.Helper()
 
 	// Requests that fail on purpose log; keep the test output readable.
@@ -37,23 +38,38 @@ func newServerWith(t *testing.T, defs []engine.BackendDef) *echo.Echo {
 	}
 
 	srv := httpx.New(httpx.Config{Ready: se.Ready})
-	RegisterRoutes(srv.Echo(), &Deps{Engine: se, Token: testToken})
-	return srv.Echo()
+	RegisterRoutes(srv.App(), &Deps{Engine: se, Token: testToken})
+	return srv.App()
 }
 
 // newTestServer is the common case: one healthy in-memory backend.
-func newTestServer(t *testing.T) *echo.Echo {
+func newTestServer(t *testing.T) *fiber.App {
 	t.Helper()
 	return newServerWith(t, []engine.BackendDef{{Type: "test"}})
 }
 
-func request(e *echo.Echo, method, path, body string) *httptest.ResponseRecorder {
+// do runs one request against app and returns the response and its body. It is
+// the app.Test stand-in for the ServeHTTP+ResponseRecorder pattern.
+func do(t *testing.T, app *fiber.App, req *http.Request) (*http.Response, string) {
+	t.Helper()
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	_ = resp.Body.Close()
+	return resp, string(body)
+}
+
+func request(t *testing.T, app *fiber.App, method, path, body string) (*http.Response, string) {
+	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Token", testToken)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return do(t, app, req)
 }
 
 type testEnvelope struct {
@@ -66,25 +82,25 @@ type testEnvelope struct {
 
 // envelope decodes the {data, error} response every /api/** endpoint answers
 // with, and fails when the body is not one.
-func envelope(t *testing.T, rec *httptest.ResponseRecorder) testEnvelope {
+func envelope(t *testing.T, body string) testEnvelope {
 	t.Helper()
 
 	var decoded testEnvelope
-	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
-		t.Fatalf("response is not an envelope: %v (body: %s)", err, rec.Body.String())
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("response is not an envelope: %v (body: %s)", err, body)
 	}
 	return decoded
 }
 
-func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+func assertErrorCode(t *testing.T, resp *http.Response, body string, status int, code string) {
 	t.Helper()
 
-	if rec.Code != status {
-		t.Errorf("expected %d, got %d (body: %s)", status, rec.Code, rec.Body.String())
+	if resp.StatusCode != status {
+		t.Errorf("expected %d, got %d (body: %s)", status, resp.StatusCode, body)
 	}
-	env := envelope(t, rec)
+	env := envelope(t, body)
 	if env.Error == nil {
-		t.Fatalf("expected an error envelope, got: %s", rec.Body.String())
+		t.Fatalf("expected an error envelope, got: %s", body)
 	}
 	if env.Error.Code != code {
 		t.Errorf("expected %s, got %s", code, env.Error.Code)
@@ -103,10 +119,10 @@ const validDoc = `{"phid":"PHID-TASK-1","type":"TASK","title":"Fix the parser",
 // written. Renaming one is not a compile error anywhere; it is a 404 the PHP
 // side reports as a search failure.
 func TestRoutePathsAreStable(t *testing.T) {
-	e := newTestServer(t)
+	app := newTestServer(t)
 
 	routes := make(map[string]bool)
-	for _, r := range e.Routes() {
+	for _, r := range app.GetRoutes(true) {
 		routes[r.Method+" "+r.Path] = true
 	}
 
@@ -126,20 +142,19 @@ func TestRoutePathsAreStable(t *testing.T) {
 }
 
 // The domain registers no probes of its own: httpx.New already did, and a
-// second registration makes Echo panic at startup. This asserts the platform's
-// are the ones in play and that they stay outside the envelope.
+// second registration makes the router panic at startup. This asserts the
+// platform's are the ones in play and that they stay outside the envelope.
 func TestProbesComeFromThePlatform(t *testing.T) {
-	e := newTestServer(t)
+	app := newTestServer(t)
 
 	for _, path := range []string{"/", "/healthz", "/readyz"} {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		resp, body := do(t, app, httptest.NewRequest(http.MethodGet, path, nil))
 
-		if rec.Code != http.StatusOK {
-			t.Errorf("%s: expected 200, got %d", path, rec.Code)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s: expected 200, got %d", path, resp.StatusCode)
 		}
-		if strings.Contains(rec.Body.String(), `"data"`) {
-			t.Errorf("%s: probe payloads stay outside the envelope, got %s", path, rec.Body.String())
+		if strings.Contains(body, `"data"`) {
+			t.Errorf("%s: probe payloads stay outside the envelope, got %s", path, body)
 		}
 	}
 }
@@ -160,38 +175,36 @@ func TestReadinessReportsAnUnusableConfiguration(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newServerWith(t, tc.defs)
+			app := newServerWith(t, tc.defs)
 
-			rec := httptest.NewRecorder()
-			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-			if rec.Code != tc.status {
-				t.Errorf("expected %d, got %d (body: %s)", tc.status, rec.Code, rec.Body.String())
+			resp, body := do(t, app, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			if resp.StatusCode != tc.status {
+				t.Errorf("expected %d, got %d (body: %s)", tc.status, resp.StatusCode, body)
 			}
 
 			// Liveness stays 200 throughout: the process is serving, it just
 			// has nothing to serve with. Conflating the two is what made the
 			// broken state invisible.
-			live := httptest.NewRecorder()
-			e.ServeHTTP(live, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-			if live.Code != http.StatusOK {
-				t.Errorf("liveness must not depend on the backends, got %d", live.Code)
+			live, _ := do(t, app, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			if live.StatusCode != http.StatusOK {
+				t.Errorf("liveness must not depend on the backends, got %d", live.StatusCode)
 			}
 		})
 	}
 }
 
 func TestIndexDocumentSucceeds(t *testing.T) {
-	rec := request(newTestServer(t), http.MethodPost, "/api/search/index", validDoc)
+	resp, body := request(t, newTestServer(t), http.MethodPost, "/api/search/index", validDoc)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 	// The PHID is echoed so a caller batching documents can tell which one an
 	// answer belongs to.
-	if !strings.Contains(rec.Body.String(), `"phid":"PHID-TASK-1"`) {
-		t.Errorf("unexpected response: %s", rec.Body.String())
+	if !strings.Contains(body, `"phid":"PHID-TASK-1"`) {
+		t.Errorf("unexpected response: %s", body)
 	}
-	if env := envelope(t, rec); env.Error != nil {
+	if env := envelope(t, body); env.Error != nil {
 		t.Errorf("a success must carry no error: %+v", env.Error)
 	}
 }
@@ -209,21 +222,21 @@ func TestIndexDocumentRejectsIncompleteDocuments(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := request(newTestServer(t), http.MethodPost, "/api/search/index", tc.body)
-			assertErrorCode(t, rec, http.StatusBadRequest, httpx.CodeBadRequest)
+			resp, body := request(t, newTestServer(t), http.MethodPost, "/api/search/index", tc.body)
+			assertErrorCode(t, resp, body, http.StatusBadRequest, httpx.CodeBadRequest)
 		})
 	}
 }
 
 func TestSearchRoundTrip(t *testing.T) {
-	e := newTestServer(t)
-	if rec := request(e, http.MethodPost, "/api/search/index", validDoc); rec.Code != http.StatusOK {
-		t.Fatalf("indexing failed: %s", rec.Body.String())
+	app := newTestServer(t)
+	if resp, body := request(t, app, http.MethodPost, "/api/search/index", validDoc); resp.StatusCode != http.StatusOK {
+		t.Fatalf("indexing failed: %s", body)
 	}
 
-	rec := request(e, http.MethodPost, "/api/search/query", `{"query":"parser"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	resp, body := request(t, app, http.MethodPost, "/api/search/query", `{"query":"parser"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
 	var decoded struct {
@@ -232,7 +245,7 @@ func TestSearchRoundTrip(t *testing.T) {
 			Count int      `json:"count"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if decoded.Data.Count != 1 || decoded.Data.PHIDs[0] != "PHID-TASK-1" {
@@ -243,46 +256,46 @@ func TestSearchRoundTrip(t *testing.T) {
 // Phorge's search UI opens on an unfiltered listing, which arrives here as a
 // query with no text. Rejecting it would leave that page permanently broken.
 func TestAnEmptyQueryIsNotAnError(t *testing.T) {
-	rec := request(newTestServer(t), http.MethodPost, "/api/search/query", `{}`)
+	resp, body := request(t, newTestServer(t), http.MethodPost, "/api/search/query", `{}`)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 	// An empty result set is [] rather than null: the PHP side iterates the
 	// value, and null would be a different shape to handle.
-	if !strings.Contains(rec.Body.String(), `"phids":[]`) {
-		t.Errorf("expected an empty list, got %s", rec.Body.String())
+	if !strings.Contains(body, `"phids":[]`) {
+		t.Errorf("expected an empty list, got %s", body)
 	}
 }
 
 func TestIndexLifecycleEndpoints(t *testing.T) {
-	e := newTestServer(t)
+	app := newTestServer(t)
 
-	rec := request(e, http.MethodGet, "/api/search/exists", "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"exists":false`) {
-		t.Errorf("a fresh index must not exist: %d %s", rec.Code, rec.Body.String())
+	resp, body := request(t, app, http.MethodGet, "/api/search/exists", "")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"exists":false`) {
+		t.Errorf("a fresh index must not exist: %d %s", resp.StatusCode, body)
 	}
 
-	rec = request(e, http.MethodPost, "/api/search/init", `{"docTypes":["TASK","DREV"]}`)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"initialized"`) {
-		t.Fatalf("init failed: %d %s", rec.Code, rec.Body.String())
+	resp, body = request(t, app, http.MethodPost, "/api/search/init", `{"docTypes":["TASK","DREV"]}`)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"initialized"`) {
+		t.Fatalf("init failed: %d %s", resp.StatusCode, body)
 	}
 
-	rec = request(e, http.MethodGet, "/api/search/exists", "")
-	if !strings.Contains(rec.Body.String(), `"exists":true`) {
-		t.Errorf("after init the index must exist: %s", rec.Body.String())
+	_, body = request(t, app, http.MethodGet, "/api/search/exists", "")
+	if !strings.Contains(body, `"exists":true`) {
+		t.Errorf("after init the index must exist: %s", body)
 	}
 
-	rec = request(e, http.MethodPost, "/api/search/sane", `{"docTypes":["TASK","DREV"]}`)
-	if !strings.Contains(rec.Body.String(), `"sane":true`) {
-		t.Errorf("an index just built for these types must be sane: %s", rec.Body.String())
+	_, body = request(t, app, http.MethodPost, "/api/search/sane", `{"docTypes":["TASK","DREV"]}`)
+	if !strings.Contains(body, `"sane":true`) {
+		t.Errorf("an index just built for these types must be sane: %s", body)
 	}
 
 	// A false is a normal answer, not an error: it is how a mapping change
 	// announces that a reindex is due.
-	rec = request(e, http.MethodPost, "/api/search/sane", `{"docTypes":["TASK","DREV","CMIT"]}`)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sane":false`) {
-		t.Errorf("expected a plain false, got %d %s", rec.Code, rec.Body.String())
+	resp, body = request(t, app, http.MethodPost, "/api/search/sane", `{"docTypes":["TASK","DREV","CMIT"]}`)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"sane":false`) {
+		t.Errorf("expected a plain false, got %d %s", resp.StatusCode, body)
 	}
 }
 
@@ -294,35 +307,35 @@ func TestIndexLifecycleEndpoints(t *testing.T) {
 func TestDocTypesAreRequired(t *testing.T) {
 	for _, path := range []string{"/api/search/init", "/api/search/sane"} {
 		t.Run(path, func(t *testing.T) {
-			rec := request(newTestServer(t), http.MethodPost, path, `{}`)
-			assertErrorCode(t, rec, http.StatusBadRequest, httpx.CodeBadRequest)
-			if !strings.Contains(rec.Body.String(), "docTypes is required") {
-				t.Errorf("the message should name the missing field: %s", rec.Body.String())
+			resp, body := request(t, newTestServer(t), http.MethodPost, path, `{}`)
+			assertErrorCode(t, resp, body, http.StatusBadRequest, httpx.CodeBadRequest)
+			if !strings.Contains(body, "docTypes is required") {
+				t.Errorf("the message should name the missing field: %s", body)
 			}
 		})
 	}
 }
 
 func TestStatsAndBackends(t *testing.T) {
-	e := newTestServer(t)
+	app := newTestServer(t)
 
-	rec := request(e, http.MethodGet, "/api/search/stats", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	resp, body := request(t, app, http.MethodGet, "/api/search/stats", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 	// snake_case, unlike every other name on this service's wire, and kept
 	// that way on purpose; see contracts.IndexStats.
-	if !strings.Contains(rec.Body.String(), `"storage_bytes"`) {
-		t.Errorf("storage_bytes is part of the wire: %s", rec.Body.String())
+	if !strings.Contains(body, `"storage_bytes"`) {
+		t.Errorf("storage_bytes is part of the wire: %s", body)
 	}
 
-	rec = request(e, http.MethodGet, "/api/search/backends", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	resp, body = request(t, app, http.MethodGet, "/api/search/backends", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 	for _, want := range []string{`"type"`, `"index"`, `"roles"`} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Errorf("a backend entry must carry %s: %s", want, rec.Body.String())
+		if !strings.Contains(body, want) {
+			t.Errorf("a backend entry must carry %s: %s", want, body)
 		}
 	}
 }
@@ -347,12 +360,12 @@ func TestEveryDomainErrorCodeIsReachable(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.code+" via "+tc.fail, func(t *testing.T) {
-			e := newServerWith(t, []engine.BackendDef{{
+			app := newServerWith(t, []engine.BackendDef{{
 				Type:    "test",
 				Options: map[string]string{"fail": tc.fail},
 			}})
-			rec := request(e, tc.method, tc.path, tc.body)
-			assertErrorCode(t, rec, http.StatusBadGateway, tc.code)
+			resp, body := request(t, app, tc.method, tc.path, tc.body)
+			assertErrorCode(t, resp, body, http.StatusBadGateway, tc.code)
 		})
 	}
 }
@@ -361,7 +374,7 @@ func TestEveryDomainErrorCodeIsReachable(t *testing.T) {
 // itself broke, and reporting a downstream outage as one sends whoever is
 // debugging to the wrong logs.
 func TestBackendFailuresAreNever500(t *testing.T) {
-	e := newServerWith(t, []engine.BackendDef{{
+	app := newServerWith(t, []engine.BackendDef{{
 		Type:    "test",
 		Options: map[string]string{"fail": "index,search,init,exists,sane,stats"},
 	}})
@@ -374,9 +387,9 @@ func TestBackendFailuresAreNever500(t *testing.T) {
 		{http.MethodPost, "/api/search/sane", `{"docTypes":["TASK"]}`},
 		{http.MethodGet, "/api/search/stats", ""},
 	} {
-		rec := request(e, tc.method, tc.path, tc.body)
-		if rec.Code != http.StatusBadGateway {
-			t.Errorf("%s %s: expected 502, got %d", tc.method, tc.path, rec.Code)
+		resp, _ := request(t, app, tc.method, tc.path, tc.body)
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Errorf("%s %s: expected 502, got %d", tc.method, tc.path, resp.StatusCode)
 		}
 	}
 }
@@ -384,15 +397,19 @@ func TestBackendFailuresAreNever500(t *testing.T) {
 func TestMalformedBodyIsABadRequest(t *testing.T) {
 	for _, path := range []string{"/api/search/index", "/api/search/query", "/api/search/init", "/api/search/sane"} {
 		t.Run(path, func(t *testing.T) {
-			rec := request(newTestServer(t), http.MethodPost, path, `{"phid":`)
-			assertErrorCode(t, rec, http.StatusBadRequest, httpx.CodeBadRequest)
+			resp, body := request(t, newTestServer(t), http.MethodPost, path, `{"phid":`)
+			assertErrorCode(t, resp, body, http.StatusBadRequest, httpx.CodeBadRequest)
 		})
 	}
 }
 
-// A body over the transport limit surfaces as Echo's 413 and has to reach the
-// platform error handler unchanged; catching it locally would report it as
-// ERR_BAD_REQUEST and tell the caller to fix its JSON.
+// A body over the transport limit surfaces as the platform's 413 and has to
+// reach the platform error handler unchanged; catching it locally would report
+// it as ERR_BAD_REQUEST and tell the caller to fix its JSON.
+//
+// fasthttp rejects an oversized body while reading the request, which app.Test
+// surfaces as a Go error rather than the 413 a real connection receives, so
+// this exercises the platform body limit over a real listener.
 func TestOversizedBodyStaysTooLarge(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -402,35 +419,84 @@ func TestOversizedBodyStaysTooLarge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httpx.New(httpx.Config{BodyLimit: "64", Ready: se.Ready})
-	RegisterRoutes(srv.Echo(), &Deps{Engine: se, Token: testToken})
 
-	rec := request(srv.Echo(), http.MethodPost, "/api/search/index", validDoc)
-	assertErrorCode(t, rec, http.StatusRequestEntityTooLarge, httpx.CodeTooLarge)
+	srv := httpx.New(httpx.Config{ListenAddr: "127.0.0.1:0", BodyLimit: "64", Ready: se.Ready})
+	RegisterRoutes(srv.App(), &Deps{Engine: se, Token: testToken})
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Run() }()
+	t.Cleanup(func() {
+		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
+		<-done
+	})
+
+	var addr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := srv.ListenerAddr(); a != nil {
+			addr = a.String()
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server never started listening")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/search/index", strings.NewReader(validDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Service-Token", testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected %d, got %d (body: %s)", http.StatusRequestEntityTooLarge, resp.StatusCode, string(raw))
+	}
+	body := string(raw)
+	var decoded testEnvelope
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("response is not an envelope: %v (body: %s)", err, body)
+	}
+	if decoded.Error == nil {
+		t.Fatalf("expected an error envelope, got: %s", body)
+	}
+	if decoded.Error.Code != httpx.CodeTooLarge {
+		t.Errorf("expected %s, got %s", httpx.CodeTooLarge, decoded.Error.Code)
+	}
+	if len(decoded.Data) != 0 {
+		t.Errorf("an error response must carry no data, got: %s", decoded.Data)
+	}
 }
 
 func TestAuthentication(t *testing.T) {
-	e := newTestServer(t)
+	app := newTestServer(t)
 
 	t.Run("no token", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/search/backends", nil))
-		assertErrorCode(t, rec, http.StatusUnauthorized, httpx.CodeUnauthorized)
+		resp, body := do(t, app, httptest.NewRequest(http.MethodGet, "/api/search/backends", nil))
+		assertErrorCode(t, resp, body, http.StatusUnauthorized, httpx.CodeUnauthorized)
 	})
 
 	t.Run("wrong token", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/search/backends", nil)
 		req.Header.Set("X-Service-Token", "nope")
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, req)
-		assertErrorCode(t, rec, http.StatusUnauthorized, httpx.CodeUnauthorized)
+		resp, body := do(t, app, req)
+		assertErrorCode(t, resp, body, http.StatusUnauthorized, httpx.CodeUnauthorized)
 	})
 
 	t.Run("query parameter fallback", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/search/backends?token="+testToken, nil))
-		if rec.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		resp, body := do(t, app, httptest.NewRequest(http.MethodGet, "/api/search/backends?token="+testToken, nil))
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d: %s", resp.StatusCode, body)
 		}
 	})
 
@@ -439,9 +505,8 @@ func TestAuthentication(t *testing.T) {
 	// is not a bug: it keeps the route list from leaking to an unauthenticated
 	// caller.
 	t.Run("unknown path under the group", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/search/nope", nil))
-		assertErrorCode(t, rec, http.StatusUnauthorized, httpx.CodeUnauthorized)
+		resp, body := do(t, app, httptest.NewRequest(http.MethodGet, "/api/search/nope", nil))
+		assertErrorCode(t, resp, body, http.StatusUnauthorized, httpx.CodeUnauthorized)
 	})
 }
 

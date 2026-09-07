@@ -10,17 +10,27 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 )
 
 const testToken = "test-token"
 
+// result carries the response of one app.Test dispatch. It is the app.Test
+// stand-in for the ServeHTTP+ResponseRecorder pattern: Code/Body/Header mirror
+// the httptest.ResponseRecorder fields the tests used to read.
+type result struct {
+	Code   int
+	Body   string
+	Header http.Header
+}
+
 // newTestServer builds the routes the way cmd/gorge-file-storage does, so the
 // platform error handler and the health probes are in play.
-func newTestServer(t *testing.T, engines ...StorageEngine) *echo.Echo {
+func newTestServer(t *testing.T, engines ...StorageEngine) *fiber.App {
 	t.Helper()
 	quietLogs(t)
 
@@ -29,18 +39,33 @@ func newTestServer(t *testing.T, engines ...StorageEngine) *echo.Echo {
 		BodyLimit: TransportBodyLimit,
 		Ready:     router.Ready,
 	})
-	RegisterRoutes(srv.Echo(), &Deps{Router: router, Token: testToken})
-	return srv.Echo()
+	RegisterRoutes(srv.App(), &Deps{Router: router, Token: testToken})
+	return srv.App()
+}
+
+// dispatch runs one request against app and captures the response. It replaces
+// the ServeHTTP+ResponseRecorder dispatch.
+func dispatch(t *testing.T, app *fiber.App, req *http.Request) result {
+	t.Helper()
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	_ = resp.Body.Close()
+	return result{Code: resp.StatusCode, Body: string(body), Header: resp.Header}
 }
 
 // do issues an authenticated request. A nil body sends none at all, which is
 // distinct from sending an empty one.
-func do(e *echo.Echo, method, path string, body io.Reader) *httptest.ResponseRecorder {
+func do(t *testing.T, app *fiber.App, method, path string, body io.Reader) result {
+	t.Helper()
 	req := httptest.NewRequest(method, path, body)
 	req.Header.Set("X-Service-Token", testToken)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return dispatch(t, app, req)
 }
 
 type testEnvelope struct {
@@ -51,25 +76,25 @@ type testEnvelope struct {
 	} `json:"error"`
 }
 
-func envelope(t *testing.T, rec *httptest.ResponseRecorder) testEnvelope {
+func envelope(t *testing.T, rec result) testEnvelope {
 	t.Helper()
 
 	var decoded testEnvelope
-	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
-		t.Fatalf("response is not an envelope: %v (body: %s)", err, rec.Body.String())
+	if err := json.Unmarshal([]byte(rec.Body), &decoded); err != nil {
+		t.Fatalf("response is not an envelope: %v (body: %s)", err, rec.Body)
 	}
 	return decoded
 }
 
-func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+func assertErrorCode(t *testing.T, rec result, status int, code string) {
 	t.Helper()
 
 	if rec.Code != status {
-		t.Errorf("expected %d, got %d (body: %s)", status, rec.Code, rec.Body.String())
+		t.Errorf("expected %d, got %d (body: %s)", status, rec.Code, rec.Body)
 	}
 	env := envelope(t, rec)
 	if env.Error == nil {
-		t.Fatalf("expected an error envelope, got: %s", rec.Body.String())
+		t.Fatalf("expected an error envelope, got: %s", rec.Body)
 	}
 	if env.Error.Code != code {
 		t.Errorf("expected %s, got %s", code, env.Error.Code)
@@ -79,13 +104,72 @@ func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, status int, c
 	}
 }
 
+// writeBlobLiveChunked serves one chunked (unknown-length) POST to
+// /api/file/blob over a real listener. It exists for the unknown-length case:
+// app.Test serialises a request with ContentLength -1 as a literal
+// "Content-Length: -1" header that fasthttp rejects while parsing, whereas a
+// real client sends a chunked body — the shape a caller without a
+// Content-Length actually produces, which fasthttp reports as ContentLength -1
+// to the handler.
+func writeBlobLiveChunked(t *testing.T, engines ...StorageEngine) result {
+	t.Helper()
+	quietLogs(t)
+
+	router := NewRouter(engines)
+	srv := httpx.New(httpx.Config{
+		ListenAddr: "127.0.0.1:0",
+		BodyLimit:  TransportBodyLimit,
+		Ready:      router.Ready,
+	})
+	RegisterRoutes(srv.App(), &Deps{Router: router, Token: testToken})
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Run() }()
+	t.Cleanup(func() {
+		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
+		<-done
+	})
+
+	var addr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := srv.ListenerAddr(); a != nil {
+			addr = a.String()
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server never started listening")
+	}
+
+	// An opaque reader with ContentLength left at 0 makes net/http send the
+	// body chunked, with no Content-Length header at all.
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/file/blob",
+		oneByteReader{strings.NewReader("x")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Service-Token", testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	return result{Code: resp.StatusCode, Body: string(raw), Header: resp.Header}
+}
+
 func TestWriteBlob(t *testing.T) {
 	disk := diskLike()
 	e := newTestServer(t, blobLike(1000), disk)
 
-	rec := do(e, http.MethodPost, "/api/file/blob", strings.NewReader("hello gorge"))
+	rec := do(t, e, http.MethodPost, "/api/file/blob", strings.NewReader("hello gorge"))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
 
 	// The JSON half of the contract: a write answers the envelope, because
@@ -110,14 +194,10 @@ func TestWriteBlob(t *testing.T) {
 // signed for S3 nor checked against a backend's size limit before it is read.
 // Refusing it is better than silently buffering it.
 func TestWriteBlobRequiresAContentLength(t *testing.T) {
-	e := newTestServer(t, diskLike())
-
-	// httptest.NewRequest only derives a ContentLength for the reader types it
-	// recognises, so an opaque reader produces the -1 a chunked upload would.
-	req := httptest.NewRequest(http.MethodPost, "/api/file/blob", oneByteReader{strings.NewReader("x")})
-	req.Header.Set("X-Service-Token", testToken)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	// A real chunked upload produces no Content-Length; app.Test cannot express
+	// that (it would serialise ContentLength -1 into a header fasthttp rejects),
+	// so this one case is served over a real listener.
+	rec := writeBlobLiveChunked(t, diskLike())
 
 	assertErrorCode(t, rec, http.StatusBadRequest, httpx.CodeBadRequest)
 }
@@ -127,12 +207,12 @@ func TestWriteBlobAcceptsAnEmptyFile(t *testing.T) {
 
 	// Zero bytes with a Content-Length of 0 is a real file, not a missing
 	// body. Phorge stores empty files.
-	rec := do(e, http.MethodPost, "/api/file/blob", strings.NewReader(""))
+	rec := do(t, e, http.MethodPost, "/api/file/blob", strings.NewReader(""))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), `"size":0`) {
-		t.Errorf("expected size 0, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body, `"size":0`) {
+		t.Errorf("expected size 0, got %s", rec.Body)
 	}
 }
 
@@ -141,12 +221,12 @@ func TestWriteBlobToANamedEngine(t *testing.T) {
 
 	// Naming an engine overrides the priority order: Phorge does it when the
 	// file's engine is already recorded against it.
-	rec := do(e, http.MethodPost, "/api/file/blob?engine=local-disk", strings.NewReader("hello"))
+	rec := do(t, e, http.MethodPost, "/api/file/blob?engine=local-disk", strings.NewReader("hello"))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), `"engine":"local-disk"`) {
-		t.Errorf("expected the named engine, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body, `"engine":"local-disk"`) {
+		t.Errorf("expected the named engine, got %s", rec.Body)
 	}
 }
 
@@ -155,7 +235,7 @@ func TestWriteBlobUnknownEngineIs400(t *testing.T) {
 
 	// The caller's mistake, not a server failure: a handle is meaningless
 	// without the engine that minted it, so there is nothing to substitute.
-	rec := do(e, http.MethodPost, "/api/file/blob?engine=nope", strings.NewReader("hello"))
+	rec := do(t, e, http.MethodPost, "/api/file/blob?engine=nope", strings.NewReader("hello"))
 	assertErrorCode(t, rec, http.StatusBadRequest, httpx.CodeBadRequest)
 }
 
@@ -165,7 +245,7 @@ func TestWriteBlobUnknownEngineIs400(t *testing.T) {
 func TestWriteBlobOverANamedEnginesLimitIs413(t *testing.T) {
 	e := newTestServer(t, blobLike(10), diskLike())
 
-	rec := do(e, http.MethodPost, "/api/file/blob?engine=blob",
+	rec := do(t, e, http.MethodPost, "/api/file/blob?engine=blob",
 		strings.NewReader(strings.Repeat("x", 500)))
 	assertErrorCode(t, rec, http.StatusRequestEntityTooLarge, httpx.CodeTooLarge)
 }
@@ -176,7 +256,7 @@ func TestWriteBlobOverANamedEnginesLimitIs413(t *testing.T) {
 func TestWriteBlobNoEngineIs503(t *testing.T) {
 	e := newTestServer(t)
 
-	rec := do(e, http.MethodPost, "/api/file/blob", strings.NewReader("hello"))
+	rec := do(t, e, http.MethodPost, "/api/file/blob", strings.NewReader("hello"))
 	assertErrorCode(t, rec, http.StatusServiceUnavailable, CodeNoEngine)
 }
 
@@ -185,7 +265,7 @@ func TestWriteBlobEveryEngineFailingIs500(t *testing.T) {
 	disk.writeErr = errors.New("disk full")
 	e := newTestServer(t, disk)
 
-	rec := do(e, http.MethodPost, "/api/file/blob", strings.NewReader("hello"))
+	rec := do(t, e, http.MethodPost, "/api/file/blob", strings.NewReader("hello"))
 	// Not ERR_NO_ENGINE: a backend is configured and it broke. The engine's
 	// own error stays in the log, since a 5xx body never describes internals.
 	assertErrorCode(t, rec, http.StatusInternalServerError, httpx.CodeInternal)
@@ -202,12 +282,12 @@ func TestWriteBlobFallsThroughToTheNextEngine(t *testing.T) {
 
 	e := newTestServer(t, blob, disk)
 
-	rec := do(e, http.MethodPost, "/api/file/blob", strings.NewReader("hello gorge"))
+	rec := do(t, e, http.MethodPost, "/api/file/blob", strings.NewReader("hello gorge"))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), `"engine":"local-disk"`) {
-		t.Errorf("expected the fallback engine to be reported, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body, `"engine":"local-disk"`) {
+		t.Errorf("expected the fallback engine to be reported, got %s", rec.Body)
 	}
 }
 
@@ -218,25 +298,25 @@ func TestReadBlobAnswersRawBytes(t *testing.T) {
 	disk.seed("seeded", []byte("hello gorge"))
 	e := newTestServer(t, disk)
 
-	rec := do(e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=seeded", nil)
+	rec := do(t, e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=seeded", nil)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
-	if got := rec.Body.String(); got != "hello gorge" {
+	if got := rec.Body; got != "hello gorge" {
 		t.Errorf("body = %q, want the file's bytes and nothing else", got)
 	}
 	// The Content-Type is what the PHP client branches on to tell the binary
 	// shape from the envelope.
-	if got := rec.Header().Get(echo.HeaderContentType); got != contentTypeBlob {
+	if got := rec.Header.Get(fiber.HeaderContentType); got != contentTypeBlob {
 		t.Errorf("Content-Type = %q, want %q", got, contentTypeBlob)
 	}
 	// The Content-Length is what lets the client tell a complete file from a
 	// truncated one.
-	if got := rec.Header().Get(echo.HeaderContentLength); got != "11" {
+	if got := rec.Header.Get(fiber.HeaderContentLength); got != "11" {
 		t.Errorf("Content-Length = %q, want 11", got)
 	}
-	if strings.Contains(rec.Body.String(), `"data"`) {
+	if strings.Contains(rec.Body, `"data"`) {
 		t.Error("a successful read must not be wrapped in the envelope")
 	}
 }
@@ -249,15 +329,15 @@ func TestReadBlobAnswersAnEmptyFile(t *testing.T) {
 	disk.seed("empty", []byte{})
 	e := newTestServer(t, disk)
 
-	rec := do(e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=empty", nil)
+	rec := do(t, e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=empty", nil)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
-	if rec.Body.Len() != 0 {
-		t.Errorf("expected an empty body, got %q", rec.Body.String())
+	if len(rec.Body) != 0 {
+		t.Errorf("expected an empty body, got %q", rec.Body)
 	}
-	if got := rec.Header().Get(echo.HeaderContentLength); got != "0" {
+	if got := rec.Header.Get(fiber.HeaderContentLength); got != "0" {
 		t.Errorf("Content-Length = %q, want 0", got)
 	}
 }
@@ -271,16 +351,16 @@ func TestReadBlobOmitsContentLengthWhenTheSizeIsUnknown(t *testing.T) {
 	disk.seed("seeded", []byte("hello gorge"))
 	e := newTestServer(t, disk)
 
-	rec := do(e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=seeded", nil)
+	rec := do(t, e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=seeded", nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if got := rec.Header().Get(echo.HeaderContentLength); got != "" {
+	if got := rec.Header.Get(fiber.HeaderContentLength); got != "" {
 		t.Errorf("Content-Length = %q, want it absent", got)
 	}
-	if rec.Body.String() != "hello gorge" {
-		t.Errorf("body = %q", rec.Body.String())
+	if rec.Body != "hello gorge" {
+		t.Errorf("body = %q", rec.Body)
 	}
 }
 
@@ -289,7 +369,7 @@ func TestReadBlobOmitsContentLengthWhenTheSizeIsUnknown(t *testing.T) {
 func TestReadBlobFailureKeepsTheEnvelope(t *testing.T) {
 	e := newTestServer(t, diskLike())
 
-	rec := do(e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=gone", nil)
+	rec := do(t, e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=gone", nil)
 	assertErrorCode(t, rec, http.StatusNotFound, httpx.CodeNotFound)
 }
 
@@ -305,7 +385,7 @@ func TestReadBlobRequiresBothParameters(t *testing.T) {
 			// The engine is required rather than inferred: handle formats
 			// overlap between backends, so guessing would sometimes read the
 			// wrong file rather than fail.
-			assertErrorCode(t, do(e, http.MethodGet, path, nil),
+			assertErrorCode(t, do(t, e, http.MethodGet, path, nil),
 				http.StatusBadRequest, httpx.CodeBadRequest)
 		})
 	}
@@ -335,12 +415,12 @@ func TestHandlesWithSlashesSurviveTheQueryString(t *testing.T) {
 			disk.seed(handle, []byte("hello gorge"))
 			e := newTestServer(t, disk)
 
-			rec := do(e, http.MethodGet, "/api/file/blob?engine=local-disk&handle="+tc.query, nil)
+			rec := do(t, e, http.MethodGet, "/api/file/blob?engine=local-disk&handle="+tc.query, nil)
 			if rec.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 			}
-			if rec.Body.String() != "hello gorge" {
-				t.Errorf("body = %q", rec.Body.String())
+			if rec.Body != "hello gorge" {
+				t.Errorf("body = %q", rec.Body)
 			}
 		})
 	}
@@ -351,12 +431,12 @@ func TestDeleteBlob(t *testing.T) {
 	disk.seed("seeded", []byte("hello gorge"))
 	e := newTestServer(t, disk)
 
-	rec := do(e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=seeded", nil)
+	rec := do(t, e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=seeded", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), `"status":"deleted"`) {
-		t.Errorf("unexpected response: %s", rec.Body.String())
+	if !strings.Contains(rec.Body, `"status":"deleted"`) {
+		t.Errorf("unexpected response: %s", rec.Body)
 	}
 	if _, ok := disk.object("seeded"); ok {
 		t.Error("the object is still there")
@@ -369,9 +449,9 @@ func TestDeleteBlob(t *testing.T) {
 func TestDeleteBlobIsIdempotent(t *testing.T) {
 	e := newTestServer(t, diskLike())
 
-	rec := do(e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=gone", nil)
+	rec := do(t, e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=gone", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
 }
 
@@ -380,7 +460,7 @@ func TestDeleteBlobFailureIs500(t *testing.T) {
 	disk.deleteErr = errors.New("permission denied")
 	e := newTestServer(t, disk)
 
-	rec := do(e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=seeded", nil)
+	rec := do(t, e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=seeded", nil)
 	assertErrorCode(t, rec, http.StatusInternalServerError, httpx.CodeInternal)
 }
 
@@ -393,7 +473,7 @@ func TestDeleteBlobBadHandleIs400(t *testing.T) {
 	disk.deleteErr = fmt.Errorf("malformed handle %q: %w", "../../etc/passwd", ErrBadHandle)
 	e := newTestServer(t, disk)
 
-	rec := do(e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=../../etc/passwd", nil)
+	rec := do(t, e, http.MethodDelete, "/api/file/blob?engine=local-disk&handle=../../etc/passwd", nil)
 	assertErrorCode(t, rec, http.StatusBadRequest, httpx.CodeBadRequest)
 }
 
@@ -408,7 +488,7 @@ func TestReadBlobBadHandleStays404(t *testing.T) {
 	}
 	e := newTestServer(t, eng)
 
-	rec := do(e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=../../etc/passwd", nil)
+	rec := do(t, e, http.MethodGet, "/api/file/blob?engine=local-disk&handle=../../etc/passwd", nil)
 	assertErrorCode(t, rec, http.StatusNotFound, httpx.CodeNotFound)
 }
 
@@ -440,9 +520,9 @@ func TestEnginesReportABadHandle(t *testing.T) {
 func TestListEngines(t *testing.T) {
 	e := newTestServer(t, diskLike(), blobLike(1000))
 
-	rec := do(e, http.MethodGet, "/api/file/engines", nil)
+	rec := do(t, e, http.MethodGet, "/api/file/engines", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
 
 	var info []struct {
@@ -471,30 +551,27 @@ func TestTokenAuth(t *testing.T) {
 	e := newTestServer(t, diskLike())
 
 	t.Run("rejected without a token", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/file/engines", nil))
+		rec := dispatch(t, e, httptest.NewRequest(http.MethodGet, "/api/file/engines", nil))
 		assertErrorCode(t, rec, http.StatusUnauthorized, httpx.CodeUnauthorized)
 	})
 
 	t.Run("accepted in the header", func(t *testing.T) {
-		if rec := do(e, http.MethodGet, "/api/file/engines", nil); rec.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		if rec := do(t, e, http.MethodGet, "/api/file/engines", nil); rec.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body)
 		}
 	})
 
 	t.Run("accepted in the query string", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/file/engines?token="+testToken, nil))
+		rec := dispatch(t, e, httptest.NewRequest(http.MethodGet, "/api/file/engines?token="+testToken, nil))
 		if rec.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body)
 		}
 	})
 
 	t.Run("a read is guarded too", func(t *testing.T) {
 		// The binary endpoint is the one where an unguarded route would leak
 		// file contents rather than metadata.
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		rec := dispatch(t, e, httptest.NewRequest(http.MethodGet,
 			"/api/file/blob?engine=local-disk&handle=seeded", nil))
 		assertErrorCode(t, rec, http.StatusUnauthorized, httpx.CodeUnauthorized)
 	})
@@ -504,10 +581,8 @@ func TestTokenAuth(t *testing.T) {
 // contract: the process is alive, but it can store nothing, and orchestration
 // has to be able to tell those apart.
 func TestReadyzReportsUnconfiguredBackends(t *testing.T) {
-	probe := func(e *echo.Echo, path string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		return rec
+	probe := func(app *fiber.App, path string) result {
+		return dispatch(t, app, httptest.NewRequest(http.MethodGet, path, nil))
 	}
 
 	unconfigured := newTestServer(t)
@@ -518,16 +593,16 @@ func TestReadyzReportsUnconfiguredBackends(t *testing.T) {
 
 	rec := probe(unconfigured, "/readyz")
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body)
 	}
 	// Probe payloads stay outside the {data,error} envelope: orchestrators are
 	// configured against the flat shape.
-	if strings.Contains(rec.Body.String(), `"data"`) {
-		t.Errorf("probe payload must not use the envelope: %s", rec.Body.String())
+	if strings.Contains(rec.Body, `"data"`) {
+		t.Errorf("probe payload must not use the envelope: %s", rec.Body)
 	}
 
 	if rec := probe(newTestServer(t, diskLike()), "/readyz"); rec.Code != http.StatusOK {
-		t.Errorf("expected 200 once a backend is configured, got %d: %s", rec.Code, rec.Body.String())
+		t.Errorf("expected 200 once a backend is configured, got %d: %s", rec.Code, rec.Body)
 	}
 }
 
@@ -544,7 +619,7 @@ func TestRoutePathsAreStable(t *testing.T) {
 		"GET /healthz":          "",
 		"GET /readyz":           "",
 	}
-	for _, r := range e.Routes() {
+	for _, r := range e.GetRoutes(true) {
 		delete(want, r.Method+" "+r.Path)
 	}
 	for route := range want {
@@ -558,6 +633,6 @@ func TestRoutePathsAreStable(t *testing.T) {
 func TestUnknownPathKeepsTheEnvelope(t *testing.T) {
 	e := newTestServer(t, diskLike())
 
-	rec := do(e, http.MethodGet, "/api/file/nope", nil)
+	rec := do(t, e, http.MethodGet, "/api/file/nope", nil)
 	assertErrorCode(t, rec, http.StatusNotFound, httpx.CodeNotFound)
 }

@@ -36,7 +36,7 @@ func main() {
 		Ready: router.Ready,
 	})
 
-	filestorage.RegisterRoutes(srv.Echo(), &filestorage.Deps{
+	filestorage.RegisterRoutes(srv.App(), &filestorage.Deps{
 		Router: router,
 		Token:  cfg.ServiceToken,
 	})

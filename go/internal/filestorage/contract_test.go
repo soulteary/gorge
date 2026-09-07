@@ -55,7 +55,7 @@ func TestContractFixtures(t *testing.T) {
 		BodyLimit:  TransportBodyLimit,
 		Ready:      router.Ready,
 	})
-	RegisterRoutes(srv.Echo(), &Deps{Router: router, Token: contracttest.Token})
+	RegisterRoutes(srv.App(), &Deps{Router: router, Token: contracttest.Token})
 
-	contracttest.Run(t, srv.Echo(), fixtureDir)
+	contracttest.Run(t, srv.App(), fixtureDir)
 }

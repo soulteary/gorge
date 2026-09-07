@@ -13,7 +13,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/platform/auth"
@@ -43,12 +43,12 @@ type Deps struct {
 //
 // Both paths are part of the contract: PhabricatorGorgeWebhookClient calls
 // them as written. /healthz, /readyz and / come from platform/health.
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/webhook")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/webhook")
 	g.Use(auth.Token(deps.Token))
 
-	g.GET("/stats", stats(deps))
-	g.GET("/hooks", listHooks(deps))
+	g.Get("/stats", stats(deps))
+	g.Get("/hooks", listHooks(deps))
 }
 
 // ReadyProbe adapts a Store to the platform's readiness probe.
@@ -72,9 +72,9 @@ func ReadyProbe(s Store) func() error {
 // memory, so they describe the queue as Phorge's own UI sees it — including
 // the work of every other instance, and including rows that were queued while
 // this process was not running.
-func stats(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		result, err := deps.Store.Stats(c.Request().Context())
+func stats(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		result, err := deps.Store.Stats(c.Context())
 		if err != nil {
 			// Returned raw: the platform error handler answers 500
 			// ERR_INTERNAL with a generic message and logs the cause. A 5xx
@@ -93,9 +93,9 @@ func stats(deps *Deps) echo.HandlerFunc {
 // the two answer different questions: stats counts what is *deliverable*, so
 // its ActiveWebhooks excludes disabled hooks, while this one is what a setup
 // check reads to tell "no hooks yet" from "hooks that are all switched off".
-func listHooks(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		total, err := deps.Store.CountHooks(c.Request().Context())
+func listHooks(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		total, err := deps.Store.CountHooks(c.Context())
 		if err != nil {
 			return err
 		}
