@@ -1,0 +1,13 @@
+{
+  "name": "?token= is accepted alongside the header",
+  "description": "The query parameter is the fallback for callers that cannot set headers, and it is checked only when X-Service-Token is absent. PhabricatorGorgeWebhookClient uses the header; this path exists for looking at the queue from a browser or a curl one-liner in a runbook, which for a read-only status endpoint is most of the ways anyone reaches it.",
+  "request": {
+    "method": "GET",
+    "path": "/api/webhook/stats?token=contract-token"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.queuedCount"],
+    "jsonAbsent": ["error"]
+  }
+}

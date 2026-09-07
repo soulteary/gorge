@@ -1,0 +1,527 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Webhook API
+  description: |
+    HTTP contract for the `gorge-webhook` binary, which serves the Herald
+    webhook delivery domain: it drains the request queue Phorge fills in
+    `{namespace}_herald.herald_webhookrequest` and POSTs each request to its
+    hook's URI under an HMAC-SHA256 signature.
+
+    **This document describes the smaller half of the service.** The two
+    endpoints below are read-only status; nothing here queues, retries or
+    cancels a delivery. What the service actually does happens in a background
+    poll loop that no request can start, stop or influence — Phorge writes the
+    rows, the loop drains them, and the loop's own outbound contract (the
+    payload and its signature) is described at the bottom of this section
+    rather than as an endpoint, because this service is the client there.
+
+    That shape is why the endpoints matter more than their size suggests. A
+    delivery service with an unreachable database is listening, healthy by any
+    liveness measure, and completely idle; `/readyz` and `GET
+    /api/webhook/stats` are the only things that can say so.
+
+    Response shapes:
+
+    - `/api/webhook/**` returns the `{data, error}` envelope, with exactly one
+      of the two keys populated. This holds for failures the service never
+      reached a handler for — an unknown path, a recovered panic — because
+      `httpx` replaces the framework's default error handler.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them.
+
+    **The domain defines no error code of its own**, which is a decision
+    rather than an omission. Both endpoints do one thing — count rows — so
+    their only failure is "the database did not answer", and `ERR_INTERNAL`
+    already says that. The state a caller actually needs to distinguish, "the
+    service is up but cannot reach the queue", is what `/readyz` reports, with
+    a reason string a new code could not improve on.
+
+    ## The outbound delivery, which is not an endpoint here
+
+    Every delivery is a `POST` to the hook's own `webhookURI` carrying:
+
+    - `Content-Type: application/json`
+    - `X-Phabricator-Webhook-Signature`: the HMAC-SHA256 of the request body,
+      lower-case hex, keyed with the hook's `hmacKey`
+    - a body matching `WebhookPayload` below, serialised with **two-space
+      indentation and a trailing newline**
+
+    Those bytes are a contract, not a formatting preference. The signature is
+    computed over exactly them, so a receiver written against Phorge's own
+    PHP delivery — which produces this layout through
+    `PhutilJSON::encodeFormatted` — keeps validating signatures only as long as
+    the layout holds. The header name is equally fixed: a receiver that stopped
+    seeing it would reject every delivery, or worse, accept unsigned ones.
+
+    A 2xx answer is a success; anything else, a timeout or a transport failure
+    is not, and what happens next is the request's own `retry` mode. Failures
+    are paced two ways at once: one request waits 60 seconds before it is
+    attempted again (`GORGE_WEBHOOK_RETRY_BACKOFF_SEC`), and a hook that has
+    accumulated 10 failures within 5 minutes stops being delivered to at all
+    until they age out. Both numbers are Phorge's.
+
+    The schemas under `components.schemas` mirror
+    `go/internal/contracts/webhook.go`, which is the single source of truth
+    shared by the Go service, the PHP client and the contract fixtures under
+    `tests/contract/webhook/`. The database columns this service reads and
+    writes are a separate, stricter contract, documented in
+    `compat/phorge/README.md` — in particular the `status` values, which cannot
+    be extended.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8160
+    description: Local development
+
+tags:
+  - name: webhook
+    description: Read-only status of the delivery queue
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/webhook/stats:
+    get:
+      tags: [webhook]
+      summary: Report the delivery queue's state
+      description: |
+        Four counts, and they are the only window into what the service is
+        doing. It has no request log to read and no endpoint that describes an
+        individual delivery: Phorge's own Herald interface is where a single
+        request's status, error type and error code are shown, because this
+        service writes them back to the row Phorge owns.
+
+        Every count is a live `COUNT(*)` over Phorge's tables rather than a
+        counter this process keeps. Three consequences worth knowing:
+
+        - the numbers survive a restart, and include the work of every other
+          instance;
+        - `queuedCount` growing steadily is the signal worth alerting on — it
+          means deliveries are failing or the loop is not running;
+        - `sentCount` and `failedCount` are not totals since the beginning of
+          time. Phorge's garbage collection keeps request rows for seven days,
+          so both are "in the last week" and both will stop growing once that
+          steady state is reached.
+
+        `activeWebhooks` counts hooks that are **not** disabled, which is the
+        difference between it and `GET /api/webhook/hooks`.
+      operationId: webhookStats
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The queue's current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+              example:
+                data:
+                  queuedCount: 3
+                  sentCount: 2
+                  failedCount: 1
+                  activeWebhooks: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/webhook/hooks:
+    get:
+      tags: [webhook]
+      summary: Count the configured hooks
+      description: |
+        Every hook, **disabled ones included** — which is the whole reason
+        this is a second endpoint rather than a fifth field on `stats`.
+
+        "No hooks configured yet" and "hooks configured but all switched off"
+        are different states an operator fixes differently, and
+        `stats.activeWebhooks` reports both of them as `0`. A setup check that
+        only read that field would tell someone to create a hook they already
+        have.
+
+        It is a count and not a list, deliberately. A hook's URI and its HMAC
+        key are in the rows behind this number, and neither belongs in a
+        response: Phorge's own interface is where hooks are inspected, by a
+        user whose permissions it can check.
+      operationId: webhookHooks
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The number of configured hooks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HooksResponse'
+              example:
+                data:
+                  total: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: |
+        Always succeeds while the process is serving. Never authenticated.
+
+        It reports nothing about the database, deliberately — and for this
+        service that gap is wider than for any other in the repository. A
+        container healthcheck pointed here reports healthy for a process that
+        cannot read its queue and is therefore delivering nothing at all, with
+        no failures anywhere to notice: Phorge keeps queueing requests, and
+        they simply sit there. Use `/readyz`.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once Phorge's herald database answers a ping, bounded by a
+        5-second timeout. That is the whole condition, because it is the whole
+        of what this service depends on and there is nothing it can do without
+        it.
+
+        Unlike the file storage and mailer domains there is no "configured but
+        empty" state to report: a webhook service with no queue to read is not
+        degraded, it is idle in a way indistinguishable from broken. This is
+        the probe container orchestration should be pointed at.
+
+        **It deliberately does not check whether the herald tables exist.**
+        They are created by Phorge's `bin/storage upgrade`, which runs in the
+        Phorge container, and that container may start after this one — so
+        requiring the tables would report a healthy deployment as broken for as
+        long as its first migration takes. Pinging is safe because the database
+        server is a separate container that depends on neither.
+
+        The `reason` field carries the cause, and it is the one place in this
+        service where a failure's detail reaches a response body. A 5xx from
+        `/api/webhook/**` never does; this is read by an operator, not a
+        client.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: The herald database cannot be reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+                reason: 'ping database: dial tcp 10.0.0.9:3306: connect: connection refused'
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form, and what the PHP client uses. When the server's
+        configured token is empty, all requests pass unauthenticated.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        Fallback for callers that cannot set headers. Checked only when
+        `X-Service-Token` is absent. Both endpoints here are read-only status,
+        so a browser or a runbook's curl is most of how they are reached.
+
+  schemas:
+
+    DeliveryStats:
+      type: object
+      required: [queuedCount, sentCount, failedCount, activeWebhooks]
+      properties:
+        queuedCount:
+          type: integer
+          format: int64
+          description: |
+            Requests waiting to be delivered, including ones whose earlier
+            attempt failed and whose `retry` mode put them back. A steadily
+            growing value is the signal worth alerting on.
+          example: 3
+        sentCount:
+          type: integer
+          format: int64
+          description: |
+            Requests delivered successfully. Not a lifetime total: Phorge's
+            garbage collection retires request rows after seven days.
+          example: 2
+        failedCount:
+          type: integer
+          format: int64
+          description: Requests that will not be attempted again. Also a seven-day figure.
+          example: 1
+        activeWebhooks:
+          type: integer
+          format: int64
+          description: |
+            Hooks that are not disabled. `0` here with hooks configured means
+            every one of them is switched off — a state `GET
+            /api/webhook/hooks` is what distinguishes.
+          example: 1
+
+    HookSummary:
+      type: object
+      required: [total]
+      properties:
+        total:
+          type: integer
+          format: int64
+          description: Every configured hook, disabled ones included.
+          example: 2
+
+    WebhookPayload:
+      type: object
+      description: |
+        **Not the body of any endpoint in this document.** It is the document
+        the service *sends*, to a hook's own URI, and it appears here because
+        it is the contract that actually matters and because
+        `go/internal/contracts/webhook.go` holds both halves.
+
+        It is serialised with two-space indentation and a trailing newline, and
+        signed with HMAC-SHA256 over exactly those bytes — see this document's
+        introduction. It carries identifiers and nothing else: no titles, no
+        comment text, no field values, which is Phorge's design and keeps a
+        payload safe to send to an endpoint that may not be authorised to see
+        the object behind it. A receiver calls back through Conduit for the
+        rest.
+      required: [object, triggers, action, transactions]
+      properties:
+        object:
+          $ref: '#/components/schemas/PayloadObject'
+        triggers:
+          type: array
+          description: |
+            The Herald rules that fired. Always an array, `[]` when empty — a
+            receiver iterating it must not have to handle `null`.
+          items:
+            $ref: '#/components/schemas/PayloadTrigger'
+        action:
+          $ref: '#/components/schemas/PayloadAction'
+        transactions:
+          type: array
+          description: The transactions on the object, by PHID only. Always an array, `[]` when empty.
+          items:
+            $ref: '#/components/schemas/PayloadTransaction'
+
+    PayloadObject:
+      type: object
+      required: [type, phid]
+      properties:
+        type:
+          type: string
+          description: |
+            The middle segment of the PHID, so a receiver can route on it
+            without a Conduit round trip. Empty for a PHID with no extractable
+            type, which is what Phorge's own `phid_get_type` answers too.
+          example: TASK
+        phid:
+          type: string
+          example: PHID-TASK-abcdefghijklmnopqrst
+
+    PayloadTrigger:
+      type: object
+      description: |
+        One Herald rule that fired. A single-field object rather than a bare
+        string, because that is the shape Phorge emits.
+      required: [phid]
+      properties:
+        phid:
+          type: string
+          example: PHID-HRUL-rule000000000000001
+
+    PayloadTransaction:
+      type: object
+      description: One transaction on the object, by PHID only.
+      required: [phid]
+      properties:
+        phid:
+          type: string
+          example: PHID-XACT-TASK-transaction01
+
+    PayloadAction:
+      type: object
+      required: [test, silent, secure, epoch]
+      properties:
+        test:
+          type: boolean
+          description: The delivery was triggered by a manual test rather than by a change.
+        silent:
+          type: boolean
+          description: |
+            The per-request silent flag from Phorge. Note that this is **not**
+            Phorge's global `phabricator.silent` setting, which this service
+            cannot read at all — a deployment running in silent mode has to
+            keep webhook delivery on the PHP side.
+        secure:
+          type: boolean
+        epoch:
+          type: integer
+          format: int64
+          description: |
+            When the change happened — the request row's `dateCreated` — and
+            not when this attempt was made. A retried delivery therefore
+            carries the same value as the first attempt.
+          example: 1700000000
+
+    StatsResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/DeliveryStats'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    HooksResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/HookSummary'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        data:
+          nullable: true
+          description: Always null on error.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable code; clients branch on this, not on the
+            message. Every code here is a platform one — this domain defines
+            none of its own, see the introduction.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_INTERNAL
+        message:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        reason:
+          type: string
+          description: Present only when `status` is not `ok`.
+      description: |
+        Bare probe payload, deliberately outside the `{data, error}` envelope.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    Unauthorized:
+      description: |
+        Missing or invalid service token.
+
+        The token is checked before the path is resolved, so an
+        unauthenticated request to a path that does not exist answers 401
+        rather than 404.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: |
+        No route matched. What a caller that appends a trailing slash or joins
+        the base URL wrongly receives.
+
+        One quirk worth knowing: under `/api/webhook/**` a documented path
+        called with an unregistered method answers 404 rather than 405, because
+        the group matches every method in order to authenticate them. Both
+        endpoints are `GET` only — nothing in this API mutates anything.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: Not Found
+
+    InternalError:
+      description: |
+        The database did not answer. It is the only failure either endpoint
+        has, which is why this domain defines no error code of its own.
+
+        `ERR_INTERNAL` always carries the same generic `message`. The query,
+        the host and the driver's error go to the service log instead, so a 5xx
+        body never describes the service's internals. A caller that needs to
+        tell "the service is broken" from "the service cannot reach the queue"
+        reads `/readyz`, which does carry a reason.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: internal server error

@@ -29,10 +29,18 @@
 | `search/` | `gorge-search` | `go/internal/search/contract_test.go` |
 | `search/unavailable/` | 同上，但服务配的是一个必然失败的后端 | 同一个文件里的第二个 `Run` |
 | `file-storage/` | `gorge-file-storage` | `go/internal/filestorage/contract_test.go` |
+| `webhook/` | `gorge-webhook` | `go/internal/webhook/contract_test.go` |
+| `webhook/unavailable/` | 同上，但服务配的是一个必然失败的 store | 同一个文件里的第二个 `Run` |
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
 
 **search 也是两个目录，但理由完全不同：它一个域一个端口，分开的是被测服务的配置。** mailer 的固件能在请求体里用 `mailerKeys` 指向一个会失败的适配器，所以健康与故障两种情况共存于一个目录；而 search 的引擎**只按角色选后端**，请求体里没有任何选择后端的手段。于是「一个正常的存储」与「一个坏掉的存储」是两份服务配置而不是两种请求，只能由两个 `contracttest.Run` 各起一个服务来跑。`unavailable/` 那六份是五个域级错误码唯一的到达路径（`ERR_CHECK_FAILED` 有 `/exists` 与 `/sane` 两条路进去，所以是六份而不是五份），而它们能被写出来的前提是 `engine.TestBackend` 支持可注入失败——那也是它是生产代码而不是 `_test.go` 辅助函数的原因。
+
+**webhook 也是两个目录，理由与 search 结构上相同**：它的两个端点都只做一件事——数行——所以唯一的失败模式就是数据库，而「store 不答话时端点答什么」不是一个请求能提出的问题，只能换一个服务配置来制造。所以 `unavailable/` 那一份由第二个 `Run` 起一个 store 每次调用都失败的服务来跑。
+
+但 webhook 在这一层还有一件与前六个域都不同的事，读它的固件之前必须知道：**这批固件描述的是这个域较小的那一半。**`gorge-webhook` 真正在做的是排空一个队列并向第三方 POST，而那件事**没有任何请求能启动**——固件的形式是「一个请求加它的期望应答」，所以它只能描述本服务**答**的东西，描述不了本服务**发**的东西。而后者恰恰是这个域最硬的契约（投出去那份文档是逐字节钉住的，签名对它算），它由 `go/internal/webhook/dispatcher_test.go` 守着，那里可以把时钟按住并读出确切的字节。**别因为固件目录只有 5 份就以为这个域的契约面小。**
+
+webhook 的 runner 还有一条别的域都没有的前提：它必须**注入一个 store 而不是连 MySQL**，并且 seed 一份确切的状态（2 个 hook 其中 1 个禁用，queued / sent / failed = 3 / 2 / 1）。**那四个数字刻意互不相等**——只要有两个相等，`stats.json` 就能被一个答错字段的实现通过，而最容易混的那一对（`activeWebhooks` 与 `hooks.total`）正是那一个禁用 hook 分开的。这也是 `go/internal/webhook/store.go` 把 store 抽成 interface 的原因，而不是抽出来之后顺便能这么测：file-storage 能把固件指向一个本地目录、mailer 能指向一个 `test` 适配器，本域没有对应物，因为**两个端点都读库**。逐条对应与 seed 的完整要求见 [`../tests/contract/webhook/README.md`](../tests/contract/webhook/README.md)。
 
 这些 runner 都只是三行 wrapper，真正的重放逻辑在 `go/internal/contracttest/`。它是 diff 迁入时从 render 的固件测试里抽出来的，抽出的理由不是省代码，而是**断言词汇必须在两个域之间保持一致**——各写一份 runner，两个域很快会开始用不同的方式描述自己的契约。它是普通包而非 `_test.go`，因为要被两个域的测试 import。
 
@@ -92,11 +100,15 @@ Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoute
 
 这一组里有两对是**成对**的，拆掉任何一半都只剩一半防线：`read-blob.json` 与 `read-blob-missing.json` 分别钉住「成功答裸字节」与「失败仍答信封」，它们合起来才表达了全仓唯一那个非信封成功响应的完整形状；`read-blob-bad-handle.json`（404）与 `delete-blob-bad-handle.json`（400）钉住的是同一个非法 handle 在读与删两条路上**刻意**答两个不同的码，理由见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 8.6 节与 [`modules/file-storage.md`](modules/file-storage.md) 第 3.4 节。`write-blob-empty.json` 也不是凑数的：零字节文件是一个合法的 200 加一个空 body，而按「body 是不是空的」判断成败的客户端会把它报成错误。
 
+**webhook 域 5 份**：主目录 4 份（`stats` 的四个计数、`hooks` 数的是**每一个** hook 而不只是启用的、未授权、查询参数认证），`unavailable/` 1 份（数据库不可达时答 500 `ERR_INTERNAL`，且 body 里不出现库名、主机、端口或 SQL）。最后那一份是本域**没有域级错误码**这个决定的反面守卫：既然没有码承载细节，message 就必须保持通用。
+
 `index-cjk-document.json` 值得说一句它**验不到**什么：它断言一份中文文档写得进去、答 200 并回显 PHID，这是真的；但固件跑的是内存 `test` 后端，那个后端做子串匹配、不过分析器，所以**它对 `cjk` 子字段一无所知**。中文检索真正能不能工作只有 `tests/e2e/search.sh` 的第 11、12 条对着真 Elasticsearch 才验得到（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条末尾）。别把这份固件当成 CJK 的覆盖。
 
 这批固件让共享 runner 长了两处：`lookupJSONPath` 现在会**先把整段路径当字面量键查一次**再按 `.` 切分，否则 `clients.active` 这类键寻址不到（那些点是键名的一部分，不是嵌套）；`check` 现在对「只断言状态码与原始字节」的固件跳过 JSON 解码，否则 client 口那句纯文本 501 会在解码那一步就失败。两处都是共享词汇的扩展而非 notification 专用分支。
 
 file-storage 又让它长了第三处，形状相同：`expect.headerEquals` 断言响应头，头名按 canonical 形式匹配。逼出它的是那个非信封的读路径——`Content-Type` 正是 PHP 客户端用来分辨「一份文件」与「一个信封」的依据，而在此之前固件没有任何办法断言它。
+
+**webhook 一处都没让它长**，这本身值得记一句：它的两个端点答的都是最普通的信封加几个整数，共享词汇原样够用。所以「一个新域会不会给固件 runner 加东西」取决于它的**应答形状**有多特别，而不取决于这个域本身有多特别——而按后者算，webhook 是七个里最特别的一个。
 
 diff 域**刻意没有**超限固件：两道尺寸护栏都随部署可配，一份断言 413 的固件会随被测服务的启动参数时过时不过，而这正是契约固件不能有的性质。那些路径在 `go/internal/diff/http_test.go` 里覆盖，那里可以设限。
 
@@ -128,7 +140,7 @@ prose diff 落在两者之间：它的输出没有外部基准，所以固件钉
 
 ## 4. e2e 冒烟
 
-五份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
+七份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
 
 ```bash
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/render.sh
@@ -137,8 +149,10 @@ ADMIN_URL=http://127.0.0.1:22281 CLIENT_URL=http://127.0.0.1:22280 \
   bash tests/e2e/notification.sh
 BASE_URL=http://127.0.0.1:8110 TOKEN=dev bash tests/e2e/mailer.sh
 BASE_URL=http://127.0.0.1:8120 TOKEN=dev bash tests/e2e/search.sh   # ⚠ 会销毁索引
+BASE_URL=http://127.0.0.1:8100 TOKEN=dev bash tests/e2e/file-storage.sh
+BASE_URL=http://127.0.0.1:8160 TOKEN=dev bash tests/e2e/webhook.sh
 # 或
-TOKEN=dev-token make e2e     # 五份都跑
+TOKEN=dev-token make e2e     # 七份都跑
 ```
 
 render 与 diff 共用一个端口，所以那两份是「两个脚本打同一个 `BASE_URL`」，不是两套部署。notification 是另一个进程，而且**要两个变量**：`ADMIN_URL` 与 `CLIENT_URL` 不可互换，同一个请求在两个端口上的正确答案不一样，这正是它第 4、5 条场景要验证的东西。它也没有 `TOKEN`——那个域按设计不鉴权。
@@ -160,9 +174,15 @@ render 与 diff 共用一个端口，所以那两份是「两个脚本打同一�
 
 内容断言全部**轮询**而不是断言一次，因为 Elasticsearch 的 refresh 是近实时的：写入之后立刻查会漏掉那份文档，一个只断言一次的脚本会大约一半的时候失败。
 
-render、diff、mailer 与 search 四份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+`file-storage.sh` 十一条场景：两个探针、无 token 得 401、引擎列表、写一个文件并读回来、删除、零字节文件、未知引擎得 400、缺参数、以及一个任何引擎都签发不出的 handle。它对被测实例的前提与 mailer、search 相同：至少配一个后端，本地磁盘最省事。
 
-它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。四个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）
+`webhook.sh` 十一条场景，而它与其余六份最大的不同是**它碰不到本域的主要工作**：投递不由任何请求启动，也没有端点报告一次投递，所以这份脚本能验的只有那两个只读端点、两个探针，加上一条跨端点的不变量。真实的投递链路在 `go/internal/webhook/dispatcher_test.go`——那里能把时钟按住并读出确切的字节，而一个 e2e 脚本两样都做不到。
+
+即便如此它仍有三条别处拿不到的断言：**`activeWebhooks` 永不大于 `hooks.total`**（第 7 条，两次独立查询、两张不同的表，一个把某个 COUNT 写在错误表上的实现在忙碌队列上会产出一组看起来很合理的数字）、**`/api/webhook/hooks` 的响应里不出现 hook 的 URI 或 HMAC key**（第 8 条，那个 key 就是「一次投递可信」的全部依据）、以及 **POST / PUT / DELETE 都不许答 200**（第 10 条，队列的内容归 Phorge，一个能推行进去的端点是给这张表开第二个入口）。它对被测实例的前提比其余六份都硬：**必须有一个可达的 `{namespace}_herald` 库**，没有可退回的本地后端——两个端点都在数行。空队列、零 hook 都没问题，每一条断言都是关于形状与不变量的，不关于具体数字。
+
+render、diff、mailer、search、file-storage 与 webhook 六份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+
+它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。六个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）**但 `cmd/gorge-webhook` 是这句话第一次不完全成立的地方**：那个 `main()` 里的一半是「起投递 goroutine、收到信号后先排空再关连接池」这段编排，而 e2e 脚本只打 HTTP 端口，看不见它。
 
 `diff.sh` 还有一个单元测试拿不到的作用：`\ No newline at end of file` 这个标记里含反斜杠，是整个 payload 里唯一会被 JSON 转义错误悄悄改坏的部分，而它只有过一趟真实的 HTTP 编解码才验证得到。
 
@@ -189,23 +209,35 @@ render、diff、mailer 与 search 四份都在 `TOKEN` 为空时跳过 401 那�
 | `search/engine/elasticsearch` | 81.4% |
 | `search/engine/meilisearch` | **0.0%**（见下） |
 | `filestorage` | 84.1% |
+| `webhook` | 70.4%（见下） |
 | `contracttest` | 19.7%（见下） |
 | `cmd/gorge-render` | 0.0% |
 | `cmd/gorge-notification` | 0.0% |
 | `cmd/gorge-mailer` | 0.0% |
 | `cmd/gorge-search` | 0.0% |
 | `cmd/gorge-file-storage` | 0.0% |
-| **总计** | **76.2%** |
+| `cmd/gorge-webhook` | 0.0% |
+| **总计** | **74.9%** |
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 
 `contracttest` 的 19.7% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
 
-`mailer` 的 79.1% 是本表最低的一个真实数字，而它的缺口是**可指名的**：SMTP 的两条发送路径与 SendGrid / Mailgun / Postmark 的 HTTP 往返。永久失败分类本身测到了（`classifyProviderStatus` / `classifySMTPError` 有表驱动用例，sendmail 用 stub 脚本走了真实退出码路径，SES 因为端点可配而用 `httptest` 打了完整一圈），缺的是另外三家 provider 那一圈——它们的端点是编译期常量，测不了。修法与理由写在 [`findings.md`](findings.md) 第 14 条。
+`webhook` 的 70.4% 现在是本表最低的一个真实数字，而它的缺口是**整块的、而且刚好等于一个文件里的一个类型**：`MySQLStore` 的十个方法与 `OpenDB` 全部 0.0%，包里其余每一处都在 83% 到 100% 之间。
+
+这不是「新代码测得差」，是**把 store 抽成 interface 这个决定的直接账单**。域逻辑——claim、两个 cutoff、三个时间窗、payload 字节、签名、失败分类——全部由内存 fake 驱动测到，而那些 `db.QueryContext` / `db.ExecContext` 的包装层没有任何东西碰得到：仓库里没有 MySQL、也刻意不用 sqlmock（惯例是手写 fake，见 2.2）。
+
+**要看清它守住了什么、又没守住什么，得分成两半读**：那几条 SQL 的**形状**是测到的——`TestClaimStatementIsAnOptimisticCompareAndSet` 与 `TestFetchClaimableStatementKeepsItsConditionsSeparate` 直接断言常量字符串里那些 WHERE 条件都还在，而那正是最容易被「顺手简化」掉的东西。没测到的是「驱动照这些字符串跑出来的结果是不是那个意思」——`GREATEST(dateModified + 1, UNIX_TIMESTAMP())` 在秒级精度下真的每次都让版本前进吗，`RowsAffected()` 在两个并发 UPDATE 打同一行时真的只有一个是 1 吗。**这两个问题一个 fake 永远答不了**，因为 fake 实现的是本域**以为**那条 SQL 会做的事。所以这个数字不该用补测试的办法抬——抬它的唯一诚实办法是一次对着真 MySQL 的集成测试，登记在 [`findings.md`](findings.md) 第 42 条。
+
+`mailer` 的 79.1% 是本表第二低的真实数字，它的缺口同样是**可指名的**：SMTP 的两条发送路径与 SendGrid / Mailgun / Postmark 的 HTTP 往返。永久失败分类本身测到了（`classifyProviderStatus` / `classifySMTPError` 有表驱动用例，sendmail 用 stub 脚本走了真实退出码路径，SES 因为端点可配而用 `httptest` 打了完整一圈），缺的是另外三家 provider 那一圈——它们的端点是编译期常量，测不了。修法与理由写在 [`findings.md`](findings.md) 第 14 条。
 
 `notification/hub` 的 83.7% 有一部分是同一个假象：`Listener` 那几个要真 WebSocket 才调得到的方法，连接建在 `internal/notification` 的测试里，不计入 `hub`。`-coverpkg` 合并度量后它们都是 100%，覆盖率的真实缺口只剩三处，都登记在 [`findings.md`](findings.md) 第 9 条。
 
-**总计从 81.4% 降到 76.2%，几乎全部由 search 迁入带来，而且原因是可指名的**——不是新代码测得差，`search` 97.5% / `engine` 99.5% / `esquery` 100.0% 都在表上端（随后 file-storage 以 84.1% 把总数往回抬了 0.2 个点，它不在这个故事里）。拉低总数的是两个包：
+**总计现在是 74.9%，而它连着两次迁入往下走，两次的原因都是可指名的、而且是两种不同的原因。**先是 search 把它从 81.4% 拉到 76.2%（file-storage 随后以 84.1% 往回抬了 0.2 个点，它不在这个故事里），再是 webhook 把它带到 74.9%。
+
+**两次要分开读，因为处置方式相反。**search 那次拉低总数的是两个包，缺口在「没写的测试」上，补是可行的（第 17 条给了照抄的模板）；webhook 那次的缺口在「测不到的边界」上——`MySQLStore` 那十个方法的 0.0% 不是有人偷懒，而是仓库里没有 MySQL，而 fake 恰好证明不了那几条 SQL 真的按它们写的那样跑。前者该补，后者补了反而更坏：一个用 fake 覆盖到 100% 的 store 层看起来防线更厚，实际什么都没多守住。
+
+search 那次拉低总数的两个包：
 
 - `search/engine/meilisearch` **0.0%**，全仓库唯一一个零覆盖的非 `cmd` 包。它不影响 PHP 契约（契约在 `internal/search` 那一层，两个后端之下），所以迁入时刻意没有扩大范围，但它自己翻译查询、自己管索引设置、自己实现 `IndexIsSane`，坏掉的表现是配了 Meilisearch 的部署检索行为不对，而 Elasticsearch 那条路径的测试一条都不会红。登记在 [`findings.md`](findings.md) 第 17 条，那里写了 Elasticsearch 后端的测试怎么照抄。
 - `search/engine/elasticsearch` 81.4%，缺口是**真实的 HTTP 往返分支**：`httptest` 假集群覆盖了路径拼接、spec 形状与 `configDeepMatch` 的判定，没覆盖的是主机健康表在多主机 failover 下的那几条状态迁移。

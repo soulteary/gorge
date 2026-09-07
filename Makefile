@@ -13,6 +13,7 @@ NOTIFY_CLIENT_URL ?= http://127.0.0.1:22280
 MAILER_URL        ?= http://127.0.0.1:8110
 SEARCH_URL        ?= http://127.0.0.1:8120
 FILESTORAGE_URL   ?= http://127.0.0.1:8100
+WEBHOOK_URL       ?= http://127.0.0.1:8160
 
 .DEFAULT_GOAL := help
 
@@ -113,6 +114,13 @@ e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
 	# is the one that needs nothing external:
 	# GORGE_FILE_LOCAL_DISK_PATH=/tmp/gorge-files make run SERVICE=gorge-file-storage
 	BASE_URL=$(FILESTORAGE_URL) bash tests/e2e/file-storage.sh
+	# gorge-webhook is the one service with no backend it can fake: both of its
+	# endpoints count rows, so this needs a reachable {namespace}_herald
+	# database with Phorge's schema in it. An empty queue and no hooks is fine
+	# — every scenario is about shape and invariants, not particular numbers.
+	# What the script cannot reach is delivery itself, since nothing calls in to
+	# start one; that lives in go/internal/webhook/dispatcher_test.go.
+	BASE_URL=$(WEBHOOK_URL) bash tests/e2e/webhook.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

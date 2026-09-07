@@ -239,6 +239,76 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- gorge-webhook: Herald webhook delivery ---
+  #
+  # The one service here that does not wait to be asked. Its work is a poll
+  # loop over `{namespace}_herald.herald_webhookrequest` — the queue Phorge
+  # fills — and every row it finds becomes an outbound POST to a third party's
+  # endpoint. The HTTP listener is only status: two read-only counts, and the
+  # probes below.
+  #
+  # That makes it the only service in this file with a hard external
+  # dependency and no way to run without one. File storage can be given a
+  # database or a local directory; search and mail have in-memory adapters.
+  # This one has nothing to fall back to, because the database *is* the work —
+  # which is also why it has no "not configured" state to report. Left
+  # unconfigured in this stack it dials 127.0.0.1, which inside a container is
+  # the container, and reports itself unready. That is the same answer it
+  # would give for a database that is configured and down, and there is
+  # nothing more useful to say: either way it delivers nothing.
+  #
+  # It also has to be deployed *instead of* Phorge's own delivery, not
+  # alongside it. Two drains on one queue is not a scaling arrangement — it is
+  # duplicate POSTs to somebody's endpoint — see compat/phorge/README.md.
+  gorge-webhook:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-webhook
+        PORT: 8160
+    image: ghcr.io/soulteary/gorge-webhook:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8160"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # Unlike file storage's blob backend, a blank host does not switch
+      # anything off — there is nothing here to switch off. It falls through to
+      # 127.0.0.1 and the service sits unready until this points at the MySQL
+      # holding the Phorge install's `{namespace}_herald` database.
+      GORGE_WEBHOOK_MYSQL_HOST: ${GORGE_WEBHOOK_MYSQL_HOST:-}
+      GORGE_WEBHOOK_MYSQL_PORT: ${GORGE_WEBHOOK_MYSQL_PORT:-3306}
+      GORGE_WEBHOOK_MYSQL_USER: ${GORGE_WEBHOOK_MYSQL_USER:-phorge}
+      GORGE_WEBHOOK_MYSQL_PASS: ${GORGE_WEBHOOK_MYSQL_PASS:-}
+      # Selects the database as `{namespace}_herald`, so it has to match the
+      # `storage.default-namespace` of the Phorge install being drained.
+      GORGE_WEBHOOK_NAMESPACE: ${GORGE_WEBHOOK_NAMESPACE:-phorge}
+      GORGE_WEBHOOK_POLL_INTERVAL_MS: ${GORGE_WEBHOOK_POLL_INTERVAL_MS:-1000}
+      GORGE_WEBHOOK_DELIVERY_TIMEOUT: ${GORGE_WEBHOOK_DELIVERY_TIMEOUT:-15}
+      GORGE_WEBHOOK_MAX_CONCURRENT: ${GORGE_WEBHOOK_MAX_CONCURRENT:-8}
+      # The circuit breaker: 10 failures inside 5 minutes and a hook stops
+      # being delivered to until they age out. Both are Phorge's numbers.
+      GORGE_WEBHOOK_ERROR_BACKOFF_SEC: ${GORGE_WEBHOOK_ERROR_BACKOFF_SEC:-300}
+      GORGE_WEBHOOK_ERROR_THRESHOLD: ${GORGE_WEBHOOK_ERROR_THRESHOLD:-10}
+      GORGE_WEBHOOK_RETRY_BACKOFF_SEC: ${GORGE_WEBHOOK_RETRY_BACKOFF_SEC:-60}
+      # How long a claimed request stays off other instances' lists. It is
+      # raised to the delivery timeout automatically if set below it, since a
+      # lease shorter than an attempt is a second delivery of the same row.
+      GORGE_WEBHOOK_CLAIM_LEASE_SEC: ${GORGE_WEBHOOK_CLAIM_LEASE_SEC:-30}
+    ports:
+      - "${GORGE_WEBHOOK_PORT:-8160}:8160"
+    healthcheck:
+      # /readyz, and here the difference from /healthz is starker than
+      # anywhere else in this file. A gorge-webhook that cannot reach its
+      # database is listening, answers /healthz with 200, and delivers
+      # nothing — with no failure visible anywhere, because Phorge keeps
+      # queueing rows and they just sit there. Only this probe notices.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8160/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
 networks:
   gorge:
     driver: bridge

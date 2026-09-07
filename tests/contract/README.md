@@ -17,6 +17,8 @@ Each subdirectory belongs to one domain:
 | `search/` | `gorge-search` | `go/internal/search/contract_test.go` |
 | `search/unavailable/` | `gorge-search`, backend that fails | `go/internal/search/contract_test.go` |
 | `file-storage/` | `gorge-file-storage` | `go/internal/filestorage/contract_test.go` |
+| `webhook/` | `gorge-webhook` | `go/internal/webhook/contract_test.go` |
+| `webhook/unavailable/` | `gorge-webhook`, database that fails | `go/internal/webhook/contract_test.go` |
 
 The notification domain gets two directories rather than one because its two
 ports are separate listeners with separate contracts; see
@@ -31,6 +33,15 @@ Both Go runners are thin wrappers; the replay logic lives in
 `go/internal/contracttest/`. It is shared rather than duplicated so that the
 assertion vocabulary stays identical between domains — with a runner each, the
 two would soon describe their contracts in different terms.
+
+The webhook domain gets two directories on the search domain's grounds — a
+database that does not answer is a service configuration, not a request — and
+it is also the domain whose fixtures cover the least of it. Its real work is a
+background loop, and the byte-exact document it delivers to a third-party
+endpoint is a contract no fixture here can describe, because a fixture is a
+request the service *answers*. That one is pinned in
+`go/internal/webhook/dispatcher_test.go`. See
+[`webhook/README.md`](webhook/README.md).
 
 ## Fixture format
 
@@ -167,3 +178,12 @@ reproducible in any language, since a handle there is just a path and seeding is
 one `mkdir` plus one file write. See
 [`file-storage/README.md`](file-storage/README.md) for the exact requirement and
 for why its delete fixture deliberately targets a handle nothing seeds.
+
+The webhook domain needs state prepared too, and goes further than that: its
+runner must **inject a store instead of connecting to MySQL**. Both of its
+endpoints read the database and it has no local-disk equivalent to point them
+at, so there is no configuration of that service which answers a fixture
+without one. That is why `go/internal/webhook/store.go` defines an interface —
+the fixtures pin the wire shape of two status endpoints, not MySQL's ability to
+count. The seeded numbers are exact and deliberately all different; see
+[`webhook/README.md`](webhook/README.md).
