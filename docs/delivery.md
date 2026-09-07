@@ -51,7 +51,7 @@ make compose-up
 | `fmt` | `gofmt -s -l`，非空即失败并打印 diff |
 | `vet` | `go vet ./...` |
 | `build` | `go build ./...` |
-| `test` | `go test -v -coverprofile` + 上传 `coverage.html` 制品 + Codecov |
+| `test` | `go test -v ./...` |
 | `lint` | golangci-lint（`--timeout=5m`） |
 | `security-scan` | govulncheck |
 
@@ -59,6 +59,8 @@ make compose-up
 
 - **`paths` 过滤**限定在 `go/**`、`tests/**`、`.github/workflows/**`，纯 PHP 改动不触发 Go 流水线。将来 `php/` 下有代码时应当另开一条工作流，而不是放宽这里的过滤。
 - **所有 job 带 `working-directory: go`**，因为 module 在子目录。`golangci-lint-action` 是例外，它自己解析 module，所以走 `with.working-directory` 输入而不是 shell 级的那个——这一点在 workflow 里有注释，容易踩。
+
+覆盖率报告不跟随普通 push / pull request 生成。`.github/workflows/test-report.yml` 只在手动触发或推送 `YYYY.MM.DD-rN` 标签时运行 `soulteary/go-test-report-action`，报告、徽章、JSON 与原始结果上传为 Actions 制品；`commit: false` 保证报告不会由机器人写回仓库并产生新的提交。
 
 本地对齐 CI：
 
@@ -69,11 +71,11 @@ make lint     # 需要本地装 golangci-lint
 
 ## 4. Release
 
-`.github/workflows/release.yml`，`v*` tag 触发，也可手动 dispatch 指定 tag。
+`.github/workflows/release.yml`，`YYYY.MM.DD-rN` CalVer tag 触发，也可手动 dispatch 指定镜像 tag。手动触发固定检出 `main`，不受 Actions 页面当时所选 ref 影响。
 
 按 `matrix.service` 逐个构建并推到 ghcr.io，`fail-fast: false` 让一个服务失败不拖垮其余。双架构 `linux/amd64,linux/arm64`，GitHub Actions cache 按 service 分 scope（`scope=${{ matrix.service }}`），避免不同二进制互相冲掉缓存。
 
-tag 策略由 `docker/metadata-action` 生成：语义化的 `{{version}}` / `{{major}}.{{minor}}` / `{{major}}`，默认分支额外打 `latest`。
+tag 策略由 `docker/metadata-action` 生成：CalVer 发布同时推送原始版本标签与 `latest`；手动触发从 `main` 构建，并使用输入的镜像标签（默认 `latest`）。
 
 ## 5. 加一个服务要改的三处
 

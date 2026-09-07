@@ -1,0 +1,52 @@
+name: Go Test Report
+
+# Reports are intentionally kept out of the regular push and pull-request
+# workflow. Generate one explicitly, or capture one for a CalVer release.
+on:
+  push:
+    tags:
+      - '20[0-9][0-9].[0-9][0-9].[0-9][0-9]-r[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-test-report-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Generate Go Test Report
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Run tests and generate report
+        id: test-report
+        uses: soulteary/go-test-report-action@v1
+        with:
+          directory: go
+          go_version_file: go.mod
+          packages: ./...
+          race: 'true'
+          cover_mode: atomic
+          report_output: .github/go-test-report.md
+          badge_output: .github/coverage.svg
+          json_output: .github/go-test-report.json
+          raw_output: .github/test-results
+          commit: 'false'
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: go-test-report-${{ github.ref_name }}-${{ github.run_id }}
+          path: |
+            .github/go-test-report.md
+            .github/coverage.svg
+            .github/go-test-report.json
+            .github/test-results/
+          if-no-files-found: warn
+          retention-days: 30

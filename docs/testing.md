@@ -250,4 +250,4 @@ search 那次拉低总数的两个包：
 make cover     # 写出 go/coverage.html 并打印 func 级明细
 ```
 
-CI 每次跑测试都会上传 `coverage.html` 制品并推送到 Codecov。
+普通 CI 只执行测试，不生成或写回覆盖率报告。`.github/workflows/test-report.yml` 在手动触发或推送 `YYYY.MM.DD-rN` 发布标签时调用 `soulteary/go-test-report-action`，将 Markdown、SVG、JSON 和原始测试结果作为 Actions 制品保留；工作流显式设置 `commit: false`，不会产生机器人报告提交。
