@@ -1,0 +1,19 @@
+{
+  "name": "a malformed body is a bad request",
+  "description": "Truncated JSON is the caller's fault, not the store's, so it is 400 with the platform's ERR_BAD_REQUEST rather than one of this domain's 502 codes. The fixture also pins that the response carries no data field: a caller that only looks at data would otherwise read an empty acknowledgement as a successful write.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/index",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"phid\":\"PHID-TASK-broken\",\"type\":"
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

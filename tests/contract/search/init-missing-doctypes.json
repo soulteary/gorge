@@ -1,0 +1,19 @@
+{
+  "name": "an init without document types is rejected",
+  "description": "An empty list would create an index with no mapping — one that accepts no document type this deployment actually indexes. The write path would then fail per document long after bin/search reported the index built.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/init",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{}"
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

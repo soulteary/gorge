@@ -1,0 +1,19 @@
+{
+  "name": "a store that refuses a write answers ERR_INDEX_FAILED",
+  "description": "502 rather than 500: the store this service talks to misbehaved, not this service. A 500 here sends whoever is debugging to the wrong logs. The code is specific rather than shared because Phorge's bin/search reindex reports a write failure somewhere quite different from a query failure — collapsing them would leave an operator with \"the search service returned 502\" and nothing else.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/index",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"phid\":\"PHID-TASK-unavailable\",\"type\":\"TASK\",\"title\":\"Write into a broken store\",\"fields\":[{\"name\":\"titl\",\"corpus\":\"Write into a broken store\"}]}"
+  },
+  "expect": {
+    "status": 502,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_INDEX_FAILED" },
+    "jsonAbsent": ["data"]
+  }
+}

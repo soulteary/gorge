@@ -1,0 +1,19 @@
+{
+  "name": "a document without a type is rejected",
+  "description": "The type is the PHID type and doubles as the Elasticsearch mapping type, so a document without one has no mapping to be written under. Rejecting it here rather than letting the backend guess is what keeps a deployment from ending up with documents in a type nobody initialised and nobody queries.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/index",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"phid\":\"PHID-TASK-contract3\",\"title\":\"No type\",\"fields\":[{\"name\":\"titl\",\"corpus\":\"No type\"}]}"
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

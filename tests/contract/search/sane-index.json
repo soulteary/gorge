@@ -1,0 +1,18 @@
+{
+  "name": "the sanity check is a boolean",
+  "description": "data.sane answers whether the live index configuration still matches the one this service would create today. False is a normal answer, not an error — it is the designed signal that a mapping changed and a reindex is due, which is exactly what a deployment upgrading into the CJK subfield sees. Only the key and its type are pinned; the value depends on what the index looked like before this fixture ran.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/sane",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"docTypes\":[\"TASK\",\"DREV\",\"CMIT\",\"PSTE\",\"WIKI\",\"USER\",\"PROJ\"]}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.sane"],
+    "jsonAbsent": ["error"]
+  }
+}

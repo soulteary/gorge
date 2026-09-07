@@ -1,0 +1,17 @@
+{
+  "name": "index statistics are an open map",
+  "description": "data is the backend's own vocabulary, not this service's: Elasticsearch reports queries/documents/deleted/storage_bytes, Meilisearch reports documents/indexing. Only \"documents\" is pinned here, because it is the one key both produce; asserting the Elasticsearch half would make this fixture unrunnable against a Meilisearch deployment. storage_bytes is the single snake_case name on this wire — it predates the monorepo and Phorge's cluster panel reads it by that spelling, so renaming it to storageBytes blanks a column with no error anywhere. That one is pinned in the Go tests instead.",
+  "request": {
+    "method": "GET",
+    "path": "/api/search/stats",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.documents"],
+    "jsonAbsent": ["error"]
+  }
+}

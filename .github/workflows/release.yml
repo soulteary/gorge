@@ -44,6 +44,8 @@ jobs:
             port: 22281
           - service: gorge-mailer
             port: 8110
+          - service: gorge-search
+            port: 8120
 
     steps:
       - name: Checkout code

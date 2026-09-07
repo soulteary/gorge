@@ -1,0 +1,19 @@
+{
+  "name": "a store that cannot answer a query answers ERR_SEARCH_FAILED",
+  "description": "The failure has to be loud. An empty result list with 200 would be indistinguishable from \"nothing matched\", and Phorge's search page would render an empty state for a cluster that is simply down — the one outcome nobody investigates.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/query",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"query\":\"anything\",\"limit\":10}"
+  },
+  "expect": {
+    "status": 502,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_SEARCH_FAILED" },
+    "jsonAbsent": ["data"]
+  }
+}

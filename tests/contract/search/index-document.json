@@ -1,0 +1,22 @@
+{
+  "name": "a document is indexed",
+  "description": "The body is a PhabricatorSearchAbstractDocument as PHP serialises it: camelCase envelope keys, and inside fields and relationships the four-character names that become the literal index keys. Rename any of titl/body/cmnt/auth/ownr/proj here and the write still succeeds — the document simply stops matching the queries that look for it. The reply echoes the PHID so a caller pipelining writes can tell which document was acknowledged.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/index",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"phid\":\"PHID-TASK-contract1\",\"type\":\"TASK\",\"title\":\"Fix the login redirect\",\"dateCreated\":1700000000,\"dateModified\":1700000600,\"fields\":[{\"name\":\"titl\",\"corpus\":\"Fix the login redirect\"},{\"name\":\"body\",\"corpus\":\"The redirect drops the query string.\"},{\"name\":\"cmnt\",\"corpus\":\"Reproduced on staging.\",\"aux\":\"PHID-USER-alice\"}],\"relationships\":[{\"name\":\"auth\",\"relatedPHID\":\"PHID-USER-alice\",\"rtype\":\"USER\"},{\"name\":\"ownr\",\"relatedPHID\":\"PHID-USER-bob\",\"rtype\":\"USER\"},{\"name\":\"proj\",\"relatedPHID\":\"PHID-PROJ-web\",\"rtype\":\"PROJ\"},{\"name\":\"open\",\"relatedPHID\":\"PHID-TASK-contract1\",\"rtype\":\"TASK\",\"timestamp\":1700000000}]}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.phid", "data.status"],
+    "jsonEquals": {
+      "data.phid": "PHID-TASK-contract1",
+      "data.status": "indexed"
+    },
+    "jsonAbsent": ["error"]
+  }
+}

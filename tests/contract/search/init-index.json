@@ -1,0 +1,18 @@
+{
+  "name": "the index is initialised for a list of document types",
+  "description": "An Elasticsearch mapping is built per document type, so the list is what the index is made of. This call drops the index and everything in it before recreating it, which is why it is reachable only from bin/search and never from anything Phorge does while serving a page.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/init",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"docTypes\":[\"TASK\",\"DREV\",\"CMIT\",\"PSTE\",\"WIKI\",\"USER\",\"PROJ\"]}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonEquals": { "data.status": "initialized" },
+    "jsonAbsent": ["error"]
+  }
+}

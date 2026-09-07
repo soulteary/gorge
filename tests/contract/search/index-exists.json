@@ -1,0 +1,17 @@
+{
+  "name": "the index presence is a boolean",
+  "description": "Phorge's setup check reads data.exists to decide whether to tell an administrator to run bin/search init. Only the key and its type are pinned, not the value: whether the index is there depends on what ran before, and no fixture in this directory may depend on another having run first.",
+  "request": {
+    "method": "GET",
+    "path": "/api/search/exists",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.exists"],
+    "jsonAbsent": ["error"]
+  }
+}

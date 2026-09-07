@@ -2,7 +2,7 @@
 
 代码与文档比对时发现的实际问题。按模块分节，新模块迁入后在下面新开一节，不要混进别的模块。基线 `da522f9`。
 
-修掉一条就把它从这里删掉，别标记成「已完成」留着——这个文件的价值在于短。
+修掉一条就把它从这里删掉，别标记成「已完成」留着——这个文件的价值在于短。**编号是稳定的 ID，不重排**：别处按号引用它们，所以删掉一条会留下一个空号（#16 已修，就是这么来的），新增一条一律接在最大号之后，即使它归到中间某一节。
 
 ---
 
@@ -136,19 +136,6 @@ var forbiddenPrefixes = []string{
 
 （mailer 迁入时同样是手工补的这一行，这是它第三次被手工维护。）
 
-### 16. 根 `README.md` 与 `delivery.md` 停在「只有一个二进制」
-
-**影响**：中。是新人接触这个仓库时读到的第一段话。
-
-两处都还在断言只有 `gorge-render` 一个二进制：
-
-- 根 [`README.md`](../README.md)：「当前只有一个二进制 `gorge-render`，承载 render 域」，目录结构里也只列了 `cmd/gorge-render/`、`internal/render/`、`api/openapi/render.yaml`、`tests/contract/render/`、`tests/e2e/render.sh`。
-- [`delivery.md`](delivery.md)：「当前仓库只产出 `gorge-render` 一个二进制」，以及「覆盖 `SERVICE` 要等到真有第二个 `cmd/` 才有意义」。
-
-实际是**三个二进制、四个域**。这两处在 diff、notification、mailer 三次迁入里都没有被更新，说明「模块文档只新增不改动既有文档」这条规则被套用到了不该套用的地方——[`docs/README.md`](README.md) 的「新增一个模块时」清单里确实没有它们。
-
-**建议**：把这两处改成不点名数量的写法（「产出若干二进制，见 [`docs/README.md`](README.md) 的模块表」），让它们不再需要随每次迁入维护；同时在「新增一个模块时」清单里补一条，指明哪些跨模块文档带有会过期的计数（`architecture.md` 第 1 节的行数与固件数、`testing.md` 第 4、5 节）。
-
 ---
 
 ## notification 模块
@@ -241,4 +228,69 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 但它仍然不是启动失败。「配置写错」与「还没配」在退出码上无法区分，而这两件事的处置完全不同。
 
 **建议**：给一个显式的严格模式（比如 `GORGE_MAILER_STRICT=1` 时解析失败即 `os.Exit(1)`），让编排能在部署阶段就把配置错误拦下来，而不是等到第一封信。没有直接改成硬失败，是因为「先起服务、再补配置」是这个域的一个合理工作流——`/readyz` 已经把它表达清楚了。
+
+---
+
+## search 模块
+
+### 17. Meilisearch 后端零测试覆盖
+
+**影响**：中。它是两个真实后端之一，且没有任何一层碰到它。
+
+`internal/search/engine/meilisearch/` 目前是全仓库唯一一个 `[no test files]` 的非 `cmd` 包。它不影响 PHP 契约——契约在 `internal/search` 那一层，两个后端之下——所以迁入时刻意没有扩大范围去补它。但「不影响契约」不等于「不会坏」：它自己翻译查询、自己管索引设置、自己实现 `IndexIsSane`，这些都只有它一份，坏掉的表现是配了 Meilisearch 的部署检索行为不对，而 Elasticsearch 那条路径的测试一条都不会红。
+
+Elasticsearch 后端的测试是可以照抄的模板：`backend_test.go` 用 `httptest` 起一个假集群，断言请求打到的路径、发出去的 spec 形状与 `configDeepMatch` 的判定。Meilisearch 的 HTTP 面更小，照这个形状写一份不需要新设施。
+
+**建议**：优先补三处，它们各对应一个只有这个后端才有的决定——查询翻译（`filter` 表达式的拼法）、索引设置的比对（`IndexIsSane` 在这个后端上比 ES 宽得多）、以及 `apiKey` 不出现在 `Info()` 里。第三条最要紧，因为它是 7.1 那条凭据约束在这个后端上的唯一落点，而 `tests/contract/search/list-backends.json` 跑的是 `test` 后端，看不到它。
+
+### 18. CJK mapping 变更强制全量重建索引（**已改，登记代价**）
+
+**影响**：高，但是一次性的，且**会明确报错**。
+
+这条不是待办，是一次**迁移代价的记录**。迁入时给 `buildIndexConfig()` 加了 `cjk_text` 分析器与三个 `cjk` 子字段，而 `IndexIsSane()` 是拿 `configDeepMatch(actual, buildIndexConfig(docTypes))` 比对线上索引的，所以**所有既有索引立刻报 not sane**，必须：
+
+```
+bin/search init
+bin/search index --all --force
+```
+
+大库上第二条是小时级操作，且期间检索结果不完整。
+
+**它与 search 域其余的兼容约束性质相反：这一条明确报 false，不静默失效**（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条）。`indexIsSane()` 的存在正是为了让这类改动有一个可报告的信号，所以这是设计按预期工作，不是缺陷。
+
+留在这里的理由只有一个：**它会再发生。**任何一次动 `buildIndexConfig()` 的改动——加一条分析器、调一个 filter 的顺序、给某个字段换类型——都有同样的后果，而这一点在代码里只有一句函数注释提到。写进 `DOCKER.md` 与 [`modules/search.md`](modules/search.md) 第 3.3 节了；这一条是给下一个改 mapping 的人留的备份。
+
+顺带记一件容易照抄错的事：`bin/search ngrams` 在这个引擎下**不适用**，它是 Ferret（MySQL）专属路径。旧 `phorge/DOCKER.md` 里那套「跑 ngrams 启用中文搜索」的说法在 gorge 引擎下是误导。
+
+### 19. `GORGE_SEARCH_BACKENDS` 解析失败只有一条日志
+
+**影响**：中。是个运维陷阱，形状与第 15 条完全相同。
+
+JSON 写错了落在与「还没配」同一个地方——零个后端、`/readyz` 答 503——外加一条 `slog.Error`。所以它至少不再伪装成健康（`/healthz` 200 而 `/readyz` 503，compose 会报 unhealthy），但**「配错了」与「还没配」在退出码与探针上无法区分**，只有日志能分开它们，而这两件事的处置完全不同。
+
+这个域里的后果比 mailer 那边重一档：一封发不出去的信有人在一天内会注意到，而一个不能检索的 Phorge 只是「搜不到东西」——那是搜索功能的一个正常输出。
+
+**建议**：与第 15 条一起做，用同一个机制（比如统一的 `GORGE_STRICT_CONFIG=1`）而不是两个域各造一个开关。没有直接改成硬失败的理由也与第 15 条相同：「先起服务、再补配置」是这个域受支持的工作流，`/readyz` 已经把它表达清楚了。
+
+### 20. `/api/search/sane` 现在拒绝空 `docTypes`（**已改，登记原因**）
+
+**影响**：中，是一次行为收紧的记录。
+
+迁入前空的 `docTypes` 会被接受。它在 `/init` 上的后果是建出一个没有任何文档类型 mapping 的索引；在 `/sane` 上的后果更坏，而且方向相反：sanity check 拿「本服务今天会为**这批类型**建出的配置」去比对线上索引，**空类型列表建出的是一份空期望，任何索引都满足它**——包括一份没有 mapping、没有 `cjk` 子字段的索引。答案会是一个自信的 `sane: true`。
+
+所以两条路径现在都答 400 `ERR_BAD_REQUEST`。这是本域唯一一处刻意偏离迁入前行为的地方，登记而不是只写在注释里，因为它是**放宽方向上的一次单向门**：将来谁为了兼容某个老调用方把它改回接受空列表，坏掉的不是这个端点，是「索引配置有没有过期」这个问题从此永远答 true。
+
+`tests/contract/search/` 与 `tests/e2e/search.sh` 第 18 条各有一份成对断言（`/init` 与 `/sane` 各一条），别只留一条。
+
+### 21. 五个域级错误码在 Phorge 侧没有消费者
+
+**影响**：低。这条**记录事实，不提议改 Go 侧**——当前行为是用户明确决定保留的。
+
+`ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED` 五个码在 Go 侧分得很细，理由是充分的（见 [`modules/search.md`](modules/search.md) 第 6 节）。但 PHP 侧接不住这个区分：`PhabricatorGorgeSearchClient` **没有覆盖** `newServiceErrorException()`，而 `PhabricatorGorgeMailerClient` 覆盖了——它必须覆盖，因为 `ERR_PERMANENT_FAILURE` 决定 worker 要不要重投（`compat/phorge/README.md` 第 6.2 条）。于是走 search 客户端的**十一个码**（六个平台码加五个域级码）全部塌成同一个通用异常，码本身只作为文本活在异常消息里。
+
+具体后果：Phorge 侧无法按码分支，`ERR_CHECK_FAILED`（问不到）与一个正常的 `sane: false`（该重建了）在 PHP 代码里的区别只剩「一个抛异常、一个返回 false」，而**这个区别恰好是够用的**——这也是保留现状的理由。
+
+**不要据此收敛 Go 侧的五个码。**它们的价值在另外两个消费方上，都真实存在：`bin/search` 的输出，以及运维读 502 响应体时看到的那个字符串。收敛成一个码，那两处拿到的就只有「搜索服务返回了 502」。
+
+要记的只有一件事：**别在 Go 侧新增一个「PHP 必须按码分支」的搜索域错误码而不同时覆盖 `newServiceErrorException()`。**那种码写出来会看起来生效，实际上没有读者——形状与 `compat/phorge/README.md` 第 5.3 节末尾那条「不要指望用响应体给 PHP 侧传递失败原因」相同。
 

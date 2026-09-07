@@ -1,0 +1,19 @@
+{
+  "name": "an index that cannot be created answers ERR_INIT_FAILED",
+  "description": "bin/search init is the only caller, and it has to stop here. Reporting success would send an administrator on to a full reindex against an index that does not exist, which then fails once per document for as long as the reindex runs.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/init",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"docTypes\":[\"TASK\",\"DREV\"]}"
+  },
+  "expect": {
+    "status": 502,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_INIT_FAILED" },
+    "jsonAbsent": ["data"]
+  }
+}
