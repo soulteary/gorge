@@ -1,0 +1,19 @@
+{
+  "name": "an unknown engine is 400, not a substitution",
+  "description": "A handle is meaningless without the engine that minted it, so there is nothing sensible to fall back to when the named engine does not exist. It is 400 rather than 404 because the request is at fault, not the path: 404 here would look to a client like a base URL joined wrongly, which is the diagnosis ERR_NOT_FOUND is reserved for.",
+  "request": {
+    "method": "POST",
+    "path": "/api/file/blob?engine=no-such-engine",
+    "headers": {
+      "Content-Type": "application/octet-stream",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "hello gorge"
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

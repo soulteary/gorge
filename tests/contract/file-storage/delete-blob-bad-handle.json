@@ -1,0 +1,16 @@
+{
+  "name": "deleting a handle no engine could have minted is a 400",
+  "description": "The pair to delete-blob.json, and the reason it has to be a fixture rather than a unit test: the two together are the whole delete contract, and a runner that got one right and the other wrong would look correct. A well-formed handle pointing at nothing is a 200 (deletion is idempotent); a handle the engine could not have minted is a 400, because with 'already gone' reported as success it is the only remaining failure that is not a backend fault, and answering 500 would tell an operator the service is broken when the caller sent nonsense. Note the asymmetry with read-blob-bad-handle.json, which answers 404 for this same handle: read cannot act on the difference between malformed and gone, so it collapses both. A 500 from delete therefore means one thing only — the backend failed and the bytes may still be there.",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/file/blob?engine=local-disk&handle=not-a-handle",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 400,
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

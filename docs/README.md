@@ -27,6 +27,7 @@
 | notification | `gorge-notification` | `:22280`（client/WS）+ `:22281`（admin） | [`modules/notification.md`](modules/notification.md) | 已迁入 |
 | mailer | `gorge-mailer` | `:8110` | [`modules/mailer.md`](modules/mailer.md) | 已迁入 |
 | search | `gorge-search` | `:8120` | [`modules/search.md`](modules/search.md) | 已迁入 |
+| file-storage | `gorge-file-storage` | `:8100` | [`modules/file-storage.md`](modules/file-storage.md) | 已迁入 |
 
 render 与 diff 共用一个二进制与一个端口：都是无外部依赖的纯计算，拆进程换不来隔离收益。路径按域命名（`/api/highlight/*`、`/api/diff/*`）正是为了让这种合并不需要改动任何一侧。
 
@@ -34,7 +35,9 @@ notification 是第一个反例，两个方向上都是：它自己占一个二�
 
 mailer 同样自己占一个二进制，理由与 notification 不同：它是「有外部依赖」的第一个模块——持有适配器状态、要连出去打 SMTP 与各家 provider，于是它也是第一个 `/readyz` 真的比 `/healthz` 多说了点什么的模块（就绪 = 至少配了一个后端）。但它只占一个端口，也照常鉴权，所以没有给平台层带来任何新设施。
 
-search 是「有外部依赖」的第二个模块，也因此走的是与 mailer 完全相同的路：一个二进制、一个端口、照常鉴权、`/readyz` 报「至少配了一个可读后端」、healthcheck 打 `/readyz` 而不是 `/healthz`。它没有给平台层带来新设施，这本身是个结论——**「有外部依赖」这一类现在有两个成员，两次都没需要新东西**，所以下一个这类域可以直接照 mailer 或 search 的骨架来。两处差异值得知道：它的外部依赖是**存储**而不是投递通道，所以 `deploy/compose/docker-compose.yml` 刻意不声明 Elasticsearch 容器（把存储埋进服务层的编排文件会让 `docker compose down -v` 变成一种丢索引的方式）；而它的就绪判据与 mailer 一样刻意**不拨测**下游，理由见 [`modules/mailer.md`](modules/mailer.md) 与 [`modules/search.md`](modules/search.md) 各自的第 2 节。
+search 是「有外部依赖」的第二个模块，也因此走的是与 mailer 完全相同的路：一个二进制、一个端口、照常鉴权、`/readyz` 报「至少配了一个可读后端」、healthcheck 打 `/readyz` 而不是 `/healthz`。它没有给平台层带来新设施，这本身是个结论——**「有外部依赖」这一类到 file-storage 为止有三个成员，三次都没需要新东西**，所以下一个这类域可以直接照 mailer 或 search 的骨架来。两处差异值得知道：它的外部依赖是**存储**而不是投递通道，所以 `deploy/compose/docker-compose.yml` 刻意不声明 Elasticsearch 容器（把存储埋进服务层的编排文件会让 `docker compose down -v` 变成一种丢索引的方式）；而它的就绪判据与 mailer 一样刻意**不拨测**下游，理由见 [`modules/mailer.md`](modules/mailer.md) 与 [`modules/search.md`](modules/search.md) 各自的第 2 节。
+
+file-storage 带进来两件仓库里此前没有的东西，而它同样**没有**给平台层新增任何设施——这三件事凑在一起才是这个模块值得单说一句的地方。第一件是**第一个数据库驱动**：`go-sql-driver/mysql` 由 `internal/filestorage/db.go` 自己 import，连接池也住在域包里，`platform/` 至今没有、也刻意不长任何数据库设施（一个域要连接池不构成共享关切，理由记在 [`findings.md`](findings.md) 第 24 条）。第二件是**第一个非 JSON 的 `/api/**` 成功响应**：读文件成功答的是原始 `application/octet-stream` 字节，失败才是信封。而这一条恰恰不需要平台层配合——`httpx` 从不强迫 handler 用 JSON 应答，handler 直接调 `c.Stream` 就行，失败路径上 `errorHandler` 照旧产出信封，见 [`platform.md`](platform.md) 第 1.1 节。
 
 **[`modules/notification.md`](modules/notification.md) 明显长于其余模块文档，这是刻意的**：本域迁入前带着一份独立的技术报告，那份报告写的是迁入前的包布局、现在每条路径都不存在了，所以它没有被搬进来，而是由模块文档同时充当本域的技术报告。它的前六节仍然是下面那个骨架，第 7 节之后（迁入前后的差异、排查、四层测试各守什么）是骨架之外的补充。**不要照着它把其余几份也扩写**——过期技术报告的问题登记在 [`findings.md`](findings.md) 第 6 条，解决方式是删掉过期报告并改指模块文档，不是加长。
 

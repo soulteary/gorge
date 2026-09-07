@@ -1,0 +1,22 @@
+{
+  "name": "the engine list reports the write order",
+  "description": "GET /api/file/engines answers the configured backends in the order a write will try them, lowest priority number first. Phorge's setup check reads it to tell 'the service is up' from 'the service is up and can store something'. sizeLimit is 0 for a backend that has none, which is why canWrite is a separate field: 'unlimited' and 'refuses writes' would otherwise be the same value. Credentials never appear — an entry carries only these four keys.",
+  "request": {
+    "method": "GET",
+    "path": "/api/file/engines",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.identifier"],
+    "jsonEquals": {
+      "data.0.identifier": "local-disk",
+      "data.0.priority": 5,
+      "data.0.canWrite": true,
+      "data.0.sizeLimit": 0
+    },
+    "jsonAbsent": ["data.1", "error"]
+  }
+}

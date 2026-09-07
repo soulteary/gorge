@@ -12,6 +12,7 @@ NOTIFY_ADMIN_URL  ?= http://127.0.0.1:22281
 NOTIFY_CLIENT_URL ?= http://127.0.0.1:22280
 MAILER_URL        ?= http://127.0.0.1:8110
 SEARCH_URL        ?= http://127.0.0.1:8120
+FILESTORAGE_URL   ?= http://127.0.0.1:8100
 
 .DEFAULT_GOAL := help
 
@@ -108,6 +109,10 @@ e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
 	# exists. Point BASE_URL at a service backed by a scratch cluster to get
 	# them, and never at one holding a real install's documents.
 	BASE_URL=$(SEARCH_URL) bash tests/e2e/search.sh
+	# gorge-file-storage needs a backend too, for the same reason. Local disk
+	# is the one that needs nothing external:
+	# GORGE_FILE_LOCAL_DISK_PATH=/tmp/gorge-files make run SERVICE=gorge-file-storage
+	BASE_URL=$(FILESTORAGE_URL) bash tests/e2e/file-storage.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

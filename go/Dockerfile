@@ -25,8 +25,17 @@ ARG SERVICE=gorge-render
 ARG PORT=8140
 
 # busybox already provides the wget the healthcheck below needs.
+#
+# /var/lib/gorge/files exists in every image although only gorge-file-storage's
+# local disk backend writes it, and it exists in the *image* rather than being
+# created at runtime for one reason: Docker initialises an empty named volume
+# from the image's content at the mount point, ownership included. Without it
+# the volume is created root-owned and the unprivileged user below cannot write
+# a single file into it — which shows up as every upload failing on a service
+# whose healthcheck is green.
 RUN apk add --no-cache ca-certificates \
-  && adduser -D -u 10001 gorge
+  && adduser -D -u 10001 gorge \
+  && install -d -o gorge -g gorge -m 0755 /var/lib/gorge/files
 
 COPY --from=builder /out/service /usr/local/bin/${SERVICE}
 

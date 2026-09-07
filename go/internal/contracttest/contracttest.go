@@ -63,6 +63,12 @@ type Fixture struct {
 		HTMLNotContains     []string `json:"htmlNotContains"`
 		BodyContains        []string `json:"bodyContains"`
 		BodyNotContains     []string `json:"bodyNotContains"`
+		// HeaderEquals asserts response header values. The file storage
+		// domain is what needs it: a successful read there answers raw bytes
+		// rather than the envelope, and the Content-Type is what the PHP
+		// client branches on to tell the two shapes apart. Header names are
+		// matched canonically, so a fixture may spell one however it likes.
+		HeaderEquals map[string]string `json:"headerEquals"`
 	} `json:"expect"`
 }
 
@@ -120,6 +126,12 @@ func check(t *testing.T, fx *Fixture, rec *httptest.ResponseRecorder) {
 	if rec.Code != fx.Expect.Status {
 		t.Errorf("%s: expected status %d, got %d (body: %s)",
 			fx.Name, fx.Expect.Status, rec.Code, rec.Body.String())
+	}
+
+	for name, want := range fx.Expect.HeaderEquals {
+		if got := rec.Header().Get(name); got != want {
+			t.Errorf("%s: expected header %s to be %q, got %q", fx.Name, name, want, got)
+		}
 	}
 
 	rawBody := rec.Body.String()

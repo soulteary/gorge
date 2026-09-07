@@ -28,6 +28,7 @@
 | `mailer/` | `gorge-mailer` | `go/internal/mailer/contract_test.go` |
 | `search/` | `gorge-search` | `go/internal/search/contract_test.go` |
 | `search/unavailable/` | 同上，但服务配的是一个必然失败的后端 | 同一个文件里的第二个 `Run` |
+| `file-storage/` | `gorge-file-storage` | `go/internal/filestorage/contract_test.go` |
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
 
@@ -87,9 +88,15 @@ Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoute
 
 **search 域 23 份**：主目录 17 份（写入成功、写入一份中文文档、缺 `phid`、缺 `type`、格式错误的请求体、检索、无筛选列表、三个所有者状态、`/init`、`/init` 缺 `docTypes`、`/sane`、`/sane` 缺 `docTypes`、`/exists`、`/stats`、`/backends`、未授权、查询参数认证），`unavailable/` 6 份（五个域级错误码，`ERR_CHECK_FAILED` 占两份）。
 
+**file-storage 域 14 份**：写入（默认按优先级、指名引擎、零字节文件、未知引擎答 400 而不是替换成别的）、读取（裸字节、读不到时仍是信封、缺 engine 参数、任何引擎都签发不出的 handle 仍是 404）、删除（对已经不在的字节成功、缺 handle、非法 handle 答 400）、引擎列表、未授权、查询参数认证。
+
+这一组里有两对是**成对**的，拆掉任何一半都只剩一半防线：`read-blob.json` 与 `read-blob-missing.json` 分别钉住「成功答裸字节」与「失败仍答信封」，它们合起来才表达了全仓唯一那个非信封成功响应的完整形状；`read-blob-bad-handle.json`（404）与 `delete-blob-bad-handle.json`（400）钉住的是同一个非法 handle 在读与删两条路上**刻意**答两个不同的码，理由见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 8.6 节与 [`modules/file-storage.md`](modules/file-storage.md) 第 3.4 节。`write-blob-empty.json` 也不是凑数的：零字节文件是一个合法的 200 加一个空 body，而按「body 是不是空的」判断成败的客户端会把它报成错误。
+
 `index-cjk-document.json` 值得说一句它**验不到**什么：它断言一份中文文档写得进去、答 200 并回显 PHID，这是真的；但固件跑的是内存 `test` 后端，那个后端做子串匹配、不过分析器，所以**它对 `cjk` 子字段一无所知**。中文检索真正能不能工作只有 `tests/e2e/search.sh` 的第 11、12 条对着真 Elasticsearch 才验得到（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条末尾）。别把这份固件当成 CJK 的覆盖。
 
 这批固件让共享 runner 长了两处：`lookupJSONPath` 现在会**先把整段路径当字面量键查一次**再按 `.` 切分，否则 `clients.active` 这类键寻址不到（那些点是键名的一部分，不是嵌套）；`check` 现在对「只断言状态码与原始字节」的固件跳过 JSON 解码，否则 client 口那句纯文本 501 会在解码那一步就失败。两处都是共享词汇的扩展而非 notification 专用分支。
+
+file-storage 又让它长了第三处，形状相同：`expect.headerEquals` 断言响应头，头名按 canonical 形式匹配。逼出它的是那个非信封的读路径——`Content-Type` 正是 PHP 客户端用来分辨「一份文件」与「一个信封」的依据，而在此之前固件没有任何办法断言它。
 
 diff 域**刻意没有**超限固件：两道尺寸护栏都随部署可配，一份断言 413 的固件会随被测服务的启动参数时过时不过，而这正是契约固件不能有的性质。那些路径在 `go/internal/diff/http_test.go` 里覆盖，那里可以设限。
 
@@ -181,22 +188,24 @@ render、diff、mailer 与 search 四份都在 `TOKEN` 为空时跳过 401 那�
 | `search/esquery` | 100.0% |
 | `search/engine/elasticsearch` | 81.4% |
 | `search/engine/meilisearch` | **0.0%**（见下） |
-| `contracttest` | 20.2%（见下） |
+| `filestorage` | 84.1% |
+| `contracttest` | 19.7%（见下） |
 | `cmd/gorge-render` | 0.0% |
 | `cmd/gorge-notification` | 0.0% |
 | `cmd/gorge-mailer` | 0.0% |
 | `cmd/gorge-search` | 0.0% |
-| **总计** | **76.0%** |
+| `cmd/gorge-file-storage` | 0.0% |
+| **总计** | **76.2%** |
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 
-`contracttest` 的 20.2% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
+`contracttest` 的 19.7% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
 
 `mailer` 的 79.1% 是本表最低的一个真实数字，而它的缺口是**可指名的**：SMTP 的两条发送路径与 SendGrid / Mailgun / Postmark 的 HTTP 往返。永久失败分类本身测到了（`classifyProviderStatus` / `classifySMTPError` 有表驱动用例，sendmail 用 stub 脚本走了真实退出码路径，SES 因为端点可配而用 `httptest` 打了完整一圈），缺的是另外三家 provider 那一圈——它们的端点是编译期常量，测不了。修法与理由写在 [`findings.md`](findings.md) 第 14 条。
 
 `notification/hub` 的 83.7% 有一部分是同一个假象：`Listener` 那几个要真 WebSocket 才调得到的方法，连接建在 `internal/notification` 的测试里，不计入 `hub`。`-coverpkg` 合并度量后它们都是 100%，覆盖率的真实缺口只剩三处，都登记在 [`findings.md`](findings.md) 第 9 条。
 
-**总计从 81.4% 降到 76.0%，全部由 search 迁入带来，而且原因是可指名的**——不是新代码测得差，`search` 97.5% / `engine` 99.5% / `esquery` 100.0% 都在表上端。拉低总数的是两个包：
+**总计从 81.4% 降到 76.2%，几乎全部由 search 迁入带来，而且原因是可指名的**——不是新代码测得差，`search` 97.5% / `engine` 99.5% / `esquery` 100.0% 都在表上端（随后 file-storage 以 84.1% 把总数往回抬了 0.2 个点，它不在这个故事里）。拉低总数的是两个包：
 
 - `search/engine/meilisearch` **0.0%**，全仓库唯一一个零覆盖的非 `cmd` 包。它不影响 PHP 契约（契约在 `internal/search` 那一层，两个后端之下），所以迁入时刻意没有扩大范围，但它自己翻译查询、自己管索引设置、自己实现 `IndexIsSane`，坏掉的表现是配了 Meilisearch 的部署检索行为不对，而 Elasticsearch 那条路径的测试一条都不会红。登记在 [`findings.md`](findings.md) 第 17 条，那里写了 Elasticsearch 后端的测试怎么照抄。
 - `search/engine/elasticsearch` 81.4%，缺口是**真实的 HTTP 往返分支**：`httptest` 假集群覆盖了路径拼接、spec 形状与 `configDeepMatch` 的判定，没覆盖的是主机健康表在多主机 failover 下的那几条状态迁移。

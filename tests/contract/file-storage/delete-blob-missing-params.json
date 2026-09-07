@@ -1,0 +1,17 @@
+{
+  "name": "a delete without a handle is 400",
+  "description": "Both parameters are required on delete for the same reason as on read, with a sharper edge: an endpoint that accepted a delete with no handle would have to decide what it meant, and every plausible answer deletes something the caller did not name.",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/file/blob?engine=local-disk",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

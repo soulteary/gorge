@@ -1,0 +1,22 @@
+{
+  "name": "a zero-byte file is a file",
+  "description": "An empty body with a Content-Length of 0 is a legitimate write, not a missing one: Phorge stores empty files. This is the write-side half of the pair with read-blob-empty behaviour — a service that treats an empty body as 'no body' rejects a file Phorge will then never be able to read back.",
+  "request": {
+    "method": "POST",
+    "path": "/api/file/blob",
+    "headers": {
+      "Content-Type": "application/octet-stream",
+      "X-Service-Token": "contract-token"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.handle"],
+    "jsonEquals": {
+      "data.engine": "local-disk",
+      "data.size": 0
+    },
+    "jsonAbsent": ["error"]
+  }
+}

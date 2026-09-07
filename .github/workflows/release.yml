@@ -46,6 +46,8 @@ jobs:
             port: 8110
           - service: gorge-search
             port: 8120
+          - service: gorge-file-storage
+            port: 8100
 
     steps:
       - name: Checkout code
