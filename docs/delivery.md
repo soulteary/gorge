@@ -8,10 +8,13 @@
 
 ```bash
 docker build -t gorge-render go/
+docker build -t gorge-search --build-arg SERVICE=gorge-search --build-arg PORT=8120 go/
 docker build -t gorge-conduit --build-arg SERVICE=gorge-conduit go/   # 将来的二进制
 ```
 
-第二条现在还没有对应的 `cmd/`——当前仓库只产出 `gorge-render` 一个二进制，它同时承载 render 与 diff 两个域。`SERVICE` 这个参数是给**新增二进制**用的，不是给新增域用的：域并入既有进程时不碰这里，见 [`architecture.md`](architecture.md) 第 4.2 节。
+仓库产出若干个二进制，当前有哪些、各占什么端口见 [`README.md`](README.md) 的模块表（**这里刻意不重复那个数字**，它在前几次迁入里过期过好几轮）。`SERVICE` 这个参数是给**新增二进制**用的，不是给新增域用的：域并入既有进程时不碰这里，见 [`architecture.md`](architecture.md) 第 4.2 节。
+
+`PORT` 只在服务不监听 8140 时需要显式给，理由见下一段。
 
 多阶段构建：
 
@@ -92,6 +95,8 @@ tag 策略由 `docker/metadata-action` 生成：语义化的 `{{version}}` / `{{
 | Docker | `docker-build` `compose-config` `compose-up` `compose-down` `compose-logs` |
 | 测试 | `e2e` |
 
-`SERVICE`、`BASE_URL` 是可覆盖变量（`SERVICE=<二进制名> make build`），默认分别是 `gorge-render` 与 `http://127.0.0.1:8140`。当前只有一个二进制，所以覆盖 `SERVICE` 要等到真有第二个 `cmd/` 才有意义。
+`SERVICE`、`BASE_URL` 是可覆盖变量（`SERVICE=<二进制名> make build`），默认分别是 `gorge-render` 与 `http://127.0.0.1:8140`。`make build` 与 `make run` 一次只作用于一个二进制，别的二进制靠覆盖 `SERVICE` 来选。
 
-`e2e` 跑 `tests/e2e/` 下的两个脚本，都打同一个 `BASE_URL`——render 与 diff 两个域由一个进程在一个端口上服务，不是两套部署。
+`e2e` 跑 `tests/e2e/` 下的每一个脚本。它们**不共用一个 URL**，因为一个域一个端口的划分不是一比一的：render 与 diff 由一个进程在一个端口上服务（都打 `BASE_URL`），notification 一个进程两个端口（`NOTIFY_ADMIN_URL` 与 `NOTIFY_CLIENT_URL`），mailer 与 search 各自一个进程一个端口（`MAILER_URL`、`SEARCH_URL`）。所以 Makefile 里是一组变量而不是一个。
+
+两个脚本对被测实例有前提，不满足时它们是**按设计失败**而不是环境问题：`mailer.sh` 要求配了至少一个后端（否则 `/readyz` 那条红），`search.sh` 同理，且它**会销毁索引**——只对着一次性部署跑。

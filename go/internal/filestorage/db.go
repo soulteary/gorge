@@ -26,7 +26,7 @@ const (
 // FileDSN is the DSN for Phorge's file database. The database name is derived
 // from the storage namespace exactly as Phorge derives it, because the blob
 // backend writes into Phorge's own `file_storageblob` table — the same table
-// PhabricatorMySQLFileStorageEngine uses. See compat/phorge/README.md section 7.
+// PhabricatorMySQLFileStorageEngine uses. See compat/phorge/README.md section 8.
 func (c *Config) FileDSN() string {
 	return fmt.Sprintf(
 		"%s:%s@tcp(%s:%d)/%s_file?parseTime=true&timeout=5s&readTimeout=30s&writeTimeout=30s",

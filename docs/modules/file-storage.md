@@ -9,7 +9,7 @@
 | 包 | `go/internal/filestorage/` |
 | 契约 | [`api/openapi/file-storage.yaml`](../../api/openapi/file-storage.yaml) |
 | 固件 | `tests/contract/file-storage/`（14 份） |
-| 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第七节 ← **改动前必读** |
+| 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第八节 ← **改动前必读** |
 
 ## 1. 职责边界
 
@@ -115,7 +115,7 @@ type StorageEngine interface {
 
 - **blob 引擎的大小限额检查两遍。** 一遍打在调用方声明的 `Content-Length` 上（这样超大文件一个字节都不读），一遍打在实际读到的字节数上（`io.LimitReader(src, maxSize+1)`）——**声明的长度是一个说法，不是一个承诺**。`TestMySQLBlobRefusesABodyLongerThanItsDeclaredLength` 守后一遍。
 - **本地磁盘的 handle 格式在读和删的时候都要校验，这是安全边界不是整洁癖。** handle 从查询参数进来，而 `filepath.Join(root, handle)` 会老老实实把 `../../..` 解析掉。`localHandlePattern` 是唯一挡住「读走这个进程能打开的任意文件」的东西，`TestLocalDiskRejectsBadHandle` 把 `../../../etc/passwd` 这一类逐个试过。写失败时会把半截文件删掉——它的 handle 从没交给任何人，留着就是永远没人读也永远没人删。
-- **S3 的写路径声明 payload 未签名。** SigV4 默认要读一遍 body 算 SHA256 再 seek 回开头，而 HTTP 请求体不能 seek，于是明文 HTTP 端点（自建 MinIO / Ceph 的常态）上流式上传会直接失败在 `request stream is not seekable`。SDK 在 HTTPS 上本来就走「声明未签名」这条路，`s3.go` 的 `unsignedPayload` 把同一个选择延伸到明文 HTTP，且只加在 `PutObject` 上。另一条路是把每次上传缓冲下来——那正是改成流式要消掉的东西。记在 [`../findings.md`](../findings.md) 第 20 条。
+- **S3 的写路径声明 payload 未签名。** SigV4 默认要读一遍 body 算 SHA256 再 seek 回开头，而 HTTP 请求体不能 seek，于是明文 HTTP 端点（自建 MinIO / Ceph 的常态）上流式上传会直接失败在 `request stream is not seekable`。SDK 在 HTTPS 上本来就走「声明未签名」这条路，`s3.go` 的 `unsignedPayload` 把同一个选择延伸到明文 HTTP，且只加在 `PutObject` 上。另一条路是把每次上传缓冲下来——那正是改成流式要消掉的东西。记在 [`../findings.md`](../findings.md) 第 25 条。
 
 ### 3.3 Router：优先级顺序、写入回退，与那个 rewind 预算
 
@@ -144,7 +144,7 @@ type StorageEngine interface {
 
 **所有读失败一律 404 `ERR_NOT_FOUND`**，包括 handle 格式非法与后端连不上。这不是偷懒：调用方手里对每个文件只有一对 `(engine, handle)`，没有第二个选择可试，区分出来它也做不了别的；具体原因在服务日志里。
 
-**删除是幂等的**：删一个已经不在的对象返回 200 `{"status":"deleted"}`，三个引擎都是这个语义。这是**一次刻意的行为变更**——迁入前的 mysqlblob 引擎在受影响行数为 0 时返回错误。Phorge 是「删字节」和「删那条指向字节的记录」一气呵成的，对已经消失的字节报错，会留下一条永远退不掉的记录。`TestDeleteBlobIsIdempotent` 与 `TestLocalDiskDeleteIsIdempotent` 守着它，登记在 [`../findings.md`](../findings.md) 第 18 条。
+**删除是幂等的**：删一个已经不在的对象返回 200 `{"status":"deleted"}`，三个引擎都是这个语义。这是**一次刻意的行为变更**——迁入前的 mysqlblob 引擎在受影响行数为 0 时返回错误。Phorge 是「删字节」和「删那条指向字节的记录」一气呵成的，对已经消失的字节报错，会留下一条永远退不掉的记录。`TestDeleteBlobIsIdempotent` 与 `TestLocalDiskDeleteIsIdempotent` 守着它，登记在 [`../findings.md`](../findings.md) 第 23 条。
 
 **同一个非法 handle，读答 404，删答 400 —— 这处不对称是幂等换来的。** 读区分不出「格式非法」和「已经没了」，也不需要区分，所以两者都塌进 404（上一段）。删把「已经没了」算作成功，于是非法 handle 成了**唯一一个不是后端故障的失败**：不把它拎出来，它就落进平台的 500，等于在调用方乱传参数时告诉运维「服务坏了」。引擎因此用 `ErrBadHandle`（`engine.go`）标记这一类错误，`deleteBlob` 认这个哨兵并答 400 `ERR_BAD_REQUEST`。
 
@@ -204,11 +204,11 @@ S3 要求五个齐全，是因为半套配置会造出一个每次请求都失�
 
 ### blob 后端的开关变了
 
-`MySQLBlobEnabled()` 现在**要求显式给出 host**，这是相对独立服务时期的一次刻意变更：那边 `MYSQL_HOST` 默认 `127.0.0.1`、`MYSQL_BLOB_MAX_SIZE` 默认 1 MB，于是一个只配了本地磁盘的部署**照样会注册一个指向不存在的数据库的 blob 后端**——它优先级 1，接走每一个小文件上传并让它失败，而 `/readyz`（它会 ping）把整个服务报成不可用。要求 host 之后，「什么都没配」与「配了 blob」才区分得开，与 mailer 的 `MAILER_TYPE` 是同一个形状。`TestNoBackendIsConfiguredByDefault` 钉住它，记在 [`../findings.md`](../findings.md) 第 17 条。
+`MySQLBlobEnabled()` 现在**要求显式给出 host**，这是相对独立服务时期的一次刻意变更：那边 `MYSQL_HOST` 默认 `127.0.0.1`、`MYSQL_BLOB_MAX_SIZE` 默认 1 MB，于是一个只配了本地磁盘的部署**照样会注册一个指向不存在的数据库的 blob 后端**——它优先级 1，接走每一个小文件上传并让它失败，而 `/readyz`（它会 ping）把整个服务报成不可用。要求 host 之后，「什么都没配」与「配了 blob」才区分得开，与 mailer 的 `MAILER_TYPE` 是同一个形状。`TestNoBackendIsConfiguredByDefault` 钉住它，记在 [`../findings.md`](../findings.md) 第 22 条。
 
 ## 5. 兼容契约
 
-权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第七节，这里是概述。前六条**破坏之后都不报错，只是既有文件从此读不出来**——而且是对全部存量文件同时发生，新写入的一切照常，所以「写一个读回来」这个最自然的验证动作完全看不见它；最后一条性质不同，它让整个栈在首次启动时死锁。
+权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第八节，这里是概述。前六条**破坏之后都不报错，只是既有文件从此读不出来**——而且是对全部存量文件同时发生，新写入的一切照常，所以「写一个读回来」这个最自然的验证动作完全看不见它；最后一条性质不同，它让整个栈在首次启动时死锁。
 
 - **三个 engine identifier 字符串**——`blob` / `local-disk` / `amazon-s3`——Phorge 对每一个写在这里的文件都记着其中一个，且它们和 Phorge 自己的引擎 identifier 是同一批字符串。
 - **复合 handle `engine/handle`，按第一个斜杠切**：Phorge 的 `file` 表只有一个 handle 列，所以引擎名编在里面。这个复合串是 PHP 侧独有的——本服务答的是 `engine` 与 `handle` 两个字段，拼接与拆解都在 `PhabricatorGorgeFileStorageEngine`，**Go 侧没有任何测试守得住它**。

@@ -2,7 +2,7 @@
 
 代码与文档比对时发现的实际问题。按模块分节，新模块迁入后在下面新开一节，不要混进别的模块。基线 `da522f9`。
 
-修掉一条就把它从这里删掉，别标记成「已完成」留着——这个文件的价值在于短。
+修掉一条就把它从这里删掉，别标记成「已完成」留着——这个文件的价值在于短。**编号是稳定的 ID，不重排**：别处按号引用它们，所以删掉一条会留下一个空号（#16 已修，就是这么来的），新增一条一律接在最大号之后，即使它归到中间某一节。
 
 ---
 
@@ -136,19 +136,6 @@ var forbiddenPrefixes = []string{
 
 （mailer 迁入时同样是手工补的这一行，这是它第三次被手工维护。）
 
-### 16. 根 `README.md` 与 `delivery.md` 停在「只有一个二进制」
-
-**影响**：中。是新人接触这个仓库时读到的第一段话。
-
-两处都还在断言只有 `gorge-render` 一个二进制：
-
-- 根 [`README.md`](../README.md)：「当前只有一个二进制 `gorge-render`，承载 render 域」，目录结构里也只列了 `cmd/gorge-render/`、`internal/render/`、`api/openapi/render.yaml`、`tests/contract/render/`、`tests/e2e/render.sh`。
-- [`delivery.md`](delivery.md)：「当前仓库只产出 `gorge-render` 一个二进制」，以及「覆盖 `SERVICE` 要等到真有第二个 `cmd/` 才有意义」。
-
-实际是**三个二进制、四个域**。这两处在 diff、notification、mailer 三次迁入里都没有被更新，说明「模块文档只新增不改动既有文档」这条规则被套用到了不该套用的地方——[`docs/README.md`](README.md) 的「新增一个模块时」清单里确实没有它们。
-
-**建议**：把这两处改成不点名数量的写法（「产出若干二进制，见 [`docs/README.md`](README.md) 的模块表」），让它们不再需要随每次迁入维护；同时在「新增一个模块时」清单里补一条，指明哪些跨模块文档带有会过期的计数（`architecture.md` 第 1 节的行数与固件数、`testing.md` 第 4、5 节）。
-
 ---
 
 ## notification 模块
@@ -244,9 +231,74 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 ---
 
+## search 模块
+
+### 17. Meilisearch 后端零测试覆盖
+
+**影响**：中。它是两个真实后端之一，且没有任何一层碰到它。
+
+`internal/search/engine/meilisearch/` 目前是全仓库唯一一个 `[no test files]` 的非 `cmd` 包。它不影响 PHP 契约——契约在 `internal/search` 那一层，两个后端之下——所以迁入时刻意没有扩大范围去补它。但「不影响契约」不等于「不会坏」：它自己翻译查询、自己管索引设置、自己实现 `IndexIsSane`，这些都只有它一份，坏掉的表现是配了 Meilisearch 的部署检索行为不对，而 Elasticsearch 那条路径的测试一条都不会红。
+
+Elasticsearch 后端的测试是可以照抄的模板：`backend_test.go` 用 `httptest` 起一个假集群，断言请求打到的路径、发出去的 spec 形状与 `configDeepMatch` 的判定。Meilisearch 的 HTTP 面更小，照这个形状写一份不需要新设施。
+
+**建议**：优先补三处，它们各对应一个只有这个后端才有的决定——查询翻译（`filter` 表达式的拼法）、索引设置的比对（`IndexIsSane` 在这个后端上比 ES 宽得多）、以及 `apiKey` 不出现在 `Info()` 里。第三条最要紧，因为它是 7.1 那条凭据约束在这个后端上的唯一落点，而 `tests/contract/search/list-backends.json` 跑的是 `test` 后端，看不到它。
+
+### 18. CJK mapping 变更强制全量重建索引（**已改，登记代价**）
+
+**影响**：高，但是一次性的，且**会明确报错**。
+
+这条不是待办，是一次**迁移代价的记录**。迁入时给 `buildIndexConfig()` 加了 `cjk_text` 分析器与三个 `cjk` 子字段，而 `IndexIsSane()` 是拿 `configDeepMatch(actual, buildIndexConfig(docTypes))` 比对线上索引的，所以**所有既有索引立刻报 not sane**，必须：
+
+```
+bin/search init
+bin/search index --all --force
+```
+
+大库上第二条是小时级操作，且期间检索结果不完整。
+
+**它与 search 域其余的兼容约束性质相反：这一条明确报 false，不静默失效**（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条）。`indexIsSane()` 的存在正是为了让这类改动有一个可报告的信号，所以这是设计按预期工作，不是缺陷。
+
+留在这里的理由只有一个：**它会再发生。**任何一次动 `buildIndexConfig()` 的改动——加一条分析器、调一个 filter 的顺序、给某个字段换类型——都有同样的后果，而这一点在代码里只有一句函数注释提到。写进 `DOCKER.md` 与 [`modules/search.md`](modules/search.md) 第 3.3 节了；这一条是给下一个改 mapping 的人留的备份。
+
+顺带记一件容易照抄错的事：`bin/search ngrams` 在这个引擎下**不适用**，它是 Ferret（MySQL）专属路径。旧 `phorge/DOCKER.md` 里那套「跑 ngrams 启用中文搜索」的说法在 gorge 引擎下是误导。
+
+### 19. `GORGE_SEARCH_BACKENDS` 解析失败只有一条日志
+
+**影响**：中。是个运维陷阱，形状与第 15 条完全相同。
+
+JSON 写错了落在与「还没配」同一个地方——零个后端、`/readyz` 答 503——外加一条 `slog.Error`。所以它至少不再伪装成健康（`/healthz` 200 而 `/readyz` 503，compose 会报 unhealthy），但**「配错了」与「还没配」在退出码与探针上无法区分**，只有日志能分开它们，而这两件事的处置完全不同。
+
+这个域里的后果比 mailer 那边重一档：一封发不出去的信有人在一天内会注意到，而一个不能检索的 Phorge 只是「搜不到东西」——那是搜索功能的一个正常输出。
+
+**建议**：与第 15 条一起做，用同一个机制（比如统一的 `GORGE_STRICT_CONFIG=1`）而不是两个域各造一个开关。没有直接改成硬失败的理由也与第 15 条相同：「先起服务、再补配置」是这个域受支持的工作流，`/readyz` 已经把它表达清楚了。
+
+### 20. `/api/search/sane` 现在拒绝空 `docTypes`（**已改，登记原因**）
+
+**影响**：中，是一次行为收紧的记录。
+
+迁入前空的 `docTypes` 会被接受。它在 `/init` 上的后果是建出一个没有任何文档类型 mapping 的索引；在 `/sane` 上的后果更坏，而且方向相反：sanity check 拿「本服务今天会为**这批类型**建出的配置」去比对线上索引，**空类型列表建出的是一份空期望，任何索引都满足它**——包括一份没有 mapping、没有 `cjk` 子字段的索引。答案会是一个自信的 `sane: true`。
+
+所以两条路径现在都答 400 `ERR_BAD_REQUEST`。这是本域唯一一处刻意偏离迁入前行为的地方，登记而不是只写在注释里，因为它是**放宽方向上的一次单向门**：将来谁为了兼容某个老调用方把它改回接受空列表，坏掉的不是这个端点，是「索引配置有没有过期」这个问题从此永远答 true。
+
+`tests/contract/search/` 与 `tests/e2e/search.sh` 第 18 条各有一份成对断言（`/init` 与 `/sane` 各一条），别只留一条。
+
+### 21. 五个域级错误码在 Phorge 侧没有消费者
+
+**影响**：低。这条**记录事实，不提议改 Go 侧**——当前行为是用户明确决定保留的。
+
+`ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED` 五个码在 Go 侧分得很细，理由是充分的（见 [`modules/search.md`](modules/search.md) 第 6 节）。但 PHP 侧接不住这个区分：`PhabricatorGorgeSearchClient` **没有覆盖** `newServiceErrorException()`，而 `PhabricatorGorgeMailerClient` 覆盖了——它必须覆盖，因为 `ERR_PERMANENT_FAILURE` 决定 worker 要不要重投（`compat/phorge/README.md` 第 6.2 条）。于是走 search 客户端的**十一个码**（六个平台码加五个域级码）全部塌成同一个通用异常，码本身只作为文本活在异常消息里。
+
+具体后果：Phorge 侧无法按码分支，`ERR_CHECK_FAILED`（问不到）与一个正常的 `sane: false`（该重建了）在 PHP 代码里的区别只剩「一个抛异常、一个返回 false」，而**这个区别恰好是够用的**——这也是保留现状的理由。
+
+**不要据此收敛 Go 侧的五个码。**它们的价值在另外两个消费方上，都真实存在：`bin/search` 的输出，以及运维读 502 响应体时看到的那个字符串。收敛成一个码，那两处拿到的就只有「搜索服务返回了 502」。
+
+要记的只有一件事：**别在 Go 侧新增一个「PHP 必须按码分支」的搜索域错误码而不同时覆盖 `newServiceErrorException()`。**那种码写出来会看起来生效，实际上没有读者——形状与 `compat/phorge/README.md` 第 5.3 节末尾那条「不要指望用响应体给 PHP 侧传递失败原因」相同。
+
+---
+
 ## file-storage 模块
 
-### 17. blob 后端的启用开关从「默认开」改成「必须显式给 host」（**已改，登记原因**）
+### 22. blob 后端的启用开关从「默认开」改成「必须显式给 host」（**已改，登记原因**）
 
 **影响**：高，但是正向的。这条不是待办，是一次**行为变更的记录**——它改变的是「什么都没配」这个状态下服务的行为。
 
@@ -260,7 +312,7 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 `TestNoBackendIsConfiguredByDefault` 钉住它：清空全部环境变量之后，三个 `*Enabled()` 必须全是 false。**它守的是「零配置等于零后端」这个不变量，不是那几个默认值本身**——`MYSQL_BLOB_MAX_SIZE` 的默认值 `1000000` 至今没变，也不该因为这条改动而变。
 
-### 18. DELETE 改成幂等（**已改，登记原因**）
+### 23. DELETE 改成幂等（**已改，登记原因**）
 
 **影响**：中，正向。同样是行为变更记录。
 
@@ -270,7 +322,7 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 代价要说清楚：**调用方无法再区分「删掉了」与「本来就不在」**。这是有意放弃的信息——没有任何一个调用方会因为这个区别做不同的事，而它换来的是 GC 能推进。`TestDeleteBlobIsIdempotent` 与 `TestLocalDiskDeleteIsIdempotent` 各守一层，契约固件 `delete-blob.json` 也是照着一个没人 seed 过的 handle 写的。
 
-### 19. `platform/` 没有数据库设施，并且**刻意不加**
+### 24. `platform/` 没有数据库设施，并且**刻意不加**
 
 **影响**：低（现在），但它是一个会被下一个人误判的结构决定，所以登记。
 
@@ -280,7 +332,7 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 **什么时候重新考虑**：第二个域需要连接池的时候，而且判据是那时两个域的 DSN 拼法与池参数是否真的能共用——不是「都用了 database/sql」。在那之前，`platform/` 保持没有数据库设施这件事本身就是文档：它说明「域包可以持有自己的外部依赖」。
 
-### 20. S3 写路径必须声明 payload 未签名（迁入时发现的真实 bug）
+### 25. S3 写路径必须声明 payload 未签名（迁入时发现的真实 bug）
 
 **影响**：高。修之前，自建对象存储上的每一次上传都是失败的。
 
@@ -292,7 +344,7 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 `TestS3RoundTrip` 钉住它，靠的是**用一个不可 seek 的 reader**（`oneByteReader` 包着 `strings.Reader`）而不是 `strings.Reader` 本身——后者是可以 seek 的，SDK 会走另一条路，测试照样通过而防线消失。**改这个测试时别把那层包装「简化」掉。**
 
-### 21. 写入回退的范围由 rewind 预算限定，而它不覆盖一整类失败
+### 26. 写入回退的范围由 rewind 预算限定，而它不覆盖一整类失败
 
 **影响**：中。不是 bug，是一个必须被知道的边界。
 
@@ -302,9 +354,9 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 **它不覆盖的那一类同样真实**：本地磁盘或 S3 写到一半失败，任何预算都救不回来——它们是流式的，字节早已流走。这一类目前是可以接受的，因为这两个引擎后面本来也没有第三个可以接；但**如果将来在 S3 之后再加一个后端，这条就会开始咬人**，而它的表现是「失败」而不是「静默错误」，这一点值得庆幸。`TestRouterStopsWhenTheFailedWriteConsumedTheBody` 把这个边界钉死，它断言的不只是整体失败，还有「下一个引擎一个字节都没收到」。
 
-### 22. 被 recover 的 panic 会藏在一片绿色的状态码断言背后
+### 27. 被 recover 的 panic 会藏在一片绿色的状态码断言背后
 
-**影响**：高。这是一条**测试方法学**的发现，不限于本域——另外三个域现在都还没有这道防线。
+**影响**：高。这是一条**测试方法学**的发现，不限于本域——另外五个域现在都还没有这道防线。
 
 迁入过程中真实发生过一次：一个 handler 拿着 nil 引擎调了 `ReadFile`，panic 了，而**每一条状态码断言都是绿的**。链条是这样的：
 
@@ -318,9 +370,9 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 顺带记下 `resolveTarget` 现在的形状是这条发现的产物：它**返回一个拒绝原因的字符串而不是自己应答**，这样调用点没有「把 nil 当成没问题」的机会。函数注释里写明了理由。
 
-**建议**：render / diff / notification / mailer 四个域各自的测试 helper 都加同一道检查。成本是十行，而它挡的是一整类「测试全绿、handler 在崩」的情况。
+**建议**：render / diff / notification / mailer / search 五个域各自的测试 helper 都加同一道检查。成本是十行，而它挡的是一整类「测试全绿、handler 在崩」的情况。
 
-### 23. 仓库里现在有两套 AWS 签名实现
+### 28. 仓库里现在有两套 AWS 签名实现
 
 **影响**：低，但它会把下一个想「统一一下」的人引向错误的方向。
 
@@ -329,15 +381,15 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 看起来该二选一，但两个方向现在都是错的：
 
 - 让 mailer 改用 SDK，是为一次 `POST` 表单请求引入 `service/sesv2`。手写签名换来的是端点可配、可以用 `httptest` 打完整的一圈——第 14 条里 SES 是七个适配器中唯一被测全的那个，靠的正是这一点。
-- 让 file-storage 改成手写，则要自己实现 path-style 端点、重试、以及 `UNSIGNED-PAYLOAD` 那条（第 20 条）——这些恰好是 SDK 已经做对的部分。
+- 让 file-storage 改成手写，则要自己实现 path-style 端点、重试、以及 `UNSIGNED-PAYLOAD` 那条（第 25 条）——这些恰好是 SDK 已经做对的部分。
 
-**登记而不修**，同时把判据留下：值得抽出去的时机是**第三个域也需要 AWS 签名**，而那时该抽的是「签一个请求」这件事本身，不是「都换成 SDK」。这条与第 19 条是同一个形状——两个调用方不构成共享关切——只是那边说的是连接池。
+**登记而不修**，同时把判据留下：值得抽出去的时机是**第三个域也需要 AWS 签名**，而那时该抽的是「签一个请求」这件事本身，不是「都换成 SDK」。这条与第 24 条是同一个形状——两个调用方不构成共享关切——只是那边说的是连接池。
 
-### 24. 删除路径上的非法 handle 曾经答 500（**已修**）
+### 29. 删除路径上的非法 handle 曾经答 500（**已修**）
 
-**影响**：中，正向。这条既是行为变更记录，也是第 18 条的直接副产品。
+**影响**：中，正向。这条既是行为变更记录，也是第 23 条的直接副产品。
 
-第 18 条把 DELETE 改成幂等之后，`deleteBlob` 手里就只剩一种失败可以往上抛了，而**它把两件性质完全不同的事抛成了同一个 500**：
+第 23 条把 DELETE 改成幂等之后，`deleteBlob` 手里就只剩一种失败可以往上抛了，而**它把两件性质完全不同的事抛成了同一个 500**：
 
 - 后端真的没删掉（磁盘只读、数据库连不上）——字节可能还在，Phorge 绝不能退掉指向它的记录。500 在这里是诚实的。
 - 调用方传了一个任何引擎都不可能签发的 handle——**服务什么问题都没有**，可它答的是「服务内部错误」。

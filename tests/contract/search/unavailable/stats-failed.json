@@ -1,0 +1,18 @@
+{
+  "name": "statistics that cannot be collected answer ERR_STATS_FAILED",
+  "description": "This endpoint feeds a status panel, which is the one place where a missing number is easy to render as a zero. It is not: an index reporting zero documents is what an administrator reacts to by reindexing. When no backend can produce statistics the answer is an error, not an empty map.",
+  "request": {
+    "method": "GET",
+    "path": "/api/search/stats",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 502,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_STATS_FAILED" },
+    "jsonAbsent": ["data"]
+  }
+}

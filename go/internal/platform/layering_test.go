@@ -21,6 +21,7 @@ var forbiddenPrefixes = []string{
 	"github.com/soulteary/gorge/go/internal/diff",
 	"github.com/soulteary/gorge/go/internal/notification",
 	"github.com/soulteary/gorge/go/internal/mailer",
+	"github.com/soulteary/gorge/go/internal/search",
 	"github.com/soulteary/gorge/go/internal/filestorage",
 	"github.com/soulteary/gorge/go/internal/contracts",
 }

@@ -26,7 +26,7 @@ type WriteParams struct {
 // meaningful to the engine that minted one. Their formats are part of the
 // compatibility contract — an existing file becomes unreadable, silently, if
 // an engine changes how it reads its own handles. See
-// compat/phorge/README.md section 7.
+// compat/phorge/README.md section 8.
 type StorageEngine interface {
 	// Identifier names the engine on the wire. Phorge stores it against every
 	// file it writes here, so these strings cannot change.

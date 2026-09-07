@@ -11,6 +11,7 @@ BASE_URL          ?= http://127.0.0.1:8140
 NOTIFY_ADMIN_URL  ?= http://127.0.0.1:22281
 NOTIFY_CLIENT_URL ?= http://127.0.0.1:22280
 MAILER_URL        ?= http://127.0.0.1:8110
+SEARCH_URL        ?= http://127.0.0.1:8120
 FILESTORAGE_URL   ?= http://127.0.0.1:8100
 
 .DEFAULT_GOAL := help
@@ -101,6 +102,13 @@ e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
 	# /readyz scenario fails: GORGE_MAILER_CONFIG='[{"key":"test","type":"test"}]'
 	# is what the compose service ships with.
 	BASE_URL=$(MAILER_URL) bash tests/e2e/mailer.sh
+	# gorge-search drops and recreates its index, so this runs against the
+	# compose stack's default "test" backend, which holds it in memory. The
+	# script detects that backend and skips the two scenarios that only a real
+	# Elasticsearch can answer — the CJK analyser ones, which are the reason it
+	# exists. Point BASE_URL at a service backed by a scratch cluster to get
+	# them, and never at one holding a real install's documents.
+	BASE_URL=$(SEARCH_URL) bash tests/e2e/search.sh
 	# gorge-file-storage needs a backend too, for the same reason. Local disk
 	# is the one that needs nothing external:
 	# GORGE_FILE_LOCAL_DISK_PATH=/tmp/gorge-files make run SERVICE=gorge-file-storage

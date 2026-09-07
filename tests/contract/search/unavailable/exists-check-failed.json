@@ -1,0 +1,18 @@
+{
+  "name": "an unreachable store makes the presence check ERR_CHECK_FAILED",
+  "description": "\"I could not ask\" and \"the index is not there\" are different answers, and only one of them means bin/search init. Answering exists:false for an unreachable cluster would tell an administrator to recreate an index that already holds everything — the destructive reading of an ambiguous reply.",
+  "request": {
+    "method": "GET",
+    "path": "/api/search/exists",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 502,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_CHECK_FAILED" },
+    "jsonAbsent": ["data"]
+  }
+}

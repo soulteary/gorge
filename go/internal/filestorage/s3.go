@@ -156,7 +156,7 @@ func (e *S3Engine) DeleteFile(ctx context.Context, handle string) error {
 // The `phabricator` prefix is not a typo and not decoration: it is the prefix
 // Phorge's own S3 engine uses, so a bucket written by one is readable by the
 // other. Changing it leaves every existing object in place and unreachable.
-// See compat/phorge/README.md section 7.
+// See compat/phorge/README.md section 8.
 func (e *S3Engine) generateKey() (string, error) {
 	b := make([]byte, 10)
 	if _, err := rand.Read(b); err != nil {

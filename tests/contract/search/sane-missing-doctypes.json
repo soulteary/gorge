@@ -1,0 +1,19 @@
+{
+  "name": "a sanity check without document types is rejected",
+  "description": "Same missing field as init-missing-doctypes, worse consequence. The check compares the live index against the configuration this service would build for the types it was given, so an empty list builds an empty expectation, which any index at all satisfies — including one with no mapping and no CJK subfield. The answer would be a confident \"sane: true\" to a question nobody asked properly. The pre-monorepo standalone service accepted this; the rejection is a deliberate tightening, recorded in docs/findings.md.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/sane",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"docTypes\":[]}"
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

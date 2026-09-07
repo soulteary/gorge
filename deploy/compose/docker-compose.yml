@@ -134,6 +134,52 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- gorge-search: fulltext indexing and search ---
+  #
+  # The second service on the mailer's side of the line: in-process state (a
+  # per-host health table for the Elasticsearch fan-out), connections out to a
+  # store this stack does not run, and a readiness condition worth reporting.
+  #
+  # No Elasticsearch or Meilisearch container is declared here on purpose. A
+  # search cluster is storage — it has volumes, memory limits and an upgrade
+  # path of its own — and burying one in the service layer's compose file would
+  # make `docker compose down -v` a way to lose an index. Point
+  # GORGE_SEARCH_BACKENDS at an instance you run separately.
+  #
+  # The healthcheck probes /readyz for the same reason the mailer's does, and
+  # the state it catches is the same shape: a service with no readable backend
+  # is listening, answers /healthz with 200, and fails every single query.
+  # Readiness does not dial the cluster, so an unhealthy container here means
+  # "misconfigured", never "Elasticsearch is having a moment".
+  gorge-search:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-search
+        PORT: 8120
+    image: ghcr.io/soulteary/gorge-search:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8120"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # The backend list. Left at the "test" default the service is ready and
+      # accepts documents, but indexes them into memory and loses them on
+      # restart; see .env.example, which is blunter about it.
+      GORGE_SEARCH_BACKENDS: ${GORGE_SEARCH_BACKENDS:-[{"type":"test","roles":["read","write"]}]}
+    ports:
+      # PUBLISH_PORT, not PORT: this is the host side of the mapping only. The
+      # phorge-fork orchestration uses GORGE_SEARCH_PORT for the *internal*
+      # port its Phorge container dials, so sharing one .env between the two
+      # repositories under the same name would silently conflate them.
+      - "${GORGE_SEARCH_PUBLISH_PORT:-8120}:8120"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8120/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
   # --- gorge-file-storage: the bytes of Phorge's files ---
   #
   # Also a process of its own, and the only service here that can be given a
@@ -166,7 +212,7 @@ services:
       GORGE_FILE_LOCAL_DISK_PATH: ${GORGE_FILE_LOCAL_DISK_PATH:-/var/lib/gorge/files}
       # Blank host = the blob backend is not registered. Point it at Phorge's
       # database to turn it on, and read the double-write warning in
-      # compat/phorge/README.md section 7 first.
+      # compat/phorge/README.md section 8 first.
       GORGE_FILE_MYSQL_HOST: ${GORGE_FILE_MYSQL_HOST:-}
       GORGE_FILE_MYSQL_PORT: ${GORGE_FILE_MYSQL_PORT:-3306}
       GORGE_FILE_MYSQL_USER: ${GORGE_FILE_MYSQL_USER:-phorge}

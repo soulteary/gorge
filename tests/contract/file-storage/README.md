@@ -27,7 +27,7 @@ The four paths themselves — `POST`, `GET` and `DELETE /api/file/blob`, plus
 `PhabricatorGorgeFileStorageClient` calls them as written. So are the engine
 identifiers and handle formats the fixtures spell out; see
 [`../../../compat/phorge/README.md`](../../../compat/phorge/README.md)
-section 7 for what breaking one of those costs.
+section 8 for what breaking one of those costs.
 
 ## The read and write fixtures assert different shapes on purpose
 

@@ -4,27 +4,32 @@ Phorge 的 Go 服务层单仓库。
 
 Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及将来 PHP 侧的适配层。
 
-当前只有一个二进制 `gorge-render`，承载 render 域（语法高亮，之后并入 diff 渲染）。
+仓库产出若干个二进制，每个二进制承载一个或多个域。**当前有哪些域、各由哪个二进制在哪个端口上服务，见 [`docs/README.md`](docs/README.md) 的模块表**——那张表是唯一一处需要维护这份清单的地方，这里刻意不重复它。
+
+下面这份 README 讲的是**整个仓库共通的东西**（目录结构、两条调试路径、信封与错误码），并以默认二进制 `gorge-render` 为例。各域自己的配置、路由与兼容约束在 [`docs/modules/`](docs/modules/) 下一域一份。
 
 ## 目录结构
 
 ```
 .
 ├── go/                       单一 Go module（github.com/soulteary/gorge/go）
-│   ├── cmd/gorge-render/     二进制入口，一个 cmd 一个服务
+│   ├── cmd/<二进制名>/        二进制入口，一个 cmd 一个服务
 │   ├── internal/contracts/   线上数据结构，PHP / Go / OpenAPI / 固件的唯一真源
 │   ├── internal/platform/    httpx / auth / health / config，不依赖任何业务域
-│   ├── internal/render/      render 域：highlight + HTTP 路由 + 配置
+│   ├── internal/<域名>/       一个域一个包：引擎 + HTTP 路由 + 配置
 │   └── Dockerfile            一份 Dockerfile 服务所有二进制（ARG SERVICE 选择）
-├── api/openapi/render.yaml   render 域的 HTTP 契约
+├── api/openapi/<域名>.yaml    各域的 HTTP 契约
 ├── compat/phorge/README.md   与 Phorge 的兼容约束，改动前必读
 ├── deploy/compose/           本地与单机部署编排
 ├── deploy/kubernetes/        （占位）
 ├── php/{extensions,adapters}/（占位）PHP 侧接入代码
+├── docs/                     技术文档，跨模块四份 + 一域一份
 └── tests/
-    ├── contract/render/      语言中立的契约固件，Go 与 PHP runner 共读
-    └── e2e/render.sh         对着运行中实例做的冒烟测试
+    ├── contract/<域名>/       语言中立的契约固件，Go 与 PHP runner 共读
+    └── e2e/<域名>.sh          对着运行中实例做的冒烟测试
 ```
+
+具体展开成了哪些目录见 [`docs/architecture.md`](docs/architecture.md) 第 2 节。
 
 `internal/platform/` 不允许反向依赖任何业务域。这是保持将来能把某个域单独拆出去的关键约束。
 
@@ -73,6 +78,8 @@ TOKEN=dev-token make e2e
 
 环境变量按「新名优先、旧名兜底」查找，取第一个非空值。旧名保留是为了让既有的 Phorge 编排文件不改也能起来，新编排请只用新名。
 
+下表是 `gorge-render` 的。**每个二进制有自己的一张表**，在 [`docs/modules/`](docs/modules/) 下各自的第 4 节；`GORGE_LISTEN_ADDR` 与 `GORGE_SERVICE_TOKEN` 是所有服务共有的两个，只有默认端口不同。
+
 | 变量 | 兜底旧名 | 默认值 | 说明 |
 |---|---|---|---|
 | `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8140` | 监听地址 |
@@ -111,7 +118,7 @@ TOKEN=dev-token make e2e
 | `ERR_TOO_LARGE` | 413 | 请求体超限，域级检查与传输层检查同码 |
 | `ERR_INTERNAL` | 500 | panic 或其他非预期失败 |
 
-域级错误码定义在各自的域包里，render 域目前有 `ERR_HIGHLIGHT_FAILED`(500)。handler 已经用 `httpx.Fail` 应答过的响应不会被全局处理器改写，所以域级码不会退化成 `ERR_INTERNAL`。
+域级错误码定义在各自的域包里，render 域目前有 `ERR_HIGHLIGHT_FAILED`(500)；其余域的见各自的模块文档第 6 节与 [`compat/phorge/README.md`](compat/phorge/README.md) 的附录。handler 已经用 `httpx.Fail` 应答过的响应不会被全局处理器改写，所以域级码不会退化成 `ERR_INTERNAL`。
 
 两个路由细节容易被误判成错误的状态码：`/api/highlight/**` 下鉴权早于路由解析，所以不带 token 打不存在的路径返回 401 而非 404；同样在这个分组下，方法用错返回 404 而非 405（分组为了鉴权匹配了所有方法），因此 `ERR_METHOD_NOT_ALLOWED` 实际只在健康探针路径上见得到。
 
@@ -152,7 +159,7 @@ CI 带 `paths` 过滤（`go/**`、`tests/**`、`.github/workflows/**`），纯 P
 
 ## 与 Phorge 的兼容约束
 
-改动高亮输出、语言别名表、端口或路由之前，**先读 [`compat/phorge/README.md`](compat/phorge/README.md)**。那里记录了三件破坏后不会报错、只会静默失效的事。
+改动高亮输出、语言别名表、端口、路由、diff 输出格式、通知的线兼容、邮件错误码或搜索的字段名之前，**先读 [`compat/phorge/README.md`](compat/phorge/README.md)**。那里逐项记录了破坏之后**不会报错、只会静默失效**的约定，顶部一张总表按「破坏后的表现」索引到具体条目。
 
 ## 许可证
 

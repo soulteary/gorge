@@ -13,7 +13,7 @@ import (
 // s3KeyPattern is the key layout the PHP engine uses, and the reason this
 // engine mints keys itself rather than letting the SDK choose. Changing it
 // leaves every existing object in place and unreachable, silently. See
-// compat/phorge/README.md section 7.
+// compat/phorge/README.md section 8.
 var s3KeyPattern = regexp.MustCompile(`^phabricator(/[^/]+)?/[a-f0-9]{2}/[a-f0-9]{2}/[a-f0-9]{16}$`)
 
 func TestS3KeyLayout(t *testing.T) {

@@ -26,8 +26,13 @@
 | `notification/admin/` | `gorge-notification` 的 admin 口 | `go/internal/notification/contract_admin_test.go` |
 | `notification/client/` | 同上，client 口 | `go/internal/notification/contract_client_test.go` |
 | `mailer/` | `gorge-mailer` | `go/internal/mailer/contract_test.go` |
+| `search/` | `gorge-search` | `go/internal/search/contract_test.go` |
+| `search/unavailable/` | 同上，但服务配的是一个必然失败的后端 | 同一个文件里的第二个 `Run` |
+| `file-storage/` | `gorge-file-storage` | `go/internal/filestorage/contract_test.go` |
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
+
+**search 也是两个目录，但理由完全不同：它一个域一个端口，分开的是被测服务的配置。** mailer 的固件能在请求体里用 `mailerKeys` 指向一个会失败的适配器，所以健康与故障两种情况共存于一个目录；而 search 的引擎**只按角色选后端**，请求体里没有任何选择后端的手段。于是「一个正常的存储」与「一个坏掉的存储」是两份服务配置而不是两种请求，只能由两个 `contracttest.Run` 各起一个服务来跑。`unavailable/` 那六份是五个域级错误码唯一的到达路径（`ERR_CHECK_FAILED` 有 `/exists` 与 `/sane` 两条路进去，所以是六份而不是五份），而它们能被写出来的前提是 `engine.TestBackend` 支持可注入失败——那也是它是生产代码而不是 `_test.go` 辅助函数的原因。
 
 这些 runner 都只是三行 wrapper，真正的重放逻辑在 `go/internal/contracttest/`。它是 diff 迁入时从 render 的固件测试里抽出来的，抽出的理由不是省代码，而是**断言词汇必须在两个域之间保持一致**——各写一份 runner，两个域很快会开始用不同的方式描述自己的契约。它是普通包而非 `_test.go`，因为要被两个域的测试 import。
 
@@ -81,7 +86,17 @@ Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoute
 
 **notification 域 11 份**：admin 7 份（发消息、form-urlencoded 的 Content-Type、空 body、格式错误的 body、`/status/` 的扁平点号键、带 instance 的 `/status/`、根探针），client 4 份（`GET /` 与实例路径各一条 501、带 Upgrade 头但不是 WebSocket 的一条 501、`/healthz` 不被通配符吃掉）。逐条对应见 [`../tests/contract/notification/README.md`](../tests/contract/notification/README.md)。
 
+**search 域 23 份**：主目录 17 份（写入成功、写入一份中文文档、缺 `phid`、缺 `type`、格式错误的请求体、检索、无筛选列表、三个所有者状态、`/init`、`/init` 缺 `docTypes`、`/sane`、`/sane` 缺 `docTypes`、`/exists`、`/stats`、`/backends`、未授权、查询参数认证），`unavailable/` 6 份（五个域级错误码，`ERR_CHECK_FAILED` 占两份）。
+
+**file-storage 域 14 份**：写入（默认按优先级、指名引擎、零字节文件、未知引擎答 400 而不是替换成别的）、读取（裸字节、读不到时仍是信封、缺 engine 参数、任何引擎都签发不出的 handle 仍是 404）、删除（对已经不在的字节成功、缺 handle、非法 handle 答 400）、引擎列表、未授权、查询参数认证。
+
+这一组里有两对是**成对**的，拆掉任何一半都只剩一半防线：`read-blob.json` 与 `read-blob-missing.json` 分别钉住「成功答裸字节」与「失败仍答信封」，它们合起来才表达了全仓唯一那个非信封成功响应的完整形状；`read-blob-bad-handle.json`（404）与 `delete-blob-bad-handle.json`（400）钉住的是同一个非法 handle 在读与删两条路上**刻意**答两个不同的码，理由见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 8.6 节与 [`modules/file-storage.md`](modules/file-storage.md) 第 3.4 节。`write-blob-empty.json` 也不是凑数的：零字节文件是一个合法的 200 加一个空 body，而按「body 是不是空的」判断成败的客户端会把它报成错误。
+
+`index-cjk-document.json` 值得说一句它**验不到**什么：它断言一份中文文档写得进去、答 200 并回显 PHID，这是真的；但固件跑的是内存 `test` 后端，那个后端做子串匹配、不过分析器，所以**它对 `cjk` 子字段一无所知**。中文检索真正能不能工作只有 `tests/e2e/search.sh` 的第 11、12 条对着真 Elasticsearch 才验得到（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条末尾）。别把这份固件当成 CJK 的覆盖。
+
 这批固件让共享 runner 长了两处：`lookupJSONPath` 现在会**先把整段路径当字面量键查一次**再按 `.` 切分，否则 `clients.active` 这类键寻址不到（那些点是键名的一部分，不是嵌套）；`check` 现在对「只断言状态码与原始字节」的固件跳过 JSON 解码，否则 client 口那句纯文本 501 会在解码那一步就失败。两处都是共享词汇的扩展而非 notification 专用分支。
+
+file-storage 又让它长了第三处，形状相同：`expect.headerEquals` 断言响应头，头名按 canonical 形式匹配。逼出它的是那个非信封的读路径——`Content-Type` 正是 PHP 客户端用来分辨「一份文件」与「一个信封」的依据，而在此之前固件没有任何办法断言它。
 
 diff 域**刻意没有**超限固件：两道尺寸护栏都随部署可配，一份断言 413 的固件会随被测服务的启动参数时过时不过，而这正是契约固件不能有的性质。那些路径在 `go/internal/diff/http_test.go` 里覆盖，那里可以设限。
 
@@ -113,7 +128,7 @@ prose diff 落在两者之间：它的输出没有外部基准，所以固件钉
 
 ## 4. e2e 冒烟
 
-四份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
+五份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
 
 ```bash
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/render.sh
@@ -121,8 +136,9 @@ BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/diff.sh
 ADMIN_URL=http://127.0.0.1:22281 CLIENT_URL=http://127.0.0.1:22280 \
   bash tests/e2e/notification.sh
 BASE_URL=http://127.0.0.1:8110 TOKEN=dev bash tests/e2e/mailer.sh
+BASE_URL=http://127.0.0.1:8120 TOKEN=dev bash tests/e2e/search.sh   # ⚠ 会销毁索引
 # 或
-TOKEN=dev-token make e2e     # 四份都跑
+TOKEN=dev-token make e2e     # 五份都跑
 ```
 
 render 与 diff 共用一个端口，所以那两份是「两个脚本打同一个 `BASE_URL`」，不是两套部署。notification 是另一个进程，而且**要两个变量**：`ADMIN_URL` 与 `CLIENT_URL` 不可互换，同一个请求在两个端口上的正确答案不一样，这正是它第 4、5 条场景要验证的东西。它也没有 `TOKEN`——那个域按设计不鉴权。
@@ -135,9 +151,18 @@ render 与 diff 共用一个端口，所以那两份是「两个脚本打同一�
 
 `mailer.sh` 八条场景：存活探针、就绪探针、无 token 得 401、后端列表、发一封并断言 `data.mailerKey`、带 base64 附件的一封、缺收件人得 400、`mailerKeys` 指向不存在的后端得 502。**它对被测实例有一个额外前提**：必须配了至少一个后端，否则第 2 条按设计就该失败——`/readyz` 报的正是「一个后端都没配」。用 `test` 后端起服务就能满足，`make e2e` 与 compose 的默认值都是它。
 
-render、diff 与 mailer 三份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+`search.sh` 十八条场景，两件事与其余四份不同：
 
-它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。两个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）
+- **它会销毁索引。**第 5 条打 `POST /api/search/init`，而那条路径按设计先删索引再重建。所以它只能对着一次性部署跑，脚本头部与运行时都印了警告。这是唯一一份有破坏性的 e2e。
+- **两条场景在内存后端上是 SKIP 而不是 PASS。**第 11、12 条（两字中文查询命中、`登录跳转` 只命中中文文档）是关于 Elasticsearch **分析器链**的断言，而 `test` 后端做的是子串匹配、根本不过分析器——它会把两条都答对而什么都没证明。脚本因此先看 `/backends` 的应答里有没有 `"type":"test"`，是就 skip。**别把那个 skip 改成 pass**：整份脚本存在的主要理由就是这两条，一个看起来像覆盖的假 PASS 比 SKIP 坏得多。
+
+其余十六条覆盖两个探针（含断言探针**不出现** `"data"`）、401、`/backends` 不含凭据、`/init`、`/exists`、刚建完的索引必须 `sane: true`、写入英文与中文文档各一份、英文检索往返、无筛选列表、`authorPHIDs` 筛选、`exclude`、`/stats`（并断言响应里**不出现** `storageBytes`）、缺 `phid` 得 400，以及 `/init` 与 `/sane` 空 `docTypes` 各得 400。它对被测实例的前提与 mailer 相同：至少配一个后端。
+
+内容断言全部**轮询**而不是断言一次，因为 Elasticsearch 的 refresh 是近实时的：写入之后立刻查会漏掉那份文档，一个只断言一次的脚本会大约一半的时候失败。
+
+render、diff、mailer 与 search 四份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+
+它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。四个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）
 
 `diff.sh` 还有一个单元测试拿不到的作用：`\ No newline at end of file` 这个标记里含反斜杠，是整个 payload 里唯一会被 JSON 转义错误悄悄改坏的部分，而它只有过一趟真实的 HTTP 编解码才验证得到。
 
@@ -158,19 +183,34 @@ render、diff 与 mailer 三份都在 `TOKEN` 为空时跳过 401 那条并明�
 | `notification/hub` | 83.7% |
 | `notification/peer` | 96.2% |
 | `mailer` | 79.1%（见下） |
-| `contracttest` | 20.2%（见下） |
+| `search` | 97.5% |
+| `search/engine` | 99.5% |
+| `search/esquery` | 100.0% |
+| `search/engine/elasticsearch` | 81.4% |
+| `search/engine/meilisearch` | **0.0%**（见下） |
+| `filestorage` | 84.1% |
+| `contracttest` | 19.7%（见下） |
 | `cmd/gorge-render` | 0.0% |
 | `cmd/gorge-notification` | 0.0% |
 | `cmd/gorge-mailer` | 0.0% |
-| **总计** | **81.4%** |
+| `cmd/gorge-search` | 0.0% |
+| `cmd/gorge-file-storage` | 0.0% |
+| **总计** | **76.2%** |
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 
-`contracttest` 的 20.2% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
+`contracttest` 的 19.7% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
 
 `mailer` 的 79.1% 是本表最低的一个真实数字，而它的缺口是**可指名的**：SMTP 的两条发送路径与 SendGrid / Mailgun / Postmark 的 HTTP 往返。永久失败分类本身测到了（`classifyProviderStatus` / `classifySMTPError` 有表驱动用例，sendmail 用 stub 脚本走了真实退出码路径，SES 因为端点可配而用 `httptest` 打了完整一圈），缺的是另外三家 provider 那一圈——它们的端点是编译期常量，测不了。修法与理由写在 [`findings.md`](findings.md) 第 14 条。
 
 `notification/hub` 的 83.7% 有一部分是同一个假象：`Listener` 那几个要真 WebSocket 才调得到的方法，连接建在 `internal/notification` 的测试里，不计入 `hub`。`-coverpkg` 合并度量后它们都是 100%，覆盖率的真实缺口只剩三处，都登记在 [`findings.md`](findings.md) 第 9 条。
+
+**总计从 81.4% 降到 76.2%，几乎全部由 search 迁入带来，而且原因是可指名的**——不是新代码测得差，`search` 97.5% / `engine` 99.5% / `esquery` 100.0% 都在表上端（随后 file-storage 以 84.1% 把总数往回抬了 0.2 个点，它不在这个故事里）。拉低总数的是两个包：
+
+- `search/engine/meilisearch` **0.0%**，全仓库唯一一个零覆盖的非 `cmd` 包。它不影响 PHP 契约（契约在 `internal/search` 那一层，两个后端之下），所以迁入时刻意没有扩大范围，但它自己翻译查询、自己管索引设置、自己实现 `IndexIsSane`，坏掉的表现是配了 Meilisearch 的部署检索行为不对，而 Elasticsearch 那条路径的测试一条都不会红。登记在 [`findings.md`](findings.md) 第 17 条，那里写了 Elasticsearch 后端的测试怎么照抄。
+- `search/engine/elasticsearch` 81.4%，缺口是**真实的 HTTP 往返分支**：`httptest` 假集群覆盖了路径拼接、spec 形状与 `configDeepMatch` 的判定，没覆盖的是主机健康表在多主机 failover 下的那几条状态迁移。
+
+**这两个数字不该被「顺手补测试」抹平。** 一个假集群能验证的是「本服务发出了正确的请求」，验证不了「Elasticsearch 会怎么回答」——后者是 `tests/e2e/search.sh` 的活，而它只在有真集群时才有意义。
 
 生成报告：
 

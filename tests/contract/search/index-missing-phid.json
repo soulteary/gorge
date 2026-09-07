@@ -1,0 +1,19 @@
+{
+  "name": "a document without a PHID is rejected",
+  "description": "The PHID is the document's identity in the index, so there is no default to fall back on: a write without one would either overwrite a document keyed on the empty string or create one nothing can ever find again. It is 400 and not 502 because the request never reached a store — nothing downstream judged anything.",
+  "request": {
+    "method": "POST",
+    "path": "/api/search/index",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Service-Token": "contract-token"
+    },
+    "body": "{\"type\":\"TASK\",\"title\":\"No identity\",\"fields\":[{\"name\":\"titl\",\"corpus\":\"No identity\"}]}"
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_BAD_REQUEST" },
+    "jsonAbsent": ["data"]
+  }
+}

@@ -3,7 +3,7 @@ package contracts
 // The file storage types describe the JSON half of the file storage contract
 // only. The bytes themselves never appear here: they cross the wire as a raw
 // `application/octet-stream` body, which is the one place in `/api/**` where a
-// success is not an envelope. See compat/phorge/README.md section 7.
+// success is not an envelope. See compat/phorge/README.md section 8.
 //
 // PhabricatorGorgeFileStorageEngine reads these field names directly, so they
 // are the wire contract itself.

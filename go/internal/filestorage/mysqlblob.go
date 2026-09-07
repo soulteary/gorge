@@ -22,7 +22,7 @@ const identifierMySQLBlob = "blob"
 //
 // It shares that table with Phorge's native MySQL engine — same table, same
 // handle scheme — which is why enabling both at once is a documented hazard
-// rather than a feature. See compat/phorge/README.md section 7.
+// rather than a feature. See compat/phorge/README.md section 8.
 type MySQLBlobEngine struct {
 	db      *sql.DB
 	maxSize int64
