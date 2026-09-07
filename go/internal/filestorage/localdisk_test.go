@@ -197,3 +197,24 @@ func TestLocalDiskDescribesItself(t *testing.T) {
 		t.Error("local disk writes and has no size limit")
 	}
 }
+
+// TestLocalDiskConstantMethods pins the placement constants. MaxFileSize is 0
+// precisely because HasSizeLimit is false — a size limit here would clamp the
+// one backend that exists to hold anything too big for a database row.
+// Priority 5 puts local disk between the blob backend and S3.
+func TestLocalDiskConstantMethods(t *testing.T) {
+	eng := newLocalDiskLike(t)
+
+	if eng.MaxFileSize() != 0 {
+		t.Errorf("MaxFileSize() = %d, want 0 (no limit)", eng.MaxFileSize())
+	}
+	if eng.HasSizeLimit() {
+		t.Error("HasSizeLimit() must be false when MaxFileSize is 0")
+	}
+	if eng.Priority() != 5 {
+		t.Errorf("Priority() = %d, want 5", eng.Priority())
+	}
+	if !eng.CanWrite() {
+		t.Error("local disk must report itself writable")
+	}
+}

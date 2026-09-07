@@ -72,6 +72,14 @@ func TestS3DescribesItself(t *testing.T) {
 	if eng.HasSizeLimit() {
 		t.Error("S3 has no size limit")
 	}
+	// CanWrite and MaxFileSize are constants: object storage always accepts a
+	// write, and 0 marks the absence of a size limit, matching HasSizeLimit.
+	if !eng.CanWrite() {
+		t.Error("S3 must report itself writable")
+	}
+	if eng.MaxFileSize() != 0 {
+		t.Errorf("MaxFileSize() = %d, want 0 (no limit)", eng.MaxFileSize())
+	}
 }
 
 // TestS3RoundTrip drives the engine against a stand-in bucket. The endpoint is

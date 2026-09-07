@@ -3,6 +3,7 @@ package mailer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -407,5 +408,78 @@ func TestSMTPAdapterDefaults(t *testing.T) {
 func TestTestAdapterRejectsUnknownFailMode(t *testing.T) {
 	if _, err := newTestAdapter(map[string]string{"fail": "sometimes"}); err == nil {
 		t.Error("expected an error for an unknown fail mode")
+	}
+}
+
+// TestPermanentErrorUnwrap: IsPermanent leans on errors.As reaching the wrapped
+// error, so Unwrap has to hand back exactly what permanentf put in. errors.Is
+// against a sentinel is the observable payoff.
+func TestPermanentErrorUnwrap(t *testing.T) {
+	sentinel := errors.New("bad recipient")
+	err := &PermanentError{Err: sentinel}
+
+	if unwrapped := errors.Unwrap(err); unwrapped != sentinel {
+		t.Errorf("Unwrap() = %v, want the wrapped error", unwrapped)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Error("errors.Is must reach the wrapped sentinel through Unwrap")
+	}
+	// The message is the wrapped error's own, not a decorated one.
+	if err.Error() != sentinel.Error() {
+		t.Errorf("Error() = %q, want %q", err.Error(), sentinel.Error())
+	}
+}
+
+// permanentf builds a PermanentError whose wrapped error carries the formatted
+// message, and IsPermanent recognises it — including when it is wrapped again
+// with %w further up a call chain.
+func TestPermanentfIsPermanent(t *testing.T) {
+	err := permanentf("rejected %s", "sender@example.com")
+	if !IsPermanent(err) {
+		t.Fatal("permanentf must produce a permanent error")
+	}
+	if !strings.Contains(err.Error(), "sender@example.com") {
+		t.Errorf("the formatted message is lost: %v", err)
+	}
+
+	wrapped := fmt.Errorf("dispatch: %w", err)
+	if !IsPermanent(wrapped) {
+		t.Error("IsPermanent must see through an outer wrap")
+	}
+}
+
+// TestTestAdapterReset: Send records messages and counts attempts, and Reset
+// puts both back to zero so a fixture can reuse one adapter across cases.
+func TestTestAdapterReset(t *testing.T) {
+	a, err := newTestAdapter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 3 {
+		if _, err := a.Send(context.Background(), testMessage()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(a.Messages()) != 3 || a.Attempts() != 3 {
+		t.Fatalf("before reset: messages=%d attempts=%d, want 3/3", len(a.Messages()), a.Attempts())
+	}
+
+	a.Reset()
+
+	if len(a.Messages()) != 0 {
+		t.Errorf("Reset must clear the recorded messages, got %d", len(a.Messages()))
+	}
+	if a.Attempts() != 0 {
+		t.Errorf("Reset must zero the attempt counter, got %d", a.Attempts())
+	}
+
+	// The message id counter resets too: the next accepted send is test-1 again.
+	id, err := a.Send(context.Background(), testMessage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "test-1" {
+		t.Errorf("expected the id counter reset to 1, got %q", id)
 	}
 }
