@@ -26,10 +26,6 @@ const (
 	seededQueued = 3
 	seededSent   = 2
 	seededFailed = 1
-	// Two hooks, one of them disabled, which is what makes the difference
-	// between stats.activeWebhooks and hooks.total observable.
-	seededHooks       = 2
-	seededActiveHooks = 1
 )
 
 // contractStore builds the state the fixtures are written against.
