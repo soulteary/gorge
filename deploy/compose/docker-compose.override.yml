@@ -1,0 +1,24 @@
+# gorge 栈的本地联调叠加文件（可选）
+# ------------------------------------------------------------------
+# 用途：让本 gorge 栈里两个有状态服务（file-storage / webhook）能连到**另一个**
+# compose 栈（phorge-fork）里的 MySQL。
+#
+# 两个栈网络隔离：本栈的容器在 `gorge` bridge 网络里，看不到 phorge-fork 栈的服务名
+# `mysql`；容器内的 127.0.0.1 又是容器自己。唯一的通路是宿主机回环——phorge-fork 的
+# docker-compose.override.yml 已把它的 MySQL 暴露到 127.0.0.1:3306，本栈容器用
+# host.docker.internal 指向宿主即可（连库地址在同目录 .env 里已改成 host.docker.internal）。
+#
+# 但 host.docker.internal 在 Linux 容器里默认不可解析，需要下面的 extra_hosts 显式声明
+# （macOS/Windows 的 Docker Desktop 默认能解析，但显式声明无害且让 Linux 主机也通用）。
+#
+# 用法：本文件与 docker-compose.yml 同目录，`docker compose up -d` 会自动合并。
+# 若不联调 webhook（避免与 phd 双投），把 webhook 段删掉并且不要启动 gorge-webhook。
+# ------------------------------------------------------------------
+services:
+  gorge-file-storage:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  gorge-webhook:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
