@@ -99,30 +99,7 @@ jobs:
 
       - name: Run tests
         working-directory: go
-        run: go test -v -coverprofile=coverage.out -covermode=atomic ./...
-
-      - name: Generate coverage report
-        working-directory: go
-        run: go tool cover -html=coverage.out -o coverage.html
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v6
-        with:
-          name: coverage-report
-          path: go/coverage.html
-
-      - name: Display coverage summary
-        working-directory: go
-        run: go tool cover -func=coverage.out
-
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./go/coverage.out
-          flags: unittests
-          name: codecov-umbrella
-          fail_ci_if_error: false
+        run: go test -v ./...
 
   # Code quality check (using golangci-lint)
   lint:
