@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/notification/hub"
@@ -33,28 +33,29 @@ type AdminDeps struct {
 // PhabricatorNotificationServerRef sends no credentials, so a token would reject
 // every message it posts. This port must therefore stay on a private network —
 // in the compose topology it is not published to the host at all.
-func RegisterAdminRoutes(e *echo.Echo, deps *AdminDeps) {
+func RegisterAdminRoutes(app fiber.Router, deps *AdminDeps) {
 	// POST / coexists with the health probe's GET /: they differ by method. The
 	// visible consequence is that GET / now answers 200 where Aphlict answered
 	// 405, which no caller notices because Phorge only ever probes /status/.
-	e.POST("/", postMessage(deps))
-	e.GET("/status/", serverStatus(deps))
+	app.Post("/", postMessage(deps))
+	app.Get("/status/", serverStatus(deps))
 }
 
-func postMessage(deps *AdminDeps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func postMessage(deps *AdminDeps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		// Decoded straight off the body rather than through c.Bind, which
 		// dispatches on Content-Type. Phorge's HTTPSFuture sends a raw JSON
 		// payload under curl's default application/x-www-form-urlencoded, and
-		// Echo's binder would take that label at its word: it percent-decodes
+		// Fiber's binder would take that label at its word: it percent-decodes
 		// and splits the body as form data, rejecting a message that contains a
 		// stray "%" and quietly turning any other one into a single garbage key.
 		// Another label, text/plain say, would be a flat 415. Pinned by
 		// tests/contract/notification/admin/post-form-content-type.json.
 		//
-		// An empty body decodes to io.EOF, which is the 400 below.
+		// An empty body decodes to io.EOF, which is the 400 below. c.Body()
+		// returns the raw buffered request body, matching the old direct read.
 		var msg hub.Message
-		if err := json.NewDecoder(c.Request().Body).Decode(&msg); err != nil {
+		if err := json.Unmarshal(c.Body(), &msg); err != nil {
 			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
 		}
 
@@ -65,7 +66,7 @@ func postMessage(deps *AdminDeps) echo.HandlerFunc {
 		// and come back. Answering the receipt without republishing is what
 		// stops a peer mesh from delivering it twice and relaying it forever.
 		if !deps.Peers.AddFingerprint(msg) {
-			return c.JSON(http.StatusOK, receipt)
+			return c.Status(http.StatusOK).JSON(receipt)
 		}
 
 		deps.Hub.Publish(instance, msg)
@@ -74,21 +75,21 @@ func postMessage(deps *AdminDeps) echo.HandlerFunc {
 		// c.JSON, not httpx.OK: Phorge reads this body with a bare
 		// phutil_json_decode() and indexes "fingerprint" directly, so the
 		// envelope would put it out of reach. See contracts/notification.go.
-		return c.JSON(http.StatusOK, receipt)
+		return c.Status(http.StatusOK).JSON(receipt)
 	}
 }
 
-func serverStatus(deps *AdminDeps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func serverStatus(deps *AdminDeps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		// Bare again, for the same reason: the cluster notification panel reads
 		// these keys off the top level of the body.
-		return c.JSON(http.StatusOK, deps.Hub.Status(instanceOf(c)))
+		return c.Status(http.StatusOK).JSON(deps.Hub.Status(instanceOf(c)))
 	}
 }
 
 // instanceOf reads the Phorge instance a request addresses.
-func instanceOf(c echo.Context) string {
-	if instance := c.QueryParam("instance"); instance != "" {
+func instanceOf(c fiber.Ctx) string {
+	if instance := c.Query("instance"); instance != "" {
 		return instance
 	}
 	return defaultInstance

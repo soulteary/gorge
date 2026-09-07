@@ -8,7 +8,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/platform/auth"
@@ -33,25 +33,26 @@ type Deps struct {
 // The paths are named after the domain, not the binary, and must not change:
 // Phorge's PhabricatorGoHighlightClient already calls them, and keeping the
 // domain segment is what lets /api/diff/* land in this same process later.
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/highlight")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/highlight")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/render", renderHighlight(deps))
-	g.GET("/languages", listLanguages(deps))
+	g.Post("/render", renderHighlight(deps))
+	g.Get("/languages", listLanguages(deps))
 }
 
-func renderHighlight(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func renderHighlight(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		var req contracts.HighlightRequest
-		if err := c.Bind(&req); err != nil {
-			// A body over the platform limit surfaces here, as Echo's 413,
-			// whenever the client streams without a Content-Length; handing
-			// those back to the platform error handler is what keeps them
-			// reported as ERR_TOO_LARGE rather than flattened into
-			// ERR_BAD_REQUEST. Malformed JSON is a genuine 400 and stays here.
-			var httpErr *echo.HTTPError
-			if errors.As(err, &httpErr) && httpErr.Code != http.StatusBadRequest {
+		if err := c.Bind().Body(&req); err != nil {
+			// A body over the platform limit is rejected by fasthttp before
+			// this handler runs and reaches the platform error handler as
+			// fiber.ErrRequestEntityTooLarge, which keeps it reported as
+			// ERR_TOO_LARGE rather than flattened into ERR_BAD_REQUEST. Any
+			// non-400 *fiber.Error that still surfaces here is handed back for
+			// the same reason. Malformed JSON is a genuine 400 and stays here.
+			var fiberErr *fiber.Error
+			if errors.As(err, &fiberErr) && fiberErr.Code != http.StatusBadRequest {
 				return err
 			}
 			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
@@ -75,8 +76,8 @@ func renderHighlight(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func listLanguages(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func listLanguages(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		return httpx.OK(c, deps.Highlighter.Languages())
 	}
 }

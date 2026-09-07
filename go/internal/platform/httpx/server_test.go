@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 )
 
 // runAllInBackground starts RunAll and hands back the channel its result will
@@ -29,7 +29,7 @@ func waitForListener(t *testing.T, s *Server) string {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if addr := s.Echo().ListenerAddr(); addr != nil {
+		if addr := s.ListenerAddr(); addr != nil {
 			resp, err := http.Get("http://" + addr.String() + "/healthz")
 			if err == nil {
 				_ = resp.Body.Close()
@@ -112,29 +112,29 @@ func TestRunAllDrainsInFlightRequests(t *testing.T) {
 	release := make(chan struct{})
 
 	srv := New(Config{ListenAddr: "127.0.0.1:0", ShutdownTimeout: 5 * time.Second})
-	srv.Echo().GET("/slow", func(c echo.Context) error {
+	srv.App().Get("/slow", func(c fiber.Ctx) error {
 		close(entered)
 		<-release
-		return c.String(http.StatusOK, body)
+		return c.SendString(body)
 	})
 
 	done := runAllInBackground(srv)
 	addr := waitForListener(t, srv)
 
-	type response struct {
+	type result struct {
 		body string
 		err  error
 	}
-	answered := make(chan response, 1)
+	answered := make(chan result, 1)
 	go func() {
 		resp, err := http.Get("http://" + addr + "/slow")
 		if err != nil {
-			answered <- response{err: err}
+			answered <- result{err: err}
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
 		read, err := io.ReadAll(resp.Body)
-		answered <- response{body: string(read), err: err}
+		answered <- result{body: string(read), err: err}
 	}()
 
 	<-entered
@@ -179,7 +179,7 @@ func TestRunAllStopsWhenOneListenerFails(t *testing.T) {
 
 	// The healthy server may or may not have finished binding before the
 	// failure arrived; either way it must not still be accepting.
-	if addr := healthy.Echo().ListenerAddr(); addr != nil && !refusesConnections(addr.String()) {
+	if addr := healthy.ListenerAddr(); addr != nil && !refusesConnections(addr.String()) {
 		t.Error("the surviving listener was left accepting after its sibling failed")
 	}
 }
@@ -225,11 +225,14 @@ func TestSkipRootProbeReachesHealth(t *testing.T) {
 			srv := New(Config{SkipRootProbe: tc.skip})
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			rec := httptest.NewRecorder()
-			srv.Echo().ServeHTTP(rec, req)
+			resp, err := srv.App().Test(req, fiber.TestConfig{Timeout: 0})
+			if err != nil {
+				t.Fatalf("app.Test: %v", err)
+			}
+			_ = resp.Body.Close()
 
-			if rec.Code != tc.wantStatus {
-				t.Errorf("GET /: expected %d, got %d", tc.wantStatus, rec.Code)
+			if resp.StatusCode != tc.wantStatus {
+				t.Errorf("GET /: expected %d, got %d", tc.wantStatus, resp.StatusCode)
 			}
 		})
 	}

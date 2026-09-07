@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracttest"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
@@ -98,8 +98,8 @@ func TestContractFixturesWithAnUnreachableDatabase(t *testing.T) {
 	contracttest.Run(t, newContractServer(store), unavailableFixtureDir)
 }
 
-func newContractServer(store Store) *echo.Echo {
+func newContractServer(store Store) *fiber.App {
 	srv := httpx.New(httpx.Config{Ready: ReadyProbe(store)})
-	RegisterRoutes(srv.Echo(), &Deps{Store: store, Token: contracttest.Token})
-	return srv.Echo()
+	RegisterRoutes(srv.App(), &Deps{Store: store, Token: contracttest.Token})
+	return srv.App()
 }

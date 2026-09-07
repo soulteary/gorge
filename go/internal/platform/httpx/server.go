@@ -3,15 +3,20 @@ package httpx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
-	"net/http"
+	"net"
 	"os/signal"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 
 	"github.com/soulteary/gorge/go/internal/platform/health"
 )
@@ -35,14 +40,20 @@ type Config struct {
 	SkipRootProbe bool
 }
 
-// Server is an Echo instance preloaded with the platform middleware stack and
-// the health probes.
+// Server is a Fiber app preloaded with the platform middleware stack and the
+// health probes.
 type Server struct {
-	echo *echo.Echo
-	cfg  Config
+	app *fiber.App
+	cfg Config
+
+	// listenerAddr records the address the app actually bound to, filled in by
+	// Fiber's ListenerAddrFunc once Listen has a socket. Tests read it through
+	// ListenerAddr to wait for and locate a server on 127.0.0.1:0.
+	mu           sync.RWMutex
+	listenerAddr net.Addr
 }
 
-// New builds the server. Domain packages register their routes on Echo().
+// New builds the server. Domain packages register their routes on App().
 func New(cfg Config) *Server {
 	if cfg.BodyLimit == "" {
 		cfg.BodyLimit = defaultBodyLimit
@@ -51,51 +62,81 @@ func New(cfg Config) *Server {
 		cfg.ShutdownTimeout = defaultShutdownTimeout
 	}
 
-	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = true
-
-	// Errors Echo raises on its own must answer in the envelope too, not in
-	// Echo's default {"message": "..."} shape. See errors.go.
-	e.HTTPErrorHandler = errorHandler
+	app := fiber.New(fiber.Config{
+		// Echo distinguished /status/ from /status; Fiber collapses them unless
+		// strict routing is on. The notification admin contract requires
+		// /status (no trailing slash) to be a 404, so this preserves it. Every
+		// route in the repository is called with its exact path, so nothing
+		// else depends on the lenient behaviour.
+		StrictRouting: true,
+		// A body over this limit is rejected by fasthttp before any handler
+		// runs; serverErrorHandler turns that into fiber.ErrRequestEntityTooLarge,
+		// which errorHandler maps to ERR_TOO_LARGE. The render domain's own
+		// GORGE_RENDER_MAX_BYTES answers 413 with the same code, so a caller
+		// sees one code no matter which limit it tripped.
+		BodyLimit: parseBodyLimit(cfg.BodyLimit),
+		// Errors Fiber raises on its own must answer in the envelope too, not
+		// in Fiber's default plain-text shape. See errors.go.
+		ErrorHandler: errorHandler,
+	})
 
 	// RequestID reuses an inbound X-Request-Id when the caller already has one,
 	// so a request keeps a single id as it crosses Phorge and the Go services.
-	e.Use(middleware.RequestID())
-	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
-		LogStatus: true, LogURI: true, LogMethod: true, LogRequestID: true,
-		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
-			slog.Info("REQUEST",
-				"method", v.Method, "uri", v.URI, "status", v.Status, "request_id", v.RequestID)
-			return nil
-		},
-	}))
-	e.Use(middleware.RecoverWithConfig(middleware.RecoverConfig{
-		// Echo would print the stack through its own logger; route it to slog
+	app.Use(requestid.New())
+	app.Use(requestLogger())
+	app.Use(recover.New(recover.Config{
+		EnableStackTrace: true,
+		// Fiber would print the stack through its own logger; route it to slog
 		// instead, which is where the rest of the process logs. The response
 		// only ever carries a generic 5xx message, so this log line is the only
-		// record of what actually broke.
-		LogErrorFunc: func(c echo.Context, err error, stack []byte) error {
+		// record of what actually broke. recover then returns the panic as an
+		// error, which errorHandler turns into a 500 error envelope.
+		StackTraceHandler: func(c fiber.Ctx, e any) {
 			slog.Error("PANIC_RECOVERED",
-				"method", c.Request().Method,
-				"uri", c.Request().RequestURI,
-				"request_id", c.Response().Header().Get(echo.HeaderXRequestID),
-				"error", err.Error(),
-				"stack", string(stack))
-			// Returning the error keeps HTTPErrorHandler in play, which is what
-			// turns the panic into a 500 error envelope.
-			return err
+				"method", c.Method(),
+				"uri", c.OriginalURL(),
+				"request_id", c.Get(fiber.HeaderXRequestID),
+				"error", fmt.Sprintf("%v", e),
+				"stack", string(stackTrace()))
 		},
 	}))
-	e.Use(middleware.BodyLimit(cfg.BodyLimit))
 
-	health.Register(e, cfg.Ready, cfg.SkipRootProbe)
-
-	return &Server{echo: e, cfg: cfg}
+	s := &Server{app: app, cfg: cfg}
+	health.Register(app, cfg.Ready, cfg.SkipRootProbe)
+	return s
 }
 
-// Echo exposes the underlying router for route registration and tests.
-func (s *Server) Echo() *echo.Echo { return s.echo }
+// requestLogger is the platform's access log, ported from echo's
+// RequestLoggerWithConfig onto Fiber. It logs after the handler runs so the
+// status is known.
+func requestLogger() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		err := c.Next()
+		slog.Info("REQUEST",
+			"method", c.Method(),
+			"uri", c.OriginalURL(),
+			"status", c.Response().StatusCode(),
+			"request_id", c.Get(fiber.HeaderXRequestID))
+		return err
+	}
+}
+
+// App exposes the underlying router for route registration and tests.
+func (s *Server) App() *fiber.App { return s.app }
+
+// ListenerAddr reports the address the server bound to, or nil before it has
+// started listening. It is filled in by Fiber's ListenerAddrFunc during Listen.
+func (s *Server) ListenerAddr() net.Addr {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.listenerAddr
+}
+
+func (s *Server) setListenerAddr(addr net.Addr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listenerAddr = addr
+}
 
 // Run listens until SIGINT or SIGTERM arrives, then drains in-flight requests
 // within ShutdownTimeout before returning.
@@ -124,10 +165,14 @@ func RunAll(servers ...*Server) error {
 	for _, s := range servers {
 		go func() {
 			slog.Info("listening", "addr", s.cfg.ListenAddr)
-			err := s.echo.Start(s.cfg.ListenAddr)
-			if errors.Is(err, http.ErrServerClosed) {
-				err = nil
-			}
+			err := s.app.Listen(s.cfg.ListenAddr, fiber.ListenConfig{
+				DisableStartupMessage: true,
+				// 127.0.0.1:0 and an occupied [::]/0.0.0.0 sibling both have to
+				// bind; the default tcp4 network cannot reach an IPv6 address a
+				// test's net.Listen("tcp", ...) may have handed back.
+				ListenerNetwork:  "tcp",
+				ListenerAddrFunc: s.setListenerAddr,
+			})
 			serveErr <- err
 		}()
 	}
@@ -156,12 +201,63 @@ func shutdownAll(servers []*Server) error {
 		go func() {
 			defer wg.Done()
 			slog.Info("shutting down", "addr", s.cfg.ListenAddr, "timeout", s.cfg.ShutdownTimeout)
-			ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
-			defer cancel()
-			errs[i] = s.echo.Shutdown(ctx)
+			errs[i] = s.app.ShutdownWithTimeout(s.cfg.ShutdownTimeout)
 		}()
 	}
 	wg.Wait()
 
 	return errors.Join(errs...)
+}
+
+// stackTrace captures the current goroutine's stack for the panic log line.
+func stackTrace() []byte {
+	buf := make([]byte, 8192)
+	n := runtime.Stack(buf, false)
+	return buf[:n]
+}
+
+// parseBodyLimit turns a human-readable size like "2M" or "1K" into a byte
+// count. Echo's body-limit middleware accepted the same spellings, so the
+// existing config strings keep working. An unparseable value falls back to the
+// default rather than failing the boot.
+func parseBodyLimit(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return mustParseBodyLimit(defaultBodyLimit)
+	}
+	if n, err := parseSize(s); err == nil {
+		return n
+	}
+	return mustParseBodyLimit(defaultBodyLimit)
+}
+
+func mustParseBodyLimit(s string) int {
+	n, err := parseSize(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
+func parseSize(s string) (int, error) {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	multiplier := 1
+	switch {
+	case strings.HasSuffix(s, "GB"), strings.HasSuffix(s, "G"):
+		multiplier = 1 << 30
+		s = strings.TrimRight(s, "GB")
+	case strings.HasSuffix(s, "MB"), strings.HasSuffix(s, "M"):
+		multiplier = 1 << 20
+		s = strings.TrimRight(s, "MB")
+	case strings.HasSuffix(s, "KB"), strings.HasSuffix(s, "K"):
+		multiplier = 1 << 10
+		s = strings.TrimRight(s, "KB")
+	case strings.HasSuffix(s, "B"):
+		s = strings.TrimRight(s, "B")
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0, fmt.Errorf("invalid body limit %q: %w", s, err)
+	}
+	return value * multiplier, nil
 }

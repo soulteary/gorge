@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 )
 
 // captureLogs redirects the platform logger into a buffer for the duration of a
@@ -27,25 +29,90 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
+// response is the status, headers and body of one answered request, decoupled
+// from whether it came through app.Test in memory or a real listener.
+type response struct {
+	Code   int
+	Header http.Header
+	body   []byte
+}
+
+func (r response) BodyString() string { return string(r.body) }
+func (r response) BodyBytes() []byte  { return r.body }
+
 // send runs one request against a server built the way every gorge binary
 // builds it, so the middleware stack and the error handler are the real ones.
-func send(t *testing.T, cfg Config, req *http.Request, register func(*echo.Echo)) *httptest.ResponseRecorder {
+func send(t *testing.T, cfg Config, req *http.Request, register func(*fiber.App)) response {
 	t.Helper()
 
 	srv := New(cfg)
 	if register != nil {
-		register(srv.Echo())
+		register(srv.App())
 	}
 
-	rec := httptest.NewRecorder()
-	srv.Echo().ServeHTTP(rec, req)
-	return rec
+	resp, err := srv.App().Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	_ = resp.Body.Close()
+	return response{Code: resp.StatusCode, Header: resp.Header, body: body}
+}
+
+// sendLive serves the request over a real listener. It is needed for the one
+// case app.Test cannot reproduce: a body over fasthttp's limit is rejected
+// while the request line is still being read, which app.Test surfaces as a Go
+// error rather than the 413 the server writes on a real connection.
+func sendLive(t *testing.T, cfg Config, method, path, body string, headers map[string]string) response {
+	t.Helper()
+
+	srv := New(cfg)
+	done := make(chan error, 1)
+	go func() { done <- RunAll(srv) }()
+	t.Cleanup(func() {
+		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
+		<-done
+	})
+
+	var addr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := srv.ListenerAddr(); a != nil {
+			addr = a.String()
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server never started listening")
+	}
+
+	req, err := http.NewRequest(method, "http://"+addr+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	return response{Code: resp.StatusCode, Header: resp.Header, body: raw}
 }
 
 // envelopeOf decodes a response and fails unless it is an error envelope: no
-// data key, an error object present, and nothing of Echo's default
-// {"message": "..."} shape left at the top level.
-func envelopeOf(t *testing.T, rec *httptest.ResponseRecorder) Error {
+// data key, an error object present, and nothing of a default {"message": ...}
+// shape left at the top level.
+func envelopeOf(t *testing.T, r response) Error {
 	t.Helper()
 
 	var body struct {
@@ -53,66 +120,64 @@ func envelopeOf(t *testing.T, rec *httptest.ResponseRecorder) Error {
 		Error   *Error          `json:"error"`
 		Message *string         `json:"message"`
 	}
-	decoder := json.NewDecoder(strings.NewReader(rec.Body.String()))
+	decoder := json.NewDecoder(strings.NewReader(r.BodyString()))
 	if err := decoder.Decode(&body); err != nil {
-		t.Fatalf("response is not JSON: %v (body %q)", err, rec.Body.String())
+		t.Fatalf("response is not JSON: %v (body %q)", err, r.BodyString())
 	}
 	if decoder.More() {
-		t.Fatalf("response carries more than one JSON document: %q", rec.Body.String())
+		t.Fatalf("response carries more than one JSON document: %q", r.BodyString())
 	}
 	if body.Message != nil {
-		t.Errorf("response kept Echo's default shape: %q", rec.Body.String())
+		t.Errorf("response kept a default message shape: %q", r.BodyString())
 	}
 	if body.Data != nil {
-		t.Errorf("error response must not populate data: %q", rec.Body.String())
+		t.Errorf("error response must not populate data: %q", r.BodyString())
 	}
 	if body.Error == nil {
-		t.Fatalf("response has no error object: %q", rec.Body.String())
+		t.Fatalf("response has no error object: %q", r.BodyString())
 	}
 	return *body.Error
 }
 
-// TestBodyOverLimitIsEnveloped covers the body-limit middleware, which rejects a
-// request before any handler runs and so never passes through httpx.Fail.
+// TestBodyOverLimitIsEnveloped covers the body limit, which rejects a request
+// before any handler runs and so never passes through httpx.Fail. It runs over
+// a real listener because that rejection happens at the fasthttp server layer,
+// which app.Test does not exercise.
 func TestBodyOverLimitIsEnveloped(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/api/thing",
-		strings.NewReader(strings.Repeat("x", 4096)))
-	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	r := sendLive(t, Config{BodyLimit: "1K"}, http.MethodPost, "/api/thing",
+		strings.Repeat("x", 4096),
+		map[string]string{fiber.HeaderContentType: fiber.MIMEApplicationJSON})
 
-	rec := send(t, Config{BodyLimit: "1K"}, req, func(e *echo.Echo) {
-		e.POST("/api/thing", func(c echo.Context) error { return OK(c, "unreachable") })
-	})
-
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413, got %d", rec.Code)
+	if r.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d (body %q)", r.Code, r.BodyString())
 	}
 	// The domain-level size check in internal/render reports the same code, so
 	// a caller sees one code no matter which limit it tripped.
-	if got := envelopeOf(t, rec).Code; got != CodeTooLarge {
+	if got := envelopeOf(t, r).Code; got != CodeTooLarge {
 		t.Errorf("expected %s, got %s", CodeTooLarge, got)
 	}
 }
 
-// TestUnknownPathIsEnveloped covers Echo's router, which answers before the
+// TestUnknownPathIsEnveloped covers Fiber's router, which answers before the
 // request reaches any of our code.
 func TestUnknownPathIsEnveloped(t *testing.T) {
-	rec := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/nope", nil), nil)
+	r := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/nope", nil), nil)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", rec.Code)
+	if r.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", r.Code)
 	}
-	if got := envelopeOf(t, rec).Code; got != CodeNotFound {
+	if got := envelopeOf(t, r).Code; got != CodeNotFound {
 		t.Errorf("expected %s, got %s", CodeNotFound, got)
 	}
 }
 
 func TestMethodNotAllowedIsEnveloped(t *testing.T) {
-	rec := send(t, Config{}, httptest.NewRequest(http.MethodDelete, "/healthz", nil), nil)
+	r := send(t, Config{}, httptest.NewRequest(http.MethodDelete, "/healthz", nil), nil)
 
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", rec.Code)
+	if r.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", r.Code)
 	}
-	if got := envelopeOf(t, rec).Code; got != CodeMethodNotAllowed {
+	if got := envelopeOf(t, r).Code; got != CodeMethodNotAllowed {
 		t.Errorf("expected %s, got %s", CodeMethodNotAllowed, got)
 	}
 }
@@ -124,23 +189,23 @@ func TestPanicIsEnvelopedWithoutLeakingDetail(t *testing.T) {
 	logs := captureLogs(t)
 
 	const secret = "postgres://user:hunter2@db.internal/prod"
-	rec := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/boom", nil),
-		func(e *echo.Echo) {
-			e.GET("/api/boom", func(c echo.Context) error { panic(secret) })
+	r := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/boom", nil),
+		func(app *fiber.App) {
+			app.Get("/api/boom", func(c fiber.Ctx) error { panic(secret) })
 		})
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", rec.Code)
+	if r.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", r.Code)
 	}
-	envelope := envelopeOf(t, rec)
+	envelope := envelopeOf(t, r)
 	if envelope.Code != CodeInternal {
 		t.Errorf("expected %s, got %s", CodeInternal, envelope.Code)
 	}
-	if strings.Contains(rec.Body.String(), secret) {
-		t.Errorf("panic value leaked to the client: %q", rec.Body.String())
+	if strings.Contains(r.BodyString(), secret) {
+		t.Errorf("panic value leaked to the client: %q", r.BodyString())
 	}
-	if strings.Contains(rec.Body.String(), "goroutine") {
-		t.Errorf("stack trace leaked to the client: %q", rec.Body.String())
+	if strings.Contains(r.BodyString(), "goroutine") {
+		t.Errorf("stack trace leaked to the client: %q", r.BodyString())
 	}
 	if !strings.Contains(logs.String(), secret) {
 		t.Error("panic value did not reach the log, so the failure is now undiagnosable")
@@ -148,24 +213,24 @@ func TestPanicIsEnvelopedWithoutLeakingDetail(t *testing.T) {
 }
 
 // TestHandlerErrorIsEnveloped covers a handler returning a raw error instead of
-// answering, which Echo also routes through the error handler.
+// answering, which Fiber also routes through the error handler.
 func TestHandlerErrorIsEnveloped(t *testing.T) {
 	logs := captureLogs(t)
 
 	const detail = "dial tcp 10.0.0.7:5432: connection refused"
-	rec := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/thing", nil),
-		func(e *echo.Echo) {
-			e.GET("/api/thing", func(c echo.Context) error { return errors.New(detail) })
+	r := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/thing", nil),
+		func(app *fiber.App) {
+			app.Get("/api/thing", func(c fiber.Ctx) error { return errors.New(detail) })
 		})
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", rec.Code)
+	if r.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", r.Code)
 	}
-	if got := envelopeOf(t, rec).Code; got != CodeInternal {
+	if got := envelopeOf(t, r).Code; got != CodeInternal {
 		t.Errorf("expected %s, got %s", CodeInternal, got)
 	}
-	if strings.Contains(rec.Body.String(), detail) {
-		t.Errorf("internal error string leaked to the client: %q", rec.Body.String())
+	if strings.Contains(r.BodyString(), detail) {
+		t.Errorf("internal error string leaked to the client: %q", r.BodyString())
 	}
 	if !strings.Contains(logs.String(), detail) {
 		t.Error("internal error string did not reach the log")
@@ -175,25 +240,26 @@ func TestHandlerErrorIsEnveloped(t *testing.T) {
 // TestCommittedResponseIsNotOverwritten is the guard for domain error codes: a
 // handler that already answered keeps its body, so internal/render's
 // ERR_HIGHLIGHT_FAILED cannot be rewritten into ERR_INTERNAL and no response
-// ends up with two JSON documents in it.
+// ends up with two JSON documents in it. Fiber has no Committed flag, so OK/Fail
+// mark the context in Locals and errorHandler honours it.
 func TestCommittedResponseIsNotOverwritten(t *testing.T) {
 	captureLogs(t)
 
 	const domainCode = "ERR_DOMAIN_SPECIFIC"
-	rec := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/thing", nil),
-		func(e *echo.Echo) {
-			e.GET("/api/thing", func(c echo.Context) error {
+	r := send(t, Config{}, httptest.NewRequest(http.MethodGet, "/api/thing", nil),
+		func(app *fiber.App) {
+			app.Get("/api/thing", func(c fiber.Ctx) error {
 				if err := Fail(c, http.StatusInternalServerError, domainCode, "domain detail"); err != nil {
 					return err
 				}
-				return echo.NewHTTPError(http.StatusInternalServerError, "raised after answering")
+				return fiber.NewError(http.StatusInternalServerError, "raised after answering")
 			})
 		})
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", rec.Code)
+	if r.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", r.Code)
 	}
-	envelope := envelopeOf(t, rec)
+	envelope := envelopeOf(t, r)
 	if envelope.Code != domainCode {
 		t.Errorf("expected the domain code %s to survive, got %s", domainCode, envelope.Code)
 	}
@@ -203,19 +269,19 @@ func TestCommittedResponseIsNotOverwritten(t *testing.T) {
 }
 
 // TestProbesStayBareUnderTheErrorHandler is the companion to
-// health.TestProbesAreNotEnveloped: that test builds a bare Echo, this one runs
+// health.TestProbesAreNotEnveloped: that test builds a bare app, this one runs
 // the probes through the full platform stack to prove the error handler did not
 // start wrapping them.
 func TestProbesStayBareUnderTheErrorHandler(t *testing.T) {
 	for _, path := range []string{"/", "/healthz", "/readyz"} {
-		rec := send(t, Config{}, httptest.NewRequest(http.MethodGet, path, nil), nil)
+		r := send(t, Config{}, httptest.NewRequest(http.MethodGet, path, nil), nil)
 
-		if rec.Code != http.StatusOK {
-			t.Errorf("%s: expected 200, got %d", path, rec.Code)
+		if r.Code != http.StatusOK {
+			t.Errorf("%s: expected 200, got %d", path, r.Code)
 			continue
 		}
 		var body map[string]any
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		if err := json.Unmarshal(r.BodyBytes(), &body); err != nil {
 			t.Fatalf("%s: %v", path, err)
 		}
 		if _, wrapped := body["data"]; wrapped {
@@ -231,13 +297,13 @@ func TestProbesStayBareUnderTheErrorHandler(t *testing.T) {
 // deliberately absent from an error response: HTTP forbids a body on a HEAD
 // reply, so only the status can carry the failure.
 func TestHeadErrorCarriesNoBody(t *testing.T) {
-	rec := send(t, Config{}, httptest.NewRequest(http.MethodHead, "/api/nope", nil), nil)
+	r := send(t, Config{}, httptest.NewRequest(http.MethodHead, "/api/nope", nil), nil)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", rec.Code)
+	if r.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", r.Code)
 	}
-	if rec.Body.Len() != 0 {
-		t.Errorf("expected an empty body, got %q", rec.Body.String())
+	if len(r.BodyBytes()) != 0 {
+		t.Errorf("expected an empty body, got %q", r.BodyString())
 	}
 }
 
@@ -249,13 +315,13 @@ func TestClassifyMapsStatusesToCodes(t *testing.T) {
 		code    string
 		message string
 	}{
-		{"bad request", echo.ErrBadRequest, http.StatusBadRequest, CodeBadRequest, "Bad Request"},
-		{"unauthorized", echo.ErrUnauthorized, http.StatusUnauthorized, CodeUnauthorized, "Unauthorized"},
-		{"not found", echo.ErrNotFound, http.StatusNotFound, CodeNotFound, "Not Found"},
-		{"method not allowed", echo.ErrMethodNotAllowed, http.StatusMethodNotAllowed, CodeMethodNotAllowed, "Method Not Allowed"},
-		{"too large", echo.ErrStatusRequestEntityTooLarge, http.StatusRequestEntityTooLarge, CodeTooLarge, "Request Entity Too Large"},
-		{"unmapped 4xx", echo.ErrUnsupportedMediaType, http.StatusUnsupportedMediaType, CodeBadRequest, "Unsupported Media Type"},
-		{"bad gateway", echo.ErrBadGateway, http.StatusBadGateway, CodeInternal, internalMessage},
+		{"bad request", fiber.ErrBadRequest, http.StatusBadRequest, CodeBadRequest, "Bad Request"},
+		{"unauthorized", fiber.ErrUnauthorized, http.StatusUnauthorized, CodeUnauthorized, "Unauthorized"},
+		{"not found", fiber.ErrNotFound, http.StatusNotFound, CodeNotFound, "Not Found"},
+		{"method not allowed", fiber.ErrMethodNotAllowed, http.StatusMethodNotAllowed, CodeMethodNotAllowed, "Method Not Allowed"},
+		{"too large", fiber.ErrRequestEntityTooLarge, http.StatusRequestEntityTooLarge, CodeTooLarge, "Request Entity Too Large"},
+		{"unmapped 4xx", fiber.ErrUnsupportedMediaType, http.StatusUnsupportedMediaType, CodeBadRequest, "Unsupported Media Type"},
+		{"bad gateway", fiber.ErrBadGateway, http.StatusBadGateway, CodeInternal, internalMessage},
 		{"raw error", errors.New("something internal"), http.StatusInternalServerError, CodeInternal, internalMessage},
 	}
 

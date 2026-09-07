@@ -39,7 +39,7 @@ func main() {
 		Ready: dispatcher.Ready,
 	})
 
-	mailer.RegisterRoutes(srv.Echo(), &mailer.Deps{
+	mailer.RegisterRoutes(srv.App(), &mailer.Deps{
 		Dispatcher: dispatcher,
 		Token:      cfg.ServiceToken,
 		BodyLimit:  cfg.BodyLimit,

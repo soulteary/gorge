@@ -14,13 +14,13 @@ import (
 const fixtureDir = "../../../tests/contract/render"
 
 func TestContractFixtures(t *testing.T) {
-	// httptest serves this in memory, so the listen address is never used.
+	// app.Test serves this in memory, so the listen address is never used.
 	srv := httpx.New(httpx.Config{ListenAddr: ":0"})
-	RegisterRoutes(srv.Echo(), &Deps{
+	RegisterRoutes(srv.App(), &Deps{
 		Highlighter: highlight.New(),
 		Token:       contracttest.Token,
 		MaxBytes:    DefaultMaxBytes,
 	})
 
-	contracttest.Run(t, srv.Echo(), fixtureDir)
+	contracttest.Run(t, srv.App(), fixtureDir)
 }

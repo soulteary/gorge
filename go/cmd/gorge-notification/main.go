@@ -48,12 +48,12 @@ func main() {
 				// The hub is in-memory, so readiness equals liveness.
 				Ready: nil,
 			})
-			notification.RegisterClientRoutes(srv.Echo(), &notification.ClientDeps{Hub: messages})
+			notification.RegisterClientRoutes(srv.App(), &notification.ClientDeps{Hub: messages})
 			servers = append(servers, srv)
 
 		case notification.ServerKindAdmin:
 			srv := httpx.New(httpx.Config{ListenAddr: spec.Addr(), Ready: nil})
-			notification.RegisterAdminRoutes(srv.Echo(), &notification.AdminDeps{
+			notification.RegisterAdminRoutes(srv.App(), &notification.AdminDeps{
 				Hub:   messages,
 				Peers: peers,
 			})

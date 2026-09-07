@@ -40,7 +40,7 @@ func main() {
 		Ready: webhook.ReadyProbe(store),
 	})
 
-	webhook.RegisterRoutes(srv.Echo(), &webhook.Deps{
+	webhook.RegisterRoutes(srv.App(), &webhook.Deps{
 		Store: store,
 		Token: cfg.ServiceToken,
 	})

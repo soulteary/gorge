@@ -1,87 +1,99 @@
 package auth
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 )
 
 // newGuarded builds a router with a single dummy route behind the middleware.
 // The middleware is domain-agnostic, so the tests are too.
-func newGuarded(token string) *echo.Echo {
-	e := echo.New()
-	g := e.Group("/guarded")
+func newGuarded(token string) *fiber.App {
+	app := fiber.New()
+	g := app.Group("/guarded")
 	g.Use(Token(token))
-	g.GET("/resource", func(c echo.Context) error {
-		return c.String(http.StatusOK, "reached")
+	g.Get("/resource", func(c fiber.Ctx) error {
+		return c.Status(http.StatusOK).SendString("reached")
 	})
-	return e
+	return app
+}
+
+// do runs one request against app and returns the response and its body. It is
+// the app.Test stand-in for the ServeHTTP+ResponseRecorder pattern.
+func do(t *testing.T, app *fiber.App, req *http.Request) (*http.Response, string) {
+	t.Helper()
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	_ = resp.Body.Close()
+	return resp, string(body)
 }
 
 func TestRenderUnauthorized(t *testing.T) {
-	e := newGuarded("test-token")
+	app := newGuarded("test-token")
 
 	req := httptest.NewRequest(http.MethodGet, "/guarded/resource", nil)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, body := do(t, app, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rec.Code)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "ERR_UNAUTHORIZED") {
+	if !strings.Contains(body, "ERR_UNAUTHORIZED") {
 		t.Errorf("expected ERR_UNAUTHORIZED in body, got %s", body)
 	}
 }
 
 func TestTokenViaQueryParam(t *testing.T) {
-	e := newGuarded("test-token")
+	app := newGuarded("test-token")
 
 	req := httptest.NewRequest(http.MethodGet, "/guarded/resource?token=test-token", nil)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, _ := do(t, app, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 }
 
 func TestTokenViaHeader(t *testing.T) {
-	e := newGuarded("test-token")
+	app := newGuarded("test-token")
 
 	req := httptest.NewRequest(http.MethodGet, "/guarded/resource", nil)
 	req.Header.Set(HeaderName, "test-token")
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, _ := do(t, app, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 }
 
 func TestWrongTokenRejected(t *testing.T) {
-	e := newGuarded("test-token")
+	app := newGuarded("test-token")
 
 	req := httptest.NewRequest(http.MethodGet, "/guarded/resource", nil)
 	req.Header.Set(HeaderName, "not-the-token")
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, _ := do(t, app, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rec.Code)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
 	}
 }
 
 func TestNoTokenRequired(t *testing.T) {
-	e := newGuarded("")
+	app := newGuarded("")
 
 	req := httptest.NewRequest(http.MethodGet, "/guarded/resource", nil)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	resp, _ := do(t, app, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 }

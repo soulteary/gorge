@@ -2,47 +2,72 @@ package notification
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/labstack/echo/v4"
+	fws "github.com/fasthttp/websocket"
 
 	"github.com/soulteary/gorge/go/internal/notification/hub"
 	"github.com/soulteary/gorge/go/internal/notification/peer"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 )
 
-// newClientEcho builds the client port the way cmd/gorge-notification does,
+// newClientApp builds the client port the way cmd/gorge-notification does,
 // SkipRootProbe included: without it the platform's GET / probe would shadow the
-// 501 Phorge requires, which is the whole reason that option exists.
-func newClientEcho(t *testing.T, messages *hub.Hub) *echo.Echo {
+// 501 Phorge requires, which is the whole reason that option exists. It returns
+// the underlying server so tests can serve it in memory (app.Test) or over a
+// real listener (WebSocket handshakes cannot be done in memory).
+func newClientApp(t *testing.T, messages *hub.Hub) *httpx.Server {
 	t.Helper()
 	silenceLogs(t)
 
-	e := httpx.New(httpx.Config{SkipRootProbe: true}).Echo()
-	RegisterClientRoutes(e, &ClientDeps{Hub: messages})
-	return e
+	srv := httpx.New(httpx.Config{ListenAddr: "127.0.0.1:0", SkipRootProbe: true})
+	RegisterClientRoutes(srv.App(), &ClientDeps{Hub: messages})
+	return srv
 }
 
-// newClientServer serves the client port over a real listener, which WebSocket
-// tests need: httptest.NewRecorder cannot be hijacked.
+// runServer starts an *httpx.Server on its configured loopback port and returns
+// the http:// base URL, tearing it down when the test ends.
+func runServer(t *testing.T, srv *httpx.Server) string {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Run() }()
+	t.Cleanup(func() {
+		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
+		<-done
+	})
+
+	var addr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := srv.ListenerAddr(); a != nil {
+			addr = a.String()
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatal("server never started listening")
+	}
+	return "http://" + addr
+}
+
+// newClientServer serves the client port over a real listener.
 func newClientServer(t *testing.T) (string, *hub.Hub) {
 	t.Helper()
 
 	messages := hub.New()
-	srv := httptest.NewServer(newClientEcho(t, messages))
-	t.Cleanup(srv.Close)
-	return srv.URL, messages
+	base := runServer(t, newClientApp(t, messages))
+	return base, messages
 }
 
-func dialTo(t *testing.T, baseURL, path string) *websocket.Conn {
+func dialTo(t *testing.T, baseURL, path string) *fws.Conn {
 	t.Helper()
 
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + path
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, resp, err := fws.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial %s: %v", wsURL, err)
 	}
@@ -51,7 +76,7 @@ func dialTo(t *testing.T, baseURL, path string) *websocket.Conn {
 	return conn
 }
 
-func sendCommand(t *testing.T, conn *websocket.Conn, command string, data any) {
+func sendCommand(t *testing.T, conn *fws.Conn, command string, data any) {
 	t.Helper()
 
 	if err := conn.WriteJSON(map[string]any{"command": command, "data": data}); err != nil {
@@ -63,7 +88,7 @@ func sendCommand(t *testing.T, conn *websocket.Conn, command string, data any) {
 // far. Commands are handled in order, so a pong can only come back after the
 // preceding subscribe has been applied; that makes these tests deterministic
 // rather than racing a sleep against the server.
-func syncCommands(t *testing.T, conn *websocket.Conn) {
+func syncCommands(t *testing.T, conn *fws.Conn) {
 	t.Helper()
 
 	sendCommand(t, conn, "ping", nil)
@@ -72,7 +97,7 @@ func syncCommands(t *testing.T, conn *websocket.Conn) {
 	}
 }
 
-func readMessage(t *testing.T, conn *websocket.Conn) hub.Message {
+func readMessage(t *testing.T, conn *fws.Conn) hub.Message {
 	t.Helper()
 
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -87,9 +112,9 @@ func readMessage(t *testing.T, conn *websocket.Conn) hub.Message {
 // filtering tests show they filter rather than merely deliver: the message that
 // must be skipped is published first, so a broken filter is read here instead of
 // the expected one. That is both stronger and steadier than waiting out a
-// timeout to prove a non-delivery — a gorilla connection is unusable after a read
+// timeout to prove a non-delivery — the connection is unusable after a read
 // deadline expires, so a test could not carry on afterwards anyway.
-func expectFirstMessage(t *testing.T, conn *websocket.Conn, key string) {
+func expectFirstMessage(t *testing.T, conn *fws.Conn, key string) {
 	t.Helper()
 
 	if got := readMessage(t, conn); got["key"] != key {
@@ -102,18 +127,18 @@ func expectFirstMessage(t *testing.T, conn *websocket.Conn, key string) {
 // the healthy answer and reports a 200 as a broken server, so both the status and
 // the body are pinned byte for byte.
 func TestPlainRequestsGetTheAphlictRefusal(t *testing.T) {
-	e := newClientEcho(t, hub.New())
+	e := newClientApp(t, hub.New()).App()
 
 	// Every path the wildcard route covers, since Phorge probes / but browsers
 	// arrive on the instance paths.
 	for _, path := range []string{"/", "/~prod/", "/anything", "/deeply/nested/path"} {
-		rec := getFrom(e, path)
+		rec := getFrom(t, e, path)
 
 		if rec.Code != http.StatusNotImplemented {
 			t.Errorf("%s: expected 501, got %d", path, rec.Code)
 		}
-		if rec.Body.String() != useWebsocketsBody {
-			t.Errorf("%s: body = %q, want %q", path, rec.Body.String(), useWebsocketsBody)
+		if rec.Body != useWebsocketsBody {
+			t.Errorf("%s: body = %q, want %q", path, rec.Body, useWebsocketsBody)
 		}
 	}
 }
@@ -122,16 +147,16 @@ func TestPlainRequestsGetTheAphlictRefusal(t *testing.T) {
 // RegisterClientRoutes rests on: GET /* must not swallow the container probes,
 // which is what keeps the Docker HEALTHCHECK working on this port.
 func TestClientProbesOutrankTheWildcard(t *testing.T) {
-	e := newClientEcho(t, hub.New())
+	e := newClientApp(t, hub.New()).App()
 
 	for _, path := range []string{"/healthz", "/readyz"} {
-		rec := getFrom(e, path)
+		rec := getFrom(t, e, path)
 
 		if rec.Code != http.StatusOK {
-			t.Errorf("%s: expected 200, got %d (%s)", path, rec.Code, rec.Body.String())
+			t.Errorf("%s: expected 200, got %d (%s)", path, rec.Code, rec.Body)
 		}
-		if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
-			t.Errorf("%s: expected the probe response, got %q", path, rec.Body.String())
+		if !strings.Contains(rec.Body, `"status":"ok"`) {
+			t.Errorf("%s: expected the probe response, got %q", path, rec.Body)
 		}
 	}
 }
@@ -143,45 +168,51 @@ func TestWebSocketPingAnswersPong(t *testing.T) {
 	syncCommands(t, conn)
 }
 
-// TestUpgradedResponseIsMarkedCommitted pins the flag the global error handler
-// reads. gorilla writes the 101 handshake straight onto the hijacked connection,
-// so echo.Response never learns a response was sent; leaving Committed false
-// would let a panic anywhere in the read loop hand the error handler a hijacked
-// writer to serialise a JSON envelope onto.
-func TestUpgradedResponseIsMarkedCommitted(t *testing.T) {
-	messages := hub.New()
-	e := newClientEcho(t, messages)
+// TestUpgradedResponseIsNotEnvelopedByTheErrorHandler pins the invariant echo's
+// Committed flag used to guard, under the contrib websocket model that has no
+// such flag. The handshake is hijacked straight onto the connection, so the
+// platform error handler must never serialise a {data,error} JSON envelope onto
+// a socket that now belongs to the WebSocket — which is what would happen if it
+// treated the hijacked, already-answered request as unanswered.
+//
+// It is asserted from the wire: after the upgrade the connection only ever
+// carries WebSocket frames. A malformed frame (which the read loop ignores) and
+// then a normal command must still round-trip as a pong, proving the platform
+// never wrote an HTTP error body onto the connection.
+func TestUpgradedResponseIsNotEnvelopedByTheErrorHandler(t *testing.T) {
+	baseURL, _ := newClientServer(t)
+	conn := dialTo(t, baseURL, "/")
 
-	committed := make(chan bool, 1)
-	status := make(chan int, 1)
-	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			err := next(c)
-			committed <- c.Response().Committed
-			status <- c.Response().Status
-			return err
-		}
-	})
-
-	srv := httptest.NewServer(e)
-	defer srv.Close()
-
-	conn := dialTo(t, srv.URL, "/")
-	syncCommands(t, conn)
-	// Ending the session returns the handler, which releases the middleware.
-	_ = conn.Close()
-
-	select {
-	case got := <-committed:
-		if !got {
-			t.Error("an upgraded response must be marked committed, or the error handler will write to a hijacked connection")
-		}
-		if got := <-status; got != http.StatusSwitchingProtocols {
-			t.Errorf("status = %d, want %d for the access log", got, http.StatusSwitchingProtocols)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the handler never returned")
+	// A frame the read loop skips rather than reports; if that path ever handed
+	// an error back to the platform, the error handler would try to write an
+	// envelope onto this hijacked connection.
+	if err := conn.WriteMessage(fws.TextMessage, []byte("{not json")); err != nil {
+		t.Fatal(err)
 	}
+
+	// The session is still a clean WebSocket: a pong comes back, never an HTTP
+	// envelope. readMessage decodes a WebSocket frame as JSON, so a stray HTTP
+	// body on the wire would fail here rather than pass.
+	syncCommands(t, conn)
+
+	got := readMessageAllowClose(t, conn)
+	if got != nil && got["error"] != nil {
+		t.Errorf("the connection carried an error frame, the error handler wrote to the socket: %v", got)
+	}
+}
+
+// readMessageAllowClose reads one more frame if one is buffered, treating a
+// clean close/timeout as "nothing further". It exists only so the committed
+// test can assert the absence of a trailing error frame.
+func readMessageAllowClose(t *testing.T, conn *fws.Conn) hub.Message {
+	t.Helper()
+
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	var msg hub.Message
+	if err := conn.ReadJSON(&msg); err != nil {
+		return nil
+	}
+	return msg
 }
 
 func TestSubscribedListenerReceivesItsMessages(t *testing.T) {
@@ -306,7 +337,7 @@ func TestUnknownCommandsAreIgnored(t *testing.T) {
 	conn := dialTo(t, baseURL, "/")
 
 	sendCommand(t, conn, "vacuum-the-carpet", nil)
-	if err := conn.WriteMessage(websocket.TextMessage, []byte("{not json")); err != nil {
+	if err := conn.WriteMessage(fws.TextMessage, []byte("{not json")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,26 +363,25 @@ func TestUnknownCommandsAreIgnored(t *testing.T) {
 func TestMessagePostedToAdminReachesASubscribedBrowser(t *testing.T) {
 	messages := hub.New()
 
-	clientSrv := httptest.NewServer(newClientEcho(t, messages))
-	defer clientSrv.Close()
+	clientBase := runServer(t, newClientApp(t, messages))
 
-	adminEcho := httpx.New(httpx.Config{}).Echo()
-	RegisterAdminRoutes(adminEcho, &AdminDeps{Hub: messages, Peers: peer.NewList()})
+	adminApp := httpx.New(httpx.Config{}).App()
+	RegisterAdminRoutes(adminApp, &AdminDeps{Hub: messages, Peers: peer.NewList()})
 
-	conn := dialTo(t, clientSrv.URL, "/~prod/")
+	conn := dialTo(t, clientBase, "/~prod/")
 	sendCommand(t, conn, "subscribe", []string{"PHID-USER-x"})
 	syncCommands(t, conn)
 
 	// Posted first, and to the instance this browser is not on: if the instance
 	// did not survive the trip across both ports, this is what would arrive.
-	if rec := postAsPhorge(adminEcho, "/?instance=staging",
+	if rec := postAsPhorge(t, adminApp, "/?instance=staging",
 		`{"type":"notification","key":"wrong-instance","subscribers":["PHID-USER-x"]}`); rec.Code != http.StatusOK {
-		t.Fatalf("staging post: expected 200, got %d (%s)", rec.Code, rec.Body.String())
+		t.Fatalf("staging post: expected 200, got %d (%s)", rec.Code, rec.Body)
 	}
-	if rec := postAsPhorge(adminEcho, "/?instance=prod",
+	if rec := postAsPhorge(t, adminApp, "/?instance=prod",
 		`{"type":"notification","key":"right-instance","title":"`+illegalEscapeText+
 			`","subscribers":["PHID-USER-x"]}`); rec.Code != http.StatusOK {
-		t.Fatalf("prod post: expected 200, got %d (%s)", rec.Code, rec.Body.String())
+		t.Fatalf("prod post: expected 200, got %d (%s)", rec.Code, rec.Body)
 	}
 
 	// Read field by field rather than through expectFirstMessage: which message

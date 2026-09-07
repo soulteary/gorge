@@ -11,7 +11,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/diff/prose"
@@ -34,16 +34,16 @@ type Deps struct {
 // prose engine is total, and the only thing the unified engine rejects is an
 // input too large to diff, which is already ERR_TOO_LARGE. A code invented
 // here would never be returned.
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/diff")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/diff")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/generate", generateDiff(deps))
-	g.POST("/prose", proseDiff(deps))
+	g.Post("/generate", generateDiff(deps))
+	g.Post("/prose", proseDiff(deps))
 }
 
-func generateDiff(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func generateDiff(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		var req contracts.DiffRequest
 		if answered, err := bind(c, &req); answered {
 			return err
@@ -70,8 +70,8 @@ func generateDiff(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func proseDiff(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func proseDiff(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		var req contracts.ProseRequest
 		if answered, err := bind(c, &req); answered {
 			return err
@@ -107,14 +107,14 @@ func proseDiff(deps *Deps) echo.HandlerFunc {
 // handler is what keeps them reported as ERR_TOO_LARGE instead of being
 // flattened into ERR_BAD_REQUEST, which callers branch on. Malformed JSON is a
 // genuine 400 and is answered here.
-func bind(c echo.Context, req any) (answered bool, err error) {
-	bindErr := c.Bind(req)
+func bind(c fiber.Ctx, req any) (answered bool, err error) {
+	bindErr := c.Bind().Body(req)
 	if bindErr == nil {
 		return false, nil
 	}
 
-	var httpErr *echo.HTTPError
-	if errors.As(bindErr, &httpErr) && httpErr.Code != http.StatusBadRequest {
+	var fiberErr *fiber.Error
+	if errors.As(bindErr, &fiberErr) && fiberErr.Code != http.StatusBadRequest {
 		return true, bindErr
 	}
 	return true, httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, bindErr.Error())
@@ -123,7 +123,7 @@ func bind(c echo.Context, req any) (answered bool, err error) {
 // checkSize rejects a comparison whose two sides together exceed the domain
 // limit. The sides are summed rather than checked individually because the
 // cost of a diff is driven by both.
-func checkSize(c echo.Context, deps *Deps, size int) (answered bool, err error) {
+func checkSize(c fiber.Ctx, deps *Deps, size int) (answered bool, err error) {
 	if deps.MaxBytes > 0 && size > deps.MaxBytes {
 		return true, httpx.Fail(c, http.StatusRequestEntityTooLarge,
 			httpx.CodeTooLarge, "combined input exceeds maximum allowed size")

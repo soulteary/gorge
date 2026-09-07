@@ -2,12 +2,13 @@ package webhook
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 )
@@ -16,22 +17,37 @@ const testToken = "test-token"
 
 // newTestServer builds the routes the way cmd/gorge-webhook does, so the
 // platform error handler and the health probes are in play.
-func newTestServer(t *testing.T, store Store) *echo.Echo {
+func newTestServer(t *testing.T, store Store) *fiber.App {
 	t.Helper()
 	quietLogs(t)
 
 	srv := httpx.New(httpx.Config{Ready: ReadyProbe(store)})
-	RegisterRoutes(srv.Echo(), &Deps{Store: store, Token: testToken})
-	return srv.Echo()
+	RegisterRoutes(srv.App(), &Deps{Store: store, Token: testToken})
+	return srv.App()
 }
 
-// do issues an authenticated request.
-func do(e *echo.Echo, method, path string) *httptest.ResponseRecorder {
+// do issues an authenticated request. It is the app.Test stand-in for the
+// ServeHTTP+ResponseRecorder pattern.
+func do(t *testing.T, app *fiber.App, method, path string) (*http.Response, string) {
+	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
 	req.Header.Set("X-Service-Token", testToken)
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
-	return rec
+	return dispatch(t, app, req)
+}
+
+// dispatch runs one request against app and returns the response and its body.
+func dispatch(t *testing.T, app *fiber.App, req *http.Request) (*http.Response, string) {
+	t.Helper()
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	_ = resp.Body.Close()
+	return resp, string(body)
 }
 
 type testEnvelope struct {
@@ -42,25 +58,25 @@ type testEnvelope struct {
 	} `json:"error"`
 }
 
-func envelope(t *testing.T, rec *httptest.ResponseRecorder) testEnvelope {
+func envelope(t *testing.T, body string) testEnvelope {
 	t.Helper()
 
 	var decoded testEnvelope
-	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
-		t.Fatalf("response is not an envelope: %v (body: %s)", err, rec.Body.String())
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("response is not an envelope: %v (body: %s)", err, body)
 	}
 	return decoded
 }
 
-func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+func assertErrorCode(t *testing.T, resp *http.Response, body string, status int, code string) {
 	t.Helper()
 
-	if rec.Code != status {
-		t.Errorf("expected %d, got %d (body: %s)", status, rec.Code, rec.Body.String())
+	if resp.StatusCode != status {
+		t.Errorf("expected %d, got %d (body: %s)", status, resp.StatusCode, body)
 	}
-	env := envelope(t, rec)
+	env := envelope(t, body)
 	if env.Error == nil {
-		t.Fatalf("expected an error envelope, got: %s", rec.Body.String())
+		t.Fatalf("expected an error envelope, got: %s", body)
 	}
 	if env.Error.Code != code {
 		t.Errorf("expected %s, got %s", code, env.Error.Code)
@@ -98,11 +114,11 @@ func seededStore(t *testing.T) *memStore {
 }
 
 func TestStats(t *testing.T) {
-	e := newTestServer(t, seededStore(t))
+	app := newTestServer(t, seededStore(t))
 
-	rec := do(e, http.MethodGet, "/api/webhook/stats")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	resp, body := do(t, app, http.MethodGet, "/api/webhook/stats")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 
 	var result struct {
@@ -111,7 +127,7 @@ func TestStats(t *testing.T) {
 		FailedCount    int64 `json:"failedCount"`
 		ActiveWebhooks int64 `json:"activeWebhooks"`
 	}
-	if err := json.Unmarshal(envelope(t, rec).Data, &result); err != nil {
+	if err := json.Unmarshal(envelope(t, body).Data, &result); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,16 +142,16 @@ func TestStats(t *testing.T) {
 }
 
 func TestListHooks(t *testing.T) {
-	e := newTestServer(t, seededStore(t))
+	app := newTestServer(t, seededStore(t))
 
-	rec := do(e, http.MethodGet, "/api/webhook/hooks")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	resp, body := do(t, app, http.MethodGet, "/api/webhook/hooks")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}
 	// Every hook, disabled ones included: this is what tells "no hooks yet"
 	// from "hooks that are all switched off".
-	if !strings.Contains(rec.Body.String(), `"total":2`) {
-		t.Errorf("expected both hooks to be counted, got %s", rec.Body.String())
+	if !strings.Contains(body, `"total":2`) {
+		t.Errorf("expected both hooks to be counted, got %s", body)
 	}
 }
 
@@ -154,42 +170,41 @@ func TestAStoreFailureIsAnOpaque500(t *testing.T) {
 		t.Run(tc.path, func(t *testing.T) {
 			store := newMemStore(1_000_000)
 			tc.setup(store)
-			e := newTestServer(t, store)
+			app := newTestServer(t, store)
 
-			rec := do(e, http.MethodGet, tc.path)
-			assertErrorCode(t, rec, http.StatusInternalServerError, httpx.CodeInternal)
+			resp, body := do(t, app, http.MethodGet, tc.path)
+			assertErrorCode(t, resp, body, http.StatusInternalServerError, httpx.CodeInternal)
 
-			if strings.Contains(rec.Body.String(), "3306") ||
-				strings.Contains(rec.Body.String(), "herald") {
-				t.Errorf("a 5xx body must not describe the service's internals: %s", rec.Body.String())
+			if strings.Contains(body, "3306") ||
+				strings.Contains(body, "herald") {
+				t.Errorf("a 5xx body must not describe the service's internals: %s", body)
 			}
 		})
 	}
 }
 
 func TestTokenAuth(t *testing.T) {
-	e := newTestServer(t, seededStore(t))
+	app := newTestServer(t, seededStore(t))
 
 	t.Run("rejected without a token", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webhook/stats", nil))
-		assertErrorCode(t, rec, http.StatusUnauthorized, httpx.CodeUnauthorized)
+		req := httptest.NewRequest(http.MethodGet, "/api/webhook/stats", nil)
+		resp, body := dispatch(t, app, req)
+		assertErrorCode(t, resp, body, http.StatusUnauthorized, httpx.CodeUnauthorized)
 	})
 
 	t.Run("accepted in the header", func(t *testing.T) {
-		if rec := do(e, http.MethodGet, "/api/webhook/stats"); rec.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		if resp, body := do(t, app, http.MethodGet, "/api/webhook/stats"); resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d: %s", resp.StatusCode, body)
 		}
 	})
 
 	t.Run("accepted in the query string", func(t *testing.T) {
 		// The fallback for a caller that cannot set headers, which for a
 		// read-only status endpoint is most of the ways a person looks at one.
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
-			"/api/webhook/stats?token="+testToken, nil))
-		if rec.Code != http.StatusOK {
-			t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		req := httptest.NewRequest(http.MethodGet, "/api/webhook/stats?token="+testToken, nil)
+		resp, body := dispatch(t, app, req)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d: %s", resp.StatusCode, body)
 		}
 	})
 }
@@ -200,44 +215,43 @@ func TestTokenAuth(t *testing.T) {
 // orchestrator can see — a delivery service with an unreachable database is
 // listening and completely idle.
 func TestHealthProbesReportTheDatabase(t *testing.T) {
-	probe := func(e *echo.Echo, path string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		return rec
+	probe := func(app *fiber.App, path string) (*http.Response, string) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		return dispatch(t, app, req)
 	}
 
 	down := newMemStore(1_000_000)
 	down.readyErr = errStoreDown
-	e := newTestServer(t, down)
+	app := newTestServer(t, down)
 
-	if rec := probe(e, "/healthz"); rec.Code != http.StatusOK {
-		t.Errorf("liveness must not depend on the database, got %d", rec.Code)
+	if resp, _ := probe(app, "/healthz"); resp.StatusCode != http.StatusOK {
+		t.Errorf("liveness must not depend on the database, got %d", resp.StatusCode)
 	}
 
-	rec := probe(e, "/readyz")
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+	resp, body := probe(app, "/readyz")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", resp.StatusCode, body)
 	}
 	// Probe payloads stay outside the {data,error} envelope: orchestrators are
 	// configured against the flat shape.
-	if strings.Contains(rec.Body.String(), `"data"`) {
-		t.Errorf("probe payload must not use the envelope: %s", rec.Body.String())
+	if strings.Contains(body, `"data"`) {
+		t.Errorf("probe payload must not use the envelope: %s", body)
 	}
 	// Unlike a 5xx body, a probe's reason is for an operator and does carry
 	// the cause.
-	if !strings.Contains(rec.Body.String(), `"reason"`) {
-		t.Errorf("readiness must say why it is unavailable: %s", rec.Body.String())
+	if !strings.Contains(body, `"reason"`) {
+		t.Errorf("readiness must say why it is unavailable: %s", body)
 	}
 
-	if rec := probe(newTestServer(t, newMemStore(1_000_000)), "/readyz"); rec.Code != http.StatusOK {
-		t.Errorf("expected 200 with a reachable database, got %d: %s", rec.Code, rec.Body.String())
+	if resp, body := probe(newTestServer(t, newMemStore(1_000_000)), "/readyz"); resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 with a reachable database, got %d: %s", resp.StatusCode, body)
 	}
 }
 
 // TestRoutePathsAreStable: PhabricatorGorgeWebhookClient calls these paths as
 // written, so renaming any of them is a breaking change on the PHP side.
 func TestRoutePathsAreStable(t *testing.T) {
-	e := newTestServer(t, newMemStore(1_000_000))
+	app := newTestServer(t, newMemStore(1_000_000))
 
 	want := map[string]string{
 		"GET /api/webhook/stats": "",
@@ -246,7 +260,7 @@ func TestRoutePathsAreStable(t *testing.T) {
 		"GET /readyz":            "",
 		"GET /":                  "",
 	}
-	for _, r := range e.Routes() {
+	for _, r := range app.GetRoutes(true) {
 		delete(want, r.Method+" "+r.Path)
 	}
 	for route := range want {
@@ -259,11 +273,11 @@ func TestRoutePathsAreStable(t *testing.T) {
 // endpoint that let a caller push one would be a second, unauthenticated way
 // into a table this service is only supposed to drain.
 func TestTheEndpointsAreReadOnly(t *testing.T) {
-	e := newTestServer(t, seededStore(t))
+	app := newTestServer(t, seededStore(t))
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
-		rec := do(e, method, "/api/webhook/stats")
-		if rec.Code == http.StatusOK {
+		resp, _ := do(t, app, method, "/api/webhook/stats")
+		if resp.StatusCode == http.StatusOK {
 			t.Errorf("%s /api/webhook/stats answered 200; the API is read-only", method)
 		}
 	}
@@ -272,8 +286,8 @@ func TestTheEndpointsAreReadOnly(t *testing.T) {
 // TestUnknownPathKeepsTheEnvelope: everything the framework answers on its own
 // is an envelope too, which is what the PHP client falls back to reading.
 func TestUnknownPathKeepsTheEnvelope(t *testing.T) {
-	e := newTestServer(t, newMemStore(1_000_000))
+	app := newTestServer(t, newMemStore(1_000_000))
 
-	assertErrorCode(t, do(e, http.MethodGet, "/api/webhook/nope"),
-		http.StatusNotFound, httpx.CodeNotFound)
+	resp, body := do(t, app, http.MethodGet, "/api/webhook/nope")
+	assertErrorCode(t, resp, body, http.StatusNotFound, httpx.CodeNotFound)
 }

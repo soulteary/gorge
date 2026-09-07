@@ -6,11 +6,12 @@
 package filestorage
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"strconv"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/platform/auth"
@@ -45,14 +46,14 @@ type Deps struct {
 //
 // The paths are named after the domain and must not change:
 // PhabricatorGorgeFileStorageClient calls them as written.
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/file")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/file")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/blob", writeBlob(deps))
-	g.GET("/blob", readBlob(deps))
-	g.DELETE("/blob", deleteBlob(deps))
-	g.GET("/engines", listEngines(deps))
+	g.Post("/blob", writeBlob(deps))
+	g.Get("/blob", readBlob(deps))
+	g.Delete("/blob", deleteBlob(deps))
+	g.Get("/engines", listEngines(deps))
 }
 
 // writeBlob stores a raw request body.
@@ -61,28 +62,32 @@ func RegisterRoutes(e *echo.Echo, deps *Deps) {
 // reason this domain's contract differs from every other one in the
 // repository: base64 inside JSON costs a third more bytes and forces both
 // sides to hold the entire file in memory to encode and decode it.
-func writeBlob(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		req := c.Request()
-
+func writeBlob(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		// A body of unknown length cannot be streamed to S3, which needs the
 		// length to sign the request, and cannot be size-checked against a
 		// backend's limit before it is read. Refusing it is better than
 		// silently buffering it: every real caller sends one, since both
 		// Phorge's HTTPSFuture and curl set Content-Length for a body they
-		// hold in memory or on disk.
-		size := req.ContentLength
+		// hold in memory or on disk. fasthttp exposes the parsed
+		// Content-Length; a chunked body reports -1 here.
+		size := int64(c.Request().Header.ContentLength())
 		if size < 0 {
 			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest,
 				"a Content-Length is required: this endpoint takes the file as the raw request body")
 		}
 
 		params := WriteParams{
-			Name:     c.QueryParam("name"),
-			MimeType: c.QueryParam("mimeType"),
+			Name:     c.Query("name"),
+			MimeType: c.Query("mimeType"),
 		}
 
-		if identifier := c.QueryParam("engine"); identifier != "" {
+		// fasthttp fully buffers the request body; c.Body() returns those raw
+		// bytes without a copy. The domain writers take an io.Reader, so it is
+		// wrapped in a bytes.Reader.
+		body := bytes.NewReader(c.Body())
+
+		if identifier := c.Query("engine"); identifier != "" {
 			eng, err := deps.Router.GetEngine(identifier)
 			if err != nil {
 				return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
@@ -97,14 +102,14 @@ func writeBlob(deps *Deps) echo.HandlerFunc {
 						identifier+" ("+strconv.FormatInt(eng.MaxFileSize(), 10)+" bytes)")
 			}
 
-			result, err := deps.Router.WriteTo(req.Context(), identifier, req.Body, size, params)
+			result, err := deps.Router.WriteTo(c.Context(), identifier, body, size, params)
 			if err != nil {
 				return err
 			}
 			return httpx.OK(c, result)
 		}
 
-		result, err := deps.Router.Write(req.Context(), req.Body, size, params)
+		result, err := deps.Router.Write(c.Context(), body, size, params)
 		if err != nil {
 			if errors.Is(err, ErrNoEngine) {
 				// 503 rather than 500: nothing was attempted and nothing is
@@ -130,14 +135,14 @@ func writeBlob(deps *Deps) echo.HandlerFunc {
 // for this: httpx does not impose the envelope on a handler, and the error
 // handler keeps producing it on the failure paths. See docs/platform.md
 // section 1.1.
-func readBlob(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func readBlob(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		eng, handle, reason := resolveTarget(deps, c)
 		if reason != "" {
 			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, reason)
 		}
 
-		rc, size, readErr := eng.ReadFile(c.Request().Context(), handle)
+		rc, size, readErr := eng.ReadFile(c.Context(), handle)
 		if readErr != nil {
 			// Every read failure is reported as "not found", including a
 			// malformed handle and a backend that is unreachable. The
@@ -146,16 +151,21 @@ func readBlob(deps *Deps) echo.HandlerFunc {
 			// the details are in the log.
 			return httpx.Fail(c, http.StatusNotFound, httpx.CodeNotFound, readErr.Error())
 		}
-		defer func() { _ = rc.Close() }()
-
+		// The reader is handed to fasthttp's response body stream, which reads
+		// it after this handler returns and closes it if it is an io.Closer.
+		// Closing it here (deferred) would race that read and truncate the
+		// response, so the close is left to the stream.
+		c.Set(fiber.HeaderContentType, contentTypeBlob)
 		// A Content-Length is what lets the client tell a complete file from a
 		// truncated one, and a zero-byte file is a legitimate answer: an empty
-		// body with status 200. Without the header the response would be
-		// chunked and the two would look alike.
+		// body with status 200. SendStream with a non-negative size sets the
+		// Content-Length; a negative size would fall back to chunked and the
+		// two would look alike.
+		c.Status(http.StatusOK)
 		if size >= 0 {
-			c.Response().Header().Set(echo.HeaderContentLength, strconv.FormatInt(size, 10))
+			return c.SendStream(rc, int(size))
 		}
-		return c.Stream(http.StatusOK, contentTypeBlob, rc)
+		return c.SendStream(rc)
 	}
 }
 
@@ -169,14 +179,14 @@ func readBlob(deps *Deps) echo.HandlerFunc {
 // handle from a backend failure: with "already gone" reported as success, a
 // raw error is otherwise always a 500, and a caller sending a handle no
 // engine could have minted would be told the service is broken.
-func deleteBlob(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func deleteBlob(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		eng, handle, reason := resolveTarget(deps, c)
 		if reason != "" {
 			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, reason)
 		}
 
-		if err := eng.DeleteFile(c.Request().Context(), handle); err != nil {
+		if err := eng.DeleteFile(c.Context(), handle); err != nil {
 			if errors.Is(err, ErrBadHandle) {
 				return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
 			}
@@ -189,8 +199,8 @@ func deleteBlob(deps *Deps) echo.HandlerFunc {
 	}
 }
 
-func listEngines(deps *Deps) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func listEngines(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
 		return httpx.OK(c, deps.Router.ListEngines())
 	}
 }
@@ -206,9 +216,9 @@ func listEngines(deps *Deps) echo.HandlerFunc {
 //
 // The engine is required, not inferred: handle formats overlap across
 // backends, so guessing would sometimes read the wrong file rather than fail.
-func resolveTarget(deps *Deps, c echo.Context) (StorageEngine, string, string) {
-	identifier := c.QueryParam("engine")
-	handle := c.QueryParam("handle")
+func resolveTarget(deps *Deps, c fiber.Ctx) (StorageEngine, string, string) {
+	identifier := c.Query("engine")
+	handle := c.Query("handle")
 	if identifier == "" || handle == "" {
 		return nil, "", "both the engine and handle query parameters are required"
 	}

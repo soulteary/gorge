@@ -3,7 +3,7 @@ package search
 import (
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gofiber/fiber/v3"
 
 	"github.com/soulteary/gorge/go/internal/contracttest"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
@@ -38,7 +38,7 @@ func TestContractFixturesAgainstAnUnavailableStore(t *testing.T) {
 	contracttest.Run(t, handler, unavailableFixtureDir)
 }
 
-func newFixtureServer(t *testing.T, defs ...engine.BackendDef) *echo.Echo {
+func newFixtureServer(t *testing.T, defs ...engine.BackendDef) *fiber.App {
 	t.Helper()
 
 	se, err := NewEngine(defs)
@@ -47,6 +47,6 @@ func newFixtureServer(t *testing.T, defs ...engine.BackendDef) *echo.Echo {
 	}
 
 	srv := httpx.New(httpx.Config{ListenAddr: ":0", Ready: se.Ready})
-	RegisterRoutes(srv.Echo(), &Deps{Engine: se, Token: contracttest.Token})
-	return srv.Echo()
+	RegisterRoutes(srv.App(), &Deps{Engine: se, Token: contracttest.Token})
+	return srv.App()
 }

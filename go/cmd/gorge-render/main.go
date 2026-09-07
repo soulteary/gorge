@@ -31,7 +31,7 @@ func main() {
 		Ready: nil,
 	})
 
-	render.RegisterRoutes(srv.Echo(), &render.Deps{
+	render.RegisterRoutes(srv.App(), &render.Deps{
 		Highlighter: highlight.New(),
 		Token:       cfg.ServiceToken,
 		MaxBytes:    cfg.MaxBytes,
@@ -39,7 +39,7 @@ func main() {
 
 	// One token guards both domains: it authenticates the caller to this
 	// process, not to a particular route group.
-	diff.RegisterRoutes(srv.Echo(), &diff.Deps{
+	diff.RegisterRoutes(srv.App(), &diff.Deps{
 		Token:    cfg.ServiceToken,
 		MaxBytes: diffCfg.MaxBytes,
 	})

@@ -16,10 +16,10 @@ const fixtureDir = "../../../tests/contract/diff"
 func TestContractFixtures(t *testing.T) {
 	// httptest serves this in memory, so the listen address is never used.
 	srv := httpx.New(httpx.Config{ListenAddr: ":0"})
-	RegisterRoutes(srv.Echo(), &Deps{
+	RegisterRoutes(srv.App(), &Deps{
 		Token:    contracttest.Token,
 		MaxBytes: DefaultMaxBytes,
 	})
 
-	contracttest.Run(t, srv.Echo(), fixtureDir)
+	contracttest.Run(t, srv.App(), fixtureDir)
 }

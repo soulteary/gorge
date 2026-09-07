@@ -40,7 +40,7 @@ func main() {
 		Ready: se.Ready,
 	})
 
-	search.RegisterRoutes(srv.Echo(), &search.Deps{
+	search.RegisterRoutes(srv.App(), &search.Deps{
 		Engine: se,
 		Token:  cfg.ServiceToken,
 	})
