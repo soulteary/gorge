@@ -99,7 +99,7 @@ func TestSplitCSV(t *testing.T) {
 	if got := splitCSV(""); got != nil {
 		t.Errorf("splitCSV(\"\") = %v, want nil", got)
 	}
-	if got := splitCSV("  ,  ,"); got != nil && len(got) != 0 {
+	if got := splitCSV("  ,  ,"); len(got) != 0 {
 		t.Errorf("splitCSV of only blanks = %v, want empty", got)
 	}
 	got := splitCSV(" one , two ,three")

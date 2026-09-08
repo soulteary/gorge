@@ -196,7 +196,7 @@ func (s *MySQLStore) Lease(ctx context.Context, limit int, leaseOwner string, ta
 		_ = rows.Close()
 
 		if len(ids) > 0 {
-			res, err := tx.ExecContext(ctx,
+			_, err := tx.ExecContext(ctx,
 				fmt.Sprintf(
 					`UPDATE worker_activetask
 					 SET leaseOwner = ?, leaseExpires = ?
@@ -206,11 +206,6 @@ func (s *MySQLStore) Lease(ctx context.Context, limit int, leaseOwner string, ta
 			if err != nil {
 				return nil, fmt.Errorf("update expired: %w", err)
 			}
-			n, err := res.RowsAffected()
-			if err != nil {
-				return nil, fmt.Errorf("count updated expired: %w", err)
-			}
-			leased += int(n)
 			leasedIDs = append(leasedIDs, ids...)
 		}
 	}
