@@ -8,7 +8,7 @@
 | 端口 | `:8140`（无独立端口，原 `:8130` 已废弃） |
 | 包 | `go/internal/diff/`、`go/internal/diff/unified/`、`go/internal/diff/prose/` |
 | 契约 | [`api/openapi/diff.yaml`](../../api/openapi/diff.yaml) |
-| 固件 | `tests/contract/diff/`（14 份，**字节精确**断言） |
+| 固件 | `tests/contract/diff/`（unified 输出使用**字节精确**断言） |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第 4 节 ← **改动前必读** |
 
 ## 1. 职责边界
@@ -24,12 +24,12 @@
 ## 2. 路由与依赖
 
 ```go
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/diff")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/diff")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/generate", generateDiff(deps))
-	g.POST("/prose", proseDiff(deps))
+	g.Post("/generate", generateDiff(deps))
+	g.Post("/prose", proseDiff(deps))
 }
 ```
 
@@ -207,7 +207,7 @@ prose 输出没有外部基准可比(Phorge 把这些片段渲染成 markup,不�
 
 `bind()` 与 `checkSize()` 返回 `(answered bool, err error)` 两个值,调用方必须按 `answered` 分支,**不能按 error 分支**。
 
-`httpx.Fail` 写完响应后返回 `nil`——这是 Echo 想从「已自行处理完请求的 handler」那里拿到的东西,但它意味着 helper 返回的 `nil` 无法区分「继续」与「已经答复了」。当成前者,就会给一个已经写完的响应追加第二个 JSON 文档,而**任何只看状态码的测试都发现不了**(Echo 保留首次写入的状态码)。迁入过程中这个 bug 真实发生过一次,是 diff 契约固件——它整体解析响应体——抓到的,`decodeSoleEnvelope` 现在守着它。
+`httpx.Fail` 写完响应后通常返回 `nil`，因此 helper 的 `nil` 无法区分「继续」与「已经答复了」。当成前者，就会给一个已经写完的响应追加第二个 JSON 文档，而**任何只看状态码的测试都发现不了**。迁入过程中这个 bug 真实发生过一次，是 diff 契约固件——它整体解析响应体——抓到的，`decodeSoleEnvelope` 现在守着它。
 
 render 域把同样三道检查内联在它那个 handler 里,`return httpx.Fail(...)` 自己就终止了流程,问题根本不会出现。本域两个端点共享这些检查,才需要这个额外返回值。
 
@@ -219,15 +219,11 @@ render 域把同样三道检查内联在它那个 handler 里,`return httpx.Fail
 | 交叉验证 | `unified/systemdiff_test.go` | 直接调系统 `diff -U65535`:尾换行/行数矩阵 100 组要求**全等**;另一组刻意构造的歧义输入只要求 hunk 头与编辑数相同(理由见 3.6) |
 | 单元(prose) | `prose_test.go` | 17 组无损不变量,各级算法与后处理 |
 | HTTP | `http_test.go` | 信封、鉴权、两道 413 的重叠、chunked 路径不得报 `ERR_BAD_REQUEST`、单一 JSON 文档 |
-| 契约固件 | `tests/contract/diff/` | 14 份,语言中立,unified 部分字节精确 |
+| 契约固件 | `tests/contract/diff/` | 语言中立，unified 部分字节精确 |
 | e2e | `tests/e2e/diff.sh` | 9 个场景打真实进程,重点验证含反斜杠的标记能过 JSON 编解码 |
 
 固件里**刻意没有**超限场景:两道尺寸护栏都随部署可配,一份断言 413 的固件会随被测服务的启动参数时过时不过,而这正是契约固件不能有的性质。那些路径在 `http_test.go` 里覆盖,那里可以设限。理由也写在 [`../../tests/contract/diff/README.md`](../../tests/contract/diff/README.md)。
 
 ## 10. 覆盖率
 
-| 包 | 覆盖率 |
-|---|---|
-| `internal/diff` | 92.1% |
-| `internal/diff/unified` | 100.0% |
-| `internal/diff/prose` | 100.0% |
+覆盖率不在模块文档里维护快照；当前结果用 `make cover` 生成，分层解释见 [`../testing.md`](../testing.md) 第 5 节。

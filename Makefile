@@ -38,6 +38,10 @@ run: ## Run $(SERVICE) from source
 test: ## Run all Go tests
 	cd $(GO_DIR) && go test ./...
 
+.PHONY: docs-check
+docs-check: ## Check documentation indexes and current API references
+	cd $(GO_DIR) && go test ./internal/doccheck
+
 .PHONY: cover
 cover: ## Run tests and write coverage.html
 	cd $(GO_DIR) && go test -coverprofile=coverage.out -covermode=atomic ./... \

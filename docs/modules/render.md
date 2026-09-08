@@ -8,7 +8,7 @@
 | 端口 | `:8140` |
 | 包 | `go/internal/render/`、`go/internal/render/highlight/` |
 | 契约 | [`api/openapi/render.yaml`](../../api/openapi/render.yaml) |
-| 固件 | `tests/contract/render/`（12 份） |
+| 固件 | `tests/contract/render/` |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) ← **改动前必读** |
 
 ## 1. 职责边界
@@ -17,17 +17,17 @@
 
 **不负责**：外层 DOM 结构。输出里没有 `<pre>`、没有 `<div class="highlight">`，只有 `<span class="...">` 序列与文本节点——Phorge 自己渲染外层容器，因为它要在上面挂行号与 diff 高亮。
 
-**无外部依赖**。高亮是纯计算，没有数据库、缓存或下游服务，所以 `main.go` 显式传 `Ready: nil`，就绪等同于存活。diff 域同样如此，这也正是两者能共用一个进程的原因；这是它们与将来的 conduit、search 等模块的一处结构性差异。
+**无外部依赖**。高亮是纯计算，没有数据库、缓存或下游服务，所以 `main.go` 显式传 `Ready: nil`，就绪等同于存活。diff 域同样如此，这也正是两者能共用一个进程的原因；需要数据库或下游服务的域则有各自的就绪判据。
 
 ## 2. 路由与依赖
 
 ```go
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/highlight")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/highlight")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/render", renderHighlight(deps))
-	g.GET("/languages", listLanguages(deps))
+	g.Post("/render", renderHighlight(deps))
+	g.Get("/languages", listLanguages(deps))
 }
 ```
 
@@ -37,7 +37,7 @@ func RegisterRoutes(e *echo.Echo, deps *Deps) {
 | GET | `/api/highlight/languages` | 需要 |
 | GET | `/`、`/healthz`、`/readyz` | 不需要（平台层注册） |
 
-路径按**域**命名而非按二进制命名（`/api/highlight/*` 而不是 `/api/render/*`），理由见 [`../architecture.md`](../architecture.md) 第 4.3 节。`TestRoutePathsAreStable` 遍历 `e.Routes()` 断言这两条路径仍然注册着——Phorge 侧 `PhabricatorGorgeRenderClient` 已经在调它们，重命名是 PHP 侧的破坏性变更。
+路径按**域**命名而非按二进制命名（`/api/highlight/*` 而不是 `/api/render/*`），理由见 [`../architecture.md`](../architecture.md) 第 4.3 节。`TestRoutePathsAreStable` 遍历 `app.GetRoutes(true)` 断言这两条路径仍然注册着——Phorge 侧 `PhabricatorGorgeRenderClient` 已经在调它们，重命名是 PHP 侧的破坏性变更。
 
 `Deps` 是一个三字段结构体（`Highlighter` / `Token` / `MaxBytes`），由 `main.go` 组装。整个仓库没有引入 DI 框架，也没有包级单例——`main.go` 串联「加载配置 → 建服务器 → 注册两个域的路由 → Run」四步。`cfg.ServiceToken` 同时传给两个域：token 认证的是调用方对这个进程的身份，不是对某个路由分组的身份。
 
@@ -46,16 +46,16 @@ func RegisterRoutes(e *echo.Echo, deps *Deps) {
 ### 3.1 四道处理
 
 ```go
-if err := c.Bind(&req); err != nil {
-	var httpErr *echo.HTTPError
-	if errors.As(err, &httpErr) && httpErr.Code != http.StatusBadRequest {
+if err := c.Bind().Body(&req); err != nil {
+	var fiberErr *fiber.Error
+	if errors.As(err, &fiberErr) && fiberErr.Code != http.StatusBadRequest {
 		return err
 	}
 	return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
 }
 ```
 
-**`Bind` 的错误分支是最容易写错的一处。** 客户端用 `Transfer-Encoding: chunked` 流式上传时，BodyLimit 中间件无法预先比对 Content-Length，只能在 handler 读取时逐字节计数，于是 413 会**从 `c.Bind` 里冒出来**。如果无条件把 Bind 错误当成 400，这个 413 就会被压成 `ERR_BAD_REQUEST`，而 PHP 客户端是按码分支的。这里的做法是：非 400 的 `*echo.HTTPError` 原样交回平台错误处理器，只有真正的 JSON 语法错误留在本地当 400。
+**`Bind` 的错误分支是最容易写错的一处。** Fiber 可能在绑定请求体时返回带状态码的 `*fiber.Error`。如果无条件把绑定错误当成 400，传输层的 413 就会被压成 `ERR_BAD_REQUEST`，而 PHP 客户端是按码分支的。这里的做法是：非 400 的 `*fiber.Error` 原样交回平台错误处理器，只有真正的 JSON 语法错误留在本地当 400。
 
 剩下三道：
 
@@ -72,7 +72,7 @@ if err := c.Bind(&req); err != nil {
 
 两条路径都返回 413 + `ERR_TOO_LARGE`，只有 `message` 文案不同，且文案不属于契约。客户端不必区分是哪一道挡下的。
 
-`TestOversizedBodyReportsTooLargeFromEitherLimit` 把 `MaxBytes` 调到 8MiB 后发一个 3MiB 的 body，验证中间件那条路径同样落在信封里、且不是 Echo 默认的 `{"message":...}` 形状。`TestOversizedChunkedBodyIsNeverABadRequest` 覆盖流式路径，它只断言「码不是 `ERR_BAD_REQUEST`」而不断言一定被拒——因为 `encoding/json` 解码器在读到错误后还会继续消费多少字节，随 Go 版本而变，那部分不是契约。
+`TestOversizedBodyReportsTooLargeFromEitherLimit` 把 `MaxBytes` 调到 8MiB 后发一个 3MiB 的 body，验证平台传输层那条路径同样落在信封里，而不是 Fiber 默认的纯文本形状。`TestOversizedChunkedBodyIsNeverABadRequest` 覆盖流式路径，它只断言「码不是 `ERR_BAD_REQUEST`」而不断言一定被拒——因为 JSON 解码器在读到错误后还会继续消费多少字节，随实现版本而变，那部分不是契约。
 
 ### 3.3 语言列表
 
@@ -80,7 +80,7 @@ if err := c.Bind(&req); err != nil {
 
 ## 4. 高亮引擎
 
-`internal/render/highlight/`，107 行引擎 + 216 行别名表。
+`internal/render/highlight/` 包含高亮引擎与单独维护的别名表。
 
 ### 4.1 Chroma 配置的三项不可变设定
 
@@ -212,7 +212,7 @@ if mapped, ok := h.lexerMap[lang]; ok {
 // httpx.CodeInternal.
 ```
 
-它不会被全局错误处理器改写成 `ERR_INTERNAL`——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔（见 [`../platform.md`](../platform.md) 第 1.2 节）。
+它不会被全局错误处理器改写成 `ERR_INTERNAL`——`httpx.Fail` 写响应前会在 Fiber `Locals` 标记已应答，处理器见到标记就不再落笔（见 [`../platform.md`](../platform.md) 第 1.2 节）。
 
 **新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。**
 
@@ -225,7 +225,4 @@ if mapped, ok := h.lexerMap[lang]; ok {
 
 ## 9. 覆盖率
 
-| 包 | 覆盖率 |
-|---|---|
-| `internal/render` | 91.7% |
-| `internal/render/highlight` | 92.9% |
+覆盖率不在模块文档里维护快照；当前结果用 `make cover` 生成，分层解释见 [`../testing.md`](../testing.md) 第 5 节。

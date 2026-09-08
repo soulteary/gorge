@@ -80,9 +80,8 @@ func serveClient(deps *ClientDeps) fiber.Handler {
 			// answer, reporting "Got HTTP 200, but expected HTTP 501" for
 			// anything else (PhabricatorNotificationServerRef::testClient).
 			//
-			// httpx.markCommitted is set through SendString's Status path so the
-			// platform error handler never re-envelopes this body; the handler
-			// returns nil regardless.
+			// SendString returns nil after writing this compatibility response, so
+			// the platform error handler is never invoked to re-envelope it.
 			return c.Status(http.StatusNotImplemented).SendString(useWebsocketsBody)
 		}
 		// The instance travels in the request path (Phorge's getWebsocketURI

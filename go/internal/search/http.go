@@ -45,7 +45,7 @@ type Deps struct {
 // The paths are named after the domain and must not change: Phorge's
 // PhabricatorGorgeFulltextStorageEngine calls them as written. The health
 // probes are not registered here — the platform's httpx.New already did that,
-// and registering them twice makes Echo panic at startup.
+// and domain packages must not register a second copy.
 func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g := app.Group("/api/search")
 	g.Use(auth.Token(deps.Token))
@@ -62,11 +62,10 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 // bindJSON decodes the request body, distinguishing a malformed payload from a
 // transport-level rejection.
 //
-// A body over the platform limit surfaces here as Echo's 413 whenever the
-// client streams without a Content-Length; handing those back to the platform
-// error handler is what keeps them reported as ERR_TOO_LARGE rather than
-// flattened into ERR_BAD_REQUEST. Malformed JSON is a genuine 400 and is
-// answered here.
+// A body over the platform limit can surface here as Fiber's 413. Handing that
+// back to the platform error handler keeps it reported as ERR_TOO_LARGE rather
+// than flattening it into ERR_BAD_REQUEST. Malformed JSON is a genuine 400 and
+// is answered here.
 //
 // It reports whether the caller may continue, and that boolean is the whole
 // point of the signature: httpx.Fail returns nil once it has written the

@@ -47,7 +47,7 @@ so this fixture is what stops it being "cleaned up".
 
 Its payload contains a `%`, an `&` and an `=` inside a string value, and that
 is not decoration. A `c.Bind` here does **not** answer 415 for this
-Content-Type — Echo takes the label at its word and form-parses the body, which
+Content-Type — a content-type-driven binder takes the label at its word and form-parses the body, which
 percent-decodes it and splits it on separators. So `build 100% done` is an
 invalid escape sequence and the request is rejected, while a payload without
 those characters binds "successfully" into a single garbage key and reports a

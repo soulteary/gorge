@@ -8,7 +8,7 @@
 | 端口 | `:8090`（taskqueue）、`:8170`（worker） |
 | 包 | `go/internal/taskqueue/`、`go/internal/worker/`（handlers 在 `go/internal/worker/handlers/`） |
 | 契约 | [`api/openapi/taskqueue.yaml`](../../api/openapi/taskqueue.yaml)（含 worker 的 `/api/worker/stats`） |
-| 固件 | `tests/contract/taskqueue/`（6 份，其中 `unavailable/` 2 份） |
+| 固件 | `tests/contract/taskqueue/`（含 `unavailable/`） |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第十节 ← **改动前必读** |
 
 **这是仓库里第一对拆成两个二进制的域，而「为什么是两个」正是本域最该先讲清楚的一件事**——它和 render+diff 合并那段恰好相反。render 与 diff 合并成一个二进制，是因为两者都是无外部依赖的纯计算、拆进程换不来隔离收益。taskqueue 与 worker 不合并，是因为 **worker 是 taskqueue 的 HTTP 客户端，不是它的同进程协程**：worker 通过 `TASK_QUEUE_URL` 拨 taskqueue 的 `/api/queue/**` 租约，两者可以各自独立伸缩（一个 taskqueue 前面挂若干 worker，或给某个重类开一个专用 worker）。把它们塞进一个进程，要么把这层 HTTP 契约降级成进程内调用、要么逼 worker 直接调 `Store` 而绕过契约——两条路都把「可独立部署」这个既有事实弄没了。所以 `cmd/` 下是两个入口、compose 里是两个 service，本文档同时覆盖两个域。

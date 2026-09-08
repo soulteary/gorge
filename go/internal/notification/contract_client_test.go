@@ -18,7 +18,7 @@ func TestClientContractFixtures(t *testing.T) {
 	// SkipRootProbe is what the fixtures are really checking: with the
 	// platform's GET / probe registered, every one of them would see the
 	// probe's 200 instead of the 501 Phorge requires. Two ports means two
-	// Echo instances, so the client fixtures need their own server rather
+	// Fiber apps, so the client fixtures need their own server rather
 	// than sharing the admin runner's.
 	srv := httpx.New(httpx.Config{ListenAddr: ":0", SkipRootProbe: true})
 	RegisterClientRoutes(srv.App(), &ClientDeps{Hub: hub.New()})

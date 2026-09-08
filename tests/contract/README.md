@@ -19,6 +19,11 @@ Each subdirectory belongs to one domain:
 | `file-storage/` | `gorge-file-storage` | `go/internal/filestorage/contract_test.go` |
 | `webhook/` | `gorge-webhook` | `go/internal/webhook/contract_test.go` |
 | `webhook/unavailable/` | `gorge-webhook`, database that fails | `go/internal/webhook/contract_test.go` |
+| `taskqueue/` | `gorge-taskqueue` | `go/internal/taskqueue/contract_test.go` |
+| `taskqueue/unavailable/` | `gorge-taskqueue`, store that fails | `go/internal/taskqueue/contract_test.go` |
+| `dbapi/` | `gorge-db-api` | `go/internal/dbapi/contract_test.go` |
+| `dbapi/unavailable/` | `gorge-db-api`, database that fails | `go/internal/dbapi/contract_test.go` |
+| `conduit/` | `gorge-conduit` | `go/internal/conduit/contract_test.go` |
 
 The notification domain gets two directories rather than one because its two
 ports are separate listeners with separate contracts; see
@@ -29,10 +34,12 @@ two service configurations rather than two request bodies, and the five 502
 domain codes are only reachable from the second. See
 [`search/README.md`](search/README.md).
 
-Both Go runners are thin wrappers; the replay logic lives in
+The Go runners are thin wrappers where a domain can share the common replay
+model; that replay logic lives in
 `go/internal/contracttest/`. It is shared rather than duplicated so that the
-assertion vocabulary stays identical between domains — with a runner each, the
-two would soon describe their contracts in different terms.
+assertion vocabulary stays identical between domains. Conduit is the exception:
+its fixtures need per-case proxy and limiter state, so its runner reads the same
+fixture format directly; see [`conduit/README.md`](conduit/README.md).
 
 The webhook domain gets two directories on the search domain's grounds — a
 database that does not answer is a service configuration, not a request — and
@@ -42,6 +49,16 @@ endpoint is a contract no fixture here can describe, because a fixture is a
 request the service *answers*. That one is pinned in
 `go/internal/webhook/dispatcher_test.go`. See
 [`webhook/README.md`](webhook/README.md).
+
+Taskqueue and db-api also split available and unavailable fixtures because the
+failure is a service configuration, not a different request. Their runners
+inject stores or connections, keeping the wire contract independent from a live
+Redis or MySQL installation.
+
+`gorge-worker` is intentionally absent. Its only HTTP endpoint,
+`/api/worker/stats`, exposes process-local counters and is covered by
+`go/internal/worker/http_test.go`; unlike taskqueue it has no language-neutral
+request/response boundary that needs a shared fixture set.
 
 ## Fixture format
 

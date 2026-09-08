@@ -8,7 +8,7 @@
 | 端口 | `:8120` |
 | 包 | `go/internal/search/` |
 | 契约 | [`api/openapi/search.yaml`](../../api/openapi/search.yaml) |
-| 固件 | `tests/contract/search/`（17 份）+ `tests/contract/search/unavailable/`（6 份） |
+| 固件 | `tests/contract/search/` + `tests/contract/search/unavailable/` |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第七节 ← **改动前必读** |
 
 ## 1. 职责边界
@@ -24,17 +24,17 @@
 ## 2. 路由与依赖
 
 ```go
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/search")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/search")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/index", indexDocument(deps))
-	g.POST("/query", searchQuery(deps))
-	g.POST("/init", initIndex(deps))
-	g.GET("/exists", indexExists(deps))
-	g.GET("/stats", indexStats(deps))
-	g.POST("/sane", indexIsSane(deps))
-	g.GET("/backends", listBackends(deps))
+	g.Post("/index", indexDocument(deps))
+	g.Post("/query", searchQuery(deps))
+	g.Post("/init", initIndex(deps))
+	g.Get("/exists", indexExists(deps))
+	g.Get("/stats", indexStats(deps))
+	g.Post("/sane", indexIsSane(deps))
+	g.Get("/backends", listBackends(deps))
 }
 ```
 
@@ -53,7 +53,7 @@ func RegisterRoutes(e *echo.Echo, deps *Deps) {
 
 `Deps` 两个字段：`Engine` / `Token`。`TestRoutePathsAreStable` 断言这七条路径仍注册着——PHP 侧 `PhabricatorGorgeFulltextStorageEngine` 按字面调它们。
 
-迁入时从旧 `internal/httpapi/handlers.go` **删掉了四样被平台层取代的东西**：本地的 `apiResponse` / `apiError` 信封、`tokenAuth()`、`healthPing()`，以及 `GET /`、`/healthz`、`/readyz` 三条注册。最后这一条是硬性的：`httpx.New()` 已经注册过它们，重复注册 Echo 会在启动时 panic。
+迁入时从旧 `internal/httpapi/handlers.go` **删掉了四样被平台层取代的东西**：本地的 `apiResponse` / `apiError` 信封、`tokenAuth()`、`healthPing()`，以及 `GET /`、`/healthz`、`/readyz` 三条注册。最后这一条是硬性的：`httpx.New()` 已经注册过它们，域包不能再次注册同一组平台路由。
 
 `main.go` 与 mailer 的骨架只差一行：
 
@@ -87,9 +87,9 @@ internal/search/
 
 `BackendDef` 放在 `engine/` 而不是配置层，是为了断开一个循环：`engine` 需要它来描述后端，配置层需要它来解析 JSON，放在配置层则 `engine` 要反向依赖配置。
 
-`engine/test.go` 是**生产代码而不是 `_test.go` 辅助函数**，这不是放错了地方：它的可注入失败是五个域级错误码在契约固件里唯一的到达路径（一个真后端没法被要求「按需出故障」），而固件在 `tests/contract/search/` 下、由两个 runner 共读，所以那个后端必须能被非测试代码构造出来。它同时也是 compose 默认值与「配置写好之前先验通链路」这个工作流的实现。
+`engine/test.go` 是**生产代码而不是 `_test.go` 辅助函数**，这不是放错了地方：它的可注入失败是五个域级错误码在契约固件里唯一的到达路径（一个真后端没法被要求「按需出故障」），而固件在 `tests/contract/search/` 下、供不同实现共读，所以那个后端必须能被非测试代码构造出来。它同时也是 compose 默认值与「配置写好之前先验通链路」这个工作流的实现。
 
-`engine/meilisearch/` 目前是全仓库唯一一个零覆盖的非 `cmd` 包。它不影响 PHP 契约——契约在 `internal/search` 这一层，两个后端之下——所以迁入时刻意没有扩大范围去补，登记在 [`../findings.md`](../findings.md) #17。**配了 Meilisearch 的部署要知道这件事**：那条路径坏掉的时候，Elasticsearch 那条路径的测试一条都不会红。
+`engine/meilisearch/` 已有独立的 `backend_test.go`，覆盖配置、请求形状、响应解析和过滤属性之间的约束。它仍不能代替对真实 Meilisearch 的兼容验证：HTTP fake 只能证明本域认为对端会如何响应，无法证明目标版本确实接受这些请求。第一次真实联调暴露的问题及补上的跨函数约束测试登记在 [`../findings.md`](../findings.md) #17；升级 Meilisearch 或调整查询、索引设置时，应当继续跑真实后端联调。
 
 ### 3.2 SearchEngine：读写扇出方式不同，这个不对称是有意的
 

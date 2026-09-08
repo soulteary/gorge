@@ -8,7 +8,7 @@
 | 端口 | `:8110` |
 | 包 | `go/internal/mailer/` |
 | 契约 | [`api/openapi/mailer.yaml`](../../api/openapi/mailer.yaml) |
-| 固件 | `tests/contract/mailer/`（10 份） |
+| 固件 | `tests/contract/mailer/` |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第六节 ← **改动前必读** |
 
 ## 1. 职责边界
@@ -22,12 +22,12 @@
 ## 2. 路由与依赖
 
 ```go
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/mailer")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/mailer")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/send", sendMail(deps))
-	g.GET("/mailers", listMailers(deps))
+	g.Post("/send", sendMail(deps))
+	g.Get("/mailers", listMailers(deps))
 }
 ```
 
@@ -57,7 +57,7 @@ srv := httpx.New(httpx.Config{
 
 ### 3.1 handler 的四道处理
 
-`c.Bind` 的错误分支与 render 域同形：非 400 的 `*echo.HTTPError`（流式上传时冒出来的 413）原样交回平台错误处理器，只有真正的 JSON 语法错误留在本地当 400。理由见 [`render.md`](render.md) 第 3.1 节。
+`c.Bind().Body` 的错误分支与 render 域同形：非 400 的 `*fiber.Error`（例如传输层 413）原样交回平台错误处理器，只有真正的 JSON 语法错误留在本地当 400。理由见 [`render.md`](render.md) 第 3.1 节。
 
 剩下三道：**必填校验**（from / to / subject 缺一即 400）、**正文截断**（`textBody` / `htmlBody` 超 `BodyLimit` 时按 UTF-8 边界切断，静默截断而非拒绝）、**交给 Dispatcher**。
 

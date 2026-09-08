@@ -168,8 +168,8 @@ func TestWebSocketPingAnswersPong(t *testing.T) {
 	syncCommands(t, conn)
 }
 
-// TestUpgradedResponseIsNotEnvelopedByTheErrorHandler pins the invariant echo's
-// Committed flag used to guard, under the contrib websocket model that has no
+// TestUpgradedResponseIsNotEnvelopedByTheErrorHandler pins the invariant the
+// old implementation's Committed flag guarded, under the contrib model that has no
 // such flag. The handshake is hijacked straight onto the connection, so the
 // platform error handler must never serialise a {data,error} JSON envelope onto
 // a socket that now belongs to the WebSocket — which is what would happen if it

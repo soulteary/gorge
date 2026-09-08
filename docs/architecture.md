@@ -6,7 +6,7 @@
 
 Gorge 是 Phorge（Phabricator 社区维护分支）的 Go 服务层单仓库。Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以常驻 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及将来 PHP 侧的适配层。
 
-当前产出十个二进制、承载**十一个域**：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口，`gorge-mailer`、`gorge-search`、`gorge-file-storage`、`gorge-webhook`、`gorge-conduit`、`gorge-taskqueue`、`gorge-worker` 与 `gorge-db-api` 各独占一个进程与一个端口。其中 taskqueue 与 worker 是第一对拆成两个二进制的域——worker 是 taskqueue 的 HTTP 客户端（走 `TASK_QUEUE_URL` 租任务），两者独立伸缩，合进一个进程会把这层 HTTP 契约变成进程内调用。最新迁入的 db-api 是此前最复杂的一个，它同时是「只读」（像 file-storage）与「由入站请求驱动」（像 render）的第一个交集，对着 Phorge 的 MySQL 集群现查自省、不改动任何东西。代码规模：生产代码 17233 行，测试代码 19503 行（约为生产代码的 1.13 倍），外加 114 份语言中立的契约固件（render 12 + diff 14 + notification 11 + mailer 10 + search 23 + file-storage 14 + webhook 5 + conduit 4 + taskqueue 8 + db-api 13）与九份 e2e 冒烟脚本。
+当前二进制与域的完整清单见 [`README.md`](README.md) 的模块表：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口，其余入口各自独占一个进程与端口。taskqueue 与 worker 是一对拆成两个二进制的域——worker 是 taskqueue 的 HTTP 客户端（走 `TASK_QUEUE_URL` 租任务），两者独立伸缩，合进一个进程会把这层 HTTP 契约变成进程内调用。db-api 同时是只读且由入站请求驱动的域，对着 Phorge 的 MySQL 集群现查自省、不改动任何东西。源码、固件与 e2e 数量直接从仓库树生成，不在架构说明里复制一份会随迁入失效的统计。
 
 ### 1.1 为什么要替换掉进程内实现
 
@@ -160,7 +160,7 @@ var forbiddenPrefixes = []string{
 
 `webhook.go` 是第二个例外，而且是另一个方向上的：它装着**两个指向相反方向的契约**，其中只有一个是本仓库自己的 HTTP API。`DeliveryStats` 与 `HookSummary` 是那两个只读端点，按常规的「字段名即契约」读；而 `WebhookPayload` 是**投给第三方 endpoint 的那份文档**，它是这个包里唯一一个被**逐字节**钉住而不是逐字段钉住的结构——接收端校验的是对序列化后的字节算出的 HMAC-SHA256，所以键顺序（也就是结构体字段顺序）、两空格缩进与末尾换行全都在契约里。**这是全仓库唯一一处「结构体字段的排列顺序本身就是兼容约束」的地方**，见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第九节。上面那个「四个消费方」的图对它也只兑现了一半：它没有 PHP 适配层这个消费方（PHP 侧不解析它，只是曾经生产过同样的字节），而固件那一路也到不了它，理由见 [`testing.md`](testing.md) 第 2 节。
 
-只有 Go handler 是编译期绑定的，另外三个靠约定同步。为此每份 OpenAPI 文档都在 `info.description` 里显式写了它镜像的是哪个 contracts 文件，而契约固件被设计成 Go 与 PHP **两个 runner 共读同一批文件**（见 [`testing.md`](testing.md)），这样至少 Go/PHP 之间的漂移会被测试捕捉。
+只有 Go handler 是编译期绑定的，另外三个靠约定同步。为此每份 OpenAPI 文档都在 `info.description` 里显式写了它镜像的是哪个 contracts 文件，而契约固件被设计成不同实现**共读同一批文件**（见 [`testing.md`](testing.md)），这样至少 Go/PHP 之间的漂移会被测试捕捉。
 
 一个由此而来的实现选择：`Highlighter.Highlight()` 直接返回 `*contracts.HighlightResult`，而不是先返回一个域内结构体再转换。包注释说明了理由——第二个结构体要带自己的 json tag，两者迟早会漂移。
 

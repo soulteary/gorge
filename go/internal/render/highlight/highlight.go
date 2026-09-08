@@ -1,6 +1,6 @@
 // Package highlight renders source code to Pygments-compatible HTML using
-// Chroma. See TECHNICAL_REPORT.md in this directory for the design rationale
-// and compat/phorge/README.md for the constraints that must not be changed.
+// Chroma. See docs/modules/render.md for the design and compat/phorge/README.md
+// for the constraints that must not be changed.
 package highlight
 
 import (

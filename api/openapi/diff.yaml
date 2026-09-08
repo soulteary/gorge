@@ -5,7 +5,7 @@ info:
   description: |
     HTTP contract for the diff domain, served by the `gorge-render` binary.
     The diff domain does not get a process of its own: it registers
-    `/api/diff/*` on the same Echo instance that serves `/api/highlight/*`,
+    `/api/diff/*` on the same Fiber app that serves `/api/highlight/*`,
     so everything in this document is reachable on the same port as
     `render.yaml`.
 

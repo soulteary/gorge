@@ -196,7 +196,7 @@ func TestStatusCountsAPublishedMessage(t *testing.T) {
 // calling c.Bind: Phorge posts a raw JSON payload through HTTPSFuture, which
 // labels it with curl's form-urlencoded default.
 //
-// Echo's binder dispatches on that header, and for this label it does not
+// A content-type-driven binder dispatches on that header, and for this label it does not
 // refuse the request — it takes the label at its word, form-parses the JSON and
 // answers 200 with the message turned into garbage keys. The 415 the binder can
 // produce comes from BindBody's default branch, which catches mediatypes it does
