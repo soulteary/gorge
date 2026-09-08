@@ -32,7 +32,7 @@ services:
       dockerfile: Dockerfile
       args:
         SERVICE: gorge-render
-    image: ghcr.io/soulteary/gorge-render:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:render-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8140"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -79,7 +79,7 @@ services:
       args:
         SERVICE: gorge-conduit
         PORT: 8150
-    image: ghcr.io/soulteary/gorge-conduit:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:conduit-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8150"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -134,7 +134,7 @@ services:
         # at its 8140 default the probe would hit a port no listener here
         # binds and the container would restart in a loop.
         PORT: 22281
-    image: ghcr.io/soulteary/gorge-notification:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:notification-${GORGE_IMAGE_TAG:-latest}
     environment:
       # Bind address only; the ports below are separate settings. The service
       # keeps its 22280/22281 defaults because three places have to agree on
@@ -176,7 +176,7 @@ services:
       args:
         SERVICE: gorge-mailer
         PORT: 8110
-    image: ghcr.io/soulteary/gorge-mailer:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:mailer-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8110"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -219,7 +219,7 @@ services:
       args:
         SERVICE: gorge-search
         PORT: 8120
-    image: ghcr.io/soulteary/gorge-search:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:search-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8120"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -262,7 +262,7 @@ services:
       args:
         SERVICE: gorge-file-storage
         PORT: 8100
-    image: ghcr.io/soulteary/gorge-file-storage:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:file-storage-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8100"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -328,7 +328,7 @@ services:
       args:
         SERVICE: gorge-webhook
         PORT: 8160
-    image: ghcr.io/soulteary/gorge-webhook:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:webhook-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8160"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -396,7 +396,7 @@ services:
       args:
         SERVICE: gorge-taskqueue
         PORT: 8090
-    image: ghcr.io/soulteary/gorge-taskqueue:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:taskqueue-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8090"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -461,7 +461,7 @@ services:
       args:
         SERVICE: gorge-worker
         PORT: 8170
-    image: ghcr.io/soulteary/gorge-worker:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:worker-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8170"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
@@ -531,7 +531,7 @@ services:
       args:
         SERVICE: gorge-db-api
         PORT: 8080
-    image: ghcr.io/soulteary/gorge-db-api:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:db-api-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8080"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}

@@ -180,7 +180,7 @@ services:
       args:
         SERVICE: gorge-search
         PORT: 8120
-    image: ghcr.io/soulteary/gorge-search:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:search-${GORGE_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       meili:
@@ -213,7 +213,7 @@ services:
       args:
         SERVICE: gorge-mailer
         PORT: 8110
-    image: ghcr.io/soulteary/gorge-mailer:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:mailer-${GORGE_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       - owlmail
@@ -243,7 +243,7 @@ services:
       args:
         SERVICE: gorge-webhook
         PORT: 8160
-    image: ghcr.io/soulteary/gorge-webhook:${GORGE_IMAGE_TAG:-latest}
+    image: ghcr.io/soulteary/gorge:webhook-${GORGE_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       mysql:

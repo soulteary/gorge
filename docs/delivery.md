@@ -36,7 +36,7 @@ cd deploy/compose && cp .env.example .env && docker compose up -d --build
 make compose-up
 ```
 
-`build.context` 指向 `../../go`，`build.args.SERVICE` 选二进制，`image` 同时写着 ghcr 地址——这样本地能构建、CI 产物也能直接拉。
+`build.context` 指向 `../../go`，`build.args.SERVICE` 选二进制，`image` 同时写着 ghcr 地址——这样本地能构建、CI 产物也能直接拉。所有服务镜像集中在 `ghcr.io/soulteary/gorge` 这个与仓库关联的 Package 中，标签由“服务名 + 版本”组成，例如 `render-latest`、`search-2026.09.08-r5`。`GORGE_IMAGE_TAG` 仍只填写 `latest` 或 CalVer，Compose 会为每个服务补上自己的前缀。
 
 `.env.example` 里每个变量都带注释说明取值含义，其中 `GORGE_SERVICE_TOKEN` 留空即关闭鉴权，注释明确写了「只在私网可接受」。
 
@@ -73,9 +73,24 @@ make lint     # 需要本地装 golangci-lint
 
 `.github/workflows/release.yml`，`YYYY.MM.DD-rN` CalVer tag 触发，也可手动 dispatch 指定镜像 tag。手动触发固定检出 `main`，不受 Actions 页面当时所选 ref 影响。
 
-按 `matrix.service` 逐个构建并推到 ghcr.io，`fail-fast: false` 让一个服务失败不拖垮其余。双架构 `linux/amd64,linux/arm64`，GitHub Actions cache 按 service 分 scope（`scope=${{ matrix.service }}`），避免不同二进制互相冲掉缓存。
+按 `matrix.service` 逐个构建，并统一推到 `ghcr.io/soulteary/gorge`。每个矩阵项同时声明 `tag_prefix`，让不同服务在同一个 Package 中使用互不冲突的标签；`fail-fast: false` 让一个服务失败不拖垮其余。双架构 `linux/amd64,linux/arm64`，GitHub Actions cache 按 service 分 scope（`scope=${{ matrix.service }}`），避免不同二进制互相冲掉缓存。
 
-tag 策略由 `docker/metadata-action` 生成：CalVer 发布同时推送原始版本标签与 `latest`；手动触发从 `main` 构建，并使用输入的镜像标签（默认 `latest`）。
+tag 策略由 `docker/metadata-action` 生成：CalVer 发布为每个服务同时推送 `<service>-<calver>` 与 `<service>-latest`；手动触发从 `main` 构建，并使用 `<service>-<输入值>`（输入默认 `latest`）。例如：
+
+| 二进制 | latest | CalVer 示例 |
+|---|---|---|
+| `gorge-render` | `ghcr.io/soulteary/gorge:render-latest` | `ghcr.io/soulteary/gorge:render-2026.09.08-r5` |
+| `gorge-notification` | `ghcr.io/soulteary/gorge:notification-latest` | `ghcr.io/soulteary/gorge:notification-2026.09.08-r5` |
+| `gorge-mailer` | `ghcr.io/soulteary/gorge:mailer-latest` | `ghcr.io/soulteary/gorge:mailer-2026.09.08-r5` |
+| `gorge-search` | `ghcr.io/soulteary/gorge:search-latest` | `ghcr.io/soulteary/gorge:search-2026.09.08-r5` |
+| `gorge-file-storage` | `ghcr.io/soulteary/gorge:file-storage-latest` | `ghcr.io/soulteary/gorge:file-storage-2026.09.08-r5` |
+| `gorge-webhook` | `ghcr.io/soulteary/gorge:webhook-latest` | `ghcr.io/soulteary/gorge:webhook-2026.09.08-r5` |
+| `gorge-conduit` | `ghcr.io/soulteary/gorge:conduit-latest` | `ghcr.io/soulteary/gorge:conduit-2026.09.08-r5` |
+| `gorge-taskqueue` | `ghcr.io/soulteary/gorge:taskqueue-latest` | `ghcr.io/soulteary/gorge:taskqueue-2026.09.08-r5` |
+| `gorge-worker` | `ghcr.io/soulteary/gorge:worker-latest` | `ghcr.io/soulteary/gorge:worker-2026.09.08-r5` |
+| `gorge-db-api` | `ghcr.io/soulteary/gorge:db-api-latest` | `ghcr.io/soulteary/gorge:db-api-2026.09.08-r5` |
+
+镜像显式携带 `org.opencontainers.image.source=https://github.com/soulteary/gorge`，新 Package 会关联到本仓库并继承工作流权限。迁移前的 `ghcr.io/soulteary/gorge-*` 独立包保留已有版本，但不再由这条流水线更新。
 
 ## 5. 加一个服务要改的三处
 

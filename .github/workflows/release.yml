@@ -13,6 +13,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -39,34 +40,44 @@ jobs:
         include:
           # port is the listener the image's built-in HEALTHCHECK probes.
           - service: gorge-render
+            tag_prefix: render
             port: 8140
           # gorge-notification listens on two ports; 22281 is the admin one.
           - service: gorge-notification
+            tag_prefix: notification
             port: 22281
           - service: gorge-mailer
+            tag_prefix: mailer
             port: 8110
           - service: gorge-search
+            tag_prefix: search
             port: 8120
           - service: gorge-file-storage
+            tag_prefix: file-storage
             port: 8100
           # gorge-webhook's listener is status only — its work is a background
           # loop — so a healthcheck on this port says nothing about whether it
           # is delivering anything. See the compose service's comment.
           - service: gorge-webhook
+            tag_prefix: webhook
             port: 8160
           - service: gorge-conduit
+            tag_prefix: conduit
             port: 8150
           - service: gorge-taskqueue
+            tag_prefix: taskqueue
             port: 8090
           # gorge-worker's listener is status only, like gorge-webhook's — its
           # work is a lease loop against gorge-taskqueue — so this port's
           # healthcheck is liveness, not a statement about whether it is
           # processing anything. See the compose service's comment.
           - service: gorge-worker
+            tag_prefix: worker
             port: 8170
           # gorge-db-api reports on Phorge's MySQL cluster; its listener answers
           # /api/db/** read-only. It retains the pre-monorepo :8080.
           - service: gorge-db-api
+            tag_prefix: db-api
             port: 8080
 
     steps:
@@ -91,11 +102,17 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}
+          # All service images live in the repository-owned `gorge` package.
+          # The service prefix keeps their manifests independent inside that
+          # package: `render-latest`, `search-2026.09.08-r5`, and so on.
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
-            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ matrix.tag_prefix }}-${{ github.ref_name }},enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ matrix.tag_prefix }}-latest,enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ matrix.tag_prefix }}-${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.title=${{ matrix.service }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
