@@ -89,7 +89,7 @@ internal/search/
 
 `engine/test.go` 是**生产代码而不是 `_test.go` 辅助函数**，这不是放错了地方：它的可注入失败是五个域级错误码在契约固件里唯一的到达路径（一个真后端没法被要求「按需出故障」），而固件在 `tests/contract/search/` 下、供不同实现共读，所以那个后端必须能被非测试代码构造出来。它同时也是 compose 默认值与「配置写好之前先验通链路」这个工作流的实现。
 
-`engine/meilisearch/` 目前是全仓库唯一一个零覆盖的非 `cmd` 包。它不影响 PHP 契约——契约在 `internal/search` 这一层，两个后端之下——所以迁入时刻意没有扩大范围去补，登记在 [`../findings.md`](../findings.md) #17。**配了 Meilisearch 的部署要知道这件事**：那条路径坏掉的时候，Elasticsearch 那条路径的测试一条都不会红。
+`engine/meilisearch/` 已有独立的 `backend_test.go`，覆盖配置、请求形状、响应解析和过滤属性之间的约束。它仍不能代替对真实 Meilisearch 的兼容验证：HTTP fake 只能证明本域认为对端会如何响应，无法证明目标版本确实接受这些请求。第一次真实联调暴露的问题及补上的跨函数约束测试登记在 [`../findings.md`](../findings.md) #17；升级 Meilisearch 或调整查询、索引设置时，应当继续跑真实后端联调。
 
 ### 3.2 SearchEngine：读写扇出方式不同，这个不对称是有意的
 

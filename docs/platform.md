@@ -50,7 +50,7 @@ type Response struct {
 
 **`/api/**` 现在有一处记录在案的例外：成功的 `GET /api/file/blob` 答的是原始 `application/octet-stream` 字节，不是信封；它的失败仍然是信封。**所以调用方按**状态码**分支，200 就把 body 当文件——不能按「body 是不是空的」分，0 字节文件是一个合法的 200 加空 body。这条例外与第 3 节那条（健康探针答裸 `{"status":"ok"}`）是同一性质的东西：**平台层承诺的是一套默认形状，不是一条无法退出的强制**。
 
-**平台层为它没有改任何代码，这一点值得记下来。**`httpx` 从不强迫 handler 用 JSON 应答——`OK()` 是一个可以不调的入口，而不是一道中间件——所以 file-storage 的 handler 直接调 `c.Stream` 就得到了它要的形状；失败路径上照旧走 `Fail()` 与 `errorHandler`，信封一个字都没少。换句话说，「域包要一种平台层没预设的响应形状」这件事，在当前设计下的正确答案是**域包自己写**，不是给平台层加开关。要点是别把它推广开：这是一个 handler 的性质，不是这个端口的性质，`TestUnknownPathKeepsTheEnvelope` 断言同一进程上其余任何响应仍然是信封。
+**平台层为它没有改任何代码，这一点值得记下来。**`httpx` 从不强迫 handler 用 JSON 应答——`OK()` 是一个可以不调的入口，而不是一道中间件——所以 file-storage 的 handler 直接调 `c.SendStream(rc, size)` 就得到了它要的形状；失败路径上照旧走 `Fail()` 与 `errorHandler`，信封一个字都没少。换句话说，「域包要一种平台层没预设的响应形状」这件事，在当前设计下的正确答案是**域包自己写**，不是给平台层加开关。要点是别把它推广开：这是一个 handler 的性质，不是这个端口的性质，`TestUnknownPathKeepsTheEnvelope` 断言同一进程上其余任何响应仍然是信封。
 
 ### 1.2 全局错误处理器：信封的兜底
 
