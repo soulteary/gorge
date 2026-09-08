@@ -1,0 +1,19 @@
+{
+  "name": "missing service token is rejected",
+  "description": "When the gateway is configured with a token, a request without one gets 401 and a Conduit-protocol error envelope. Unlike every other domain this is {result, error_code, error_info}, not {data, error}: a Conduit client parses one shape for success and failure. The result field must be null so a client that ignores the status still cannot mistake it for a result.",
+  "request": {
+    "method": "POST",
+    "path": "/api/conduit.ping",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{}"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error_code", "error_info"],
+    "jsonEquals": { "error_code": "ERR-CONDUIT-AUTH" },
+    "jsonAbsent": ["data", "error"],
+    "bodyContains": ["\"result\":null"]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "an authenticated call is relayed to the upstream verbatim",
+  "description": "On success the gateway is a pass-through: it relays the caller's request to {upstream}/api/{method} and copies the upstream status, headers and body back byte-for-byte. That upstream body is already the Conduit envelope {result, error_code, error_info}, so the gateway must not wrap or rewrite it. This fixture asserts the relayed shape; the runner points the gateway's proxy at a stub upstream that answers a fixed Conduit success body, described in the conduit contract README, because the contract runner has no live Phorge to reach.",
+  "request": {
+    "method": "POST",
+    "path": "/api/conduit.ping",
+    "headers": {
+      "X-Service-Token": "contract-token",
+      "Content-Type": "application/json"
+    },
+    "body": "{}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["result"],
+    "jsonAbsent": ["data", "error"],
+    "bodyContains": ["\"result\""]
+  }
+}

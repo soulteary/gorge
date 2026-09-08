@@ -29,6 +29,7 @@
 | search | `gorge-search` | `:8120` | [`modules/search.md`](modules/search.md) | 已迁入 |
 | file-storage | `gorge-file-storage` | `:8100` | [`modules/file-storage.md`](modules/file-storage.md) | 已迁入 |
 | webhook | `gorge-webhook` | `:8160` | [`modules/webhook.md`](modules/webhook.md) | 已迁入 |
+| conduit | `gorge-conduit` | `:8150` | [`modules/conduit.md`](modules/conduit.md) | 已迁入 |
 
 render 与 diff 共用一个二进制与一个端口：都是无外部依赖的纯计算，拆进程换不来隔离收益。路径按域命名（`/api/highlight/*`、`/api/diff/*`）正是为了让这种合并不需要改动任何一侧。
 
@@ -41,6 +42,8 @@ search 是「有外部依赖」的第二个模块，也因此走的是与 mailer
 file-storage 带进来两件仓库里此前没有的东西，而它同样**没有**给平台层新增任何设施——这三件事凑在一起才是这个模块值得单说一句的地方。第一件是**第一个数据库驱动**：`go-sql-driver/mysql` 由 `internal/filestorage/db.go` 自己 import，连接池也住在域包里，`platform/` 至今没有、也刻意不长任何数据库设施（一个域要连接池不构成共享关切，理由记在 [`findings.md`](findings.md) 第 24 条）。第二件是**第一个非 JSON 的 `/api/**` 成功响应**：读文件成功答的是原始 `application/octet-stream` 字节，失败才是信封。而这一条恰恰不需要平台层配合——`httpx` 从不强迫 handler 用 JSON 应答，handler 直接调 `c.Stream` 就行，失败路径上 `errorHandler` 照旧产出信封，见 [`platform.md`](platform.md) 第 1.1 节。
 
 webhook 是「有外部依赖」这一类的第四个成员，但它在另一个维度上是第一个，而那个维度比上面几段讨论过的都更根本：**它的工作不由入站请求驱动。**前六个域都是「有人来问、答一句」，所以「服务在正常工作」与「服务答得出请求」是同一件事；webhook 的两个 HTTP 端点都只是报数，没有任何一条路径能启动一次投递——真正的工作是一个轮询 `{namespace}_herald.herald_webhookrequest` 的循环。三个后果值得在读它的模块文档之前就知道。第一，**每一层测试的分辨能力都要重新评估**：契约固件只覆盖那两个只读端点、e2e 脚本压根碰不到投递，而它最硬的那条契约（投出去的字节）只有单元测试守得住，理由记在 [`../tests/contract/webhook/README.md`](../tests/contract/webhook/README.md)。第二，**`/readyz` 与 `/healthz` 的差距在这里比在任何别的域都大**：一个连不上库的实例照旧在监听、`/healthz` 照旧 200、投递量为零，而且任何地方都不出现失败——Phorge 继续入队，那些行就静静躺着。这也是为什么本域的可观测性问题（该有的信号被日志默认级别吞掉、不该有的刷屏）单独登记成了 [`findings.md`](findings.md) 第 44 条。第三，它是唯一一个**必须替换而不能与 PHP 侧并存**的域：队列在数据库里，两边谁都能取，所以「服务在跑但 PHP 侧的接管开关没写进去」的表现不是「配了不生效」，而是每个 webhook 发两次，登记在 [`findings.md`](findings.md) 第 38 条。它同样**没有**给平台层新增任何设施——那个循环整个住在域包里，`main.go` 只是多起一个 goroutine 并在关连接池之前等它收尾。
+
+conduit 是第八个域，而它在一个所有前七个域都共享的维度上是第一个反例：**它的消费方是其它 Go 服务而非 Phorge PHP。**前七个域都在 Phorge 前面被 Phorge 调用，conduit 挡在 Phorge 前面、被别的 Go 服务调用。它是一个 Conduit API 的反向代理网关，替换的既不是子进程、也不是运行时依赖、也不是外部存储/投递通道，而是一种**调用拓扑**——把「各 Go 服务直连 Phorge `/api/*`」的多对一直连改成「多对一经网关」，在网关层统一鉴权、按 IP 限流与请求审计。它无持久状态（限流表在内存、每实例独立），所以 healthcheck 打 `/healthz` 而非 `/readyz`，并**刻意不**把上游可达性纳入就绪判据——那报告的是 Phorge 的健康而非网关自己的。它的兼容边界形状也是独一份的：错误信封是 Conduit 专用的 `{result,error_code,error_info}`（不是其它域的 `{data,error}`）、成功路径必须纯透传，理由见 [`modules/conduit.md`](modules/conduit.md) 第 5 节。它同样**没有**给平台层新增任何设施。
 
 **[`modules/notification.md`](modules/notification.md) 明显长于其余模块文档，这是刻意的**：本域迁入前带着一份独立的技术报告，那份报告写的是迁入前的包布局、现在每条路径都不存在了，所以它没有被搬进来，而是由模块文档同时充当本域的技术报告。它的前六节仍然是下面那个骨架，第 7 节之后（迁入前后的差异、排查、四层测试各守什么）是骨架之外的补充。**不要照着它把其余几份也扩写**——过期技术报告的问题登记在 [`findings.md`](findings.md) 第 6 条，解决方式是删掉过期报告并改指模块文档，不是加长。
 

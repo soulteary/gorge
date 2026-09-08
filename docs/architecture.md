@@ -6,7 +6,7 @@
 
 Gorge 是 Phorge（Phabricator 社区维护分支）的 Go 服务层单仓库。Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以常驻 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及将来 PHP 侧的适配层。
 
-当前产出六个二进制、承载**七个域**：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口，`gorge-mailer`、`gorge-search`、`gorge-file-storage` 与 `gorge-webhook` 各独占一个进程与一个端口。代码规模：生产代码 10467 行，测试代码 12114 行（约为生产代码的 1.16 倍），外加 89 份语言中立的契约固件（render 12 + diff 14 + notification 11 + mailer 10 + search 23 + file-storage 14 + webhook 5）与七份 e2e 冒烟脚本。
+当前产出七个二进制、承载**八个域**：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口，`gorge-mailer`、`gorge-search`、`gorge-file-storage`、`gorge-webhook` 与 `gorge-conduit` 各独占一个进程与一个端口。代码规模：生产代码 10467 行，测试代码 12114 行（约为生产代码的 1.16 倍），外加语言中立的契约固件（render 12 + diff 14 + notification 11 + mailer 10 + search 23 + file-storage 14 + webhook 5 + conduit）与八份 e2e 冒烟脚本。行数与固件数**用 `find` / `wc` 数**，此处随 conduit 迁入未重数生产/测试行数，读时以实际为准。
 
 ### 1.1 为什么要替换掉进程内实现
 
@@ -26,7 +26,7 @@ mailer、search 与 file-storage 的动机又换了一种：它们替换的是**
 
 webhook 的动机又是一种新的，而它是六种动机里唯一一个**被替换掉的东西不是一次调用**的：它替换的是 phd 的 `HeraldWebhookWorker`，也就是 Phorge 守护进程池里的一份常驻负载。所以省下的既不是进程创建开销、也不是一条运行时依赖，而是**PHP 守护进程的工作量**——那也正是它不能被做成「PHP 调 Go 的投递代理」的原因，那样 Go 就只是个 HTTP 转发器，这个核心价值全没了。代价是它成了唯一一个**没有调用方**的域：队列是数据库里的一张表，PHP 侧写它、Go 侧排空它，两边之间一次 HTTP 都不发。由此得到的兼容边界形状也是独一份的——它分成性质相反的两半，出站的那半（payload 字节与 HMAC 签名）**会**报错，只是错误发生在第三方的服务器上；回写的那半（`status` / `lastRequestResult` / `properties.error*`）完全静默，而其中 `status` 的取值范围还是 Go 侧整个抢占机制的地基（见 [`modules/webhook.md`](modules/webhook.md) 第 3.1 与第 5 节）。
 
-后续的 conduit 等各有各的形状，但「失效时不报错」这个特征是共通的。
+conduit 的动机又是一种前面都没出现过的，而它是八个域里唯一一个**消费方不是 Phorge PHP 而是其它 Go 服务**的：前七个域都在 Phorge 前面被 Phorge 调用，conduit 挡在 Phorge 前面、被别的 Go 服务调用。它替换的既不是子进程、也不是运行时依赖、也不是某个外部存储/投递通道，而是一种**调用拓扑**——把「各 Go 服务直连 Phorge `/api/*`」的多对一直连改成「多对一经网关」，在网关层收敛鉴权/限流/审计。它的兼容边界形状也是独一份的：不是输出格式、不是别名表，而是**错误信封必须是 Conduit 专用的 `{result,error_code,error_info}`**（不是其它域的 `{data,error}`）且成功路径必须纯透传（见 [`modules/conduit.md`](modules/conduit.md) 第 5 节）。而「失效时不报错」这个特征在这里同样成立。
 
 ## 2. 仓库结构
 
@@ -39,6 +39,7 @@ webhook 的动机又是一种新的，而它是六种动机里唯一一个**被�
 │   ├── cmd/gorge-search/     同上；同样传 Ready（至少一个可读后端）
 │   ├── cmd/gorge-file-storage/ 同上；Ready 只查「配了引擎 + 数据库连得上」
 │   ├── cmd/gorge-webhook/    同上；唯一一个除 httpx.Server 外还起一个后台 goroutine 的入口
+│   ├── cmd/gorge-conduit/    同上；唯一一个消费方是其它 Go 服务而非 Phorge PHP 的入口
 │   ├── internal/contracts/   线上数据结构，PHP / Go / OpenAPI / 固件的唯一真源
 │   ├── internal/contracttest/ 契约固件 runner，各域写一个 wrapper 指向自己的目录
 │   ├── internal/platform/    httpx / auth / health / config，不依赖任何业务域
@@ -49,6 +50,7 @@ webhook 的动机又是一种新的，而它是六种动机里唯一一个**被�
 │   ├── internal/search/      search 域：esquery/ + engine/{elasticsearch,meilisearch} + 路由
 │   ├── internal/filestorage/ file-storage 域：三个存储引擎 + Router + HTTP 路由 + 配置
 │   ├── internal/webhook/     webhook 域：Dispatcher 轮询循环 + Store 接口 + 两个只读路由
+│   ├── internal/conduit/     conduit 域：反向代理 + IP 令牌桶限流 + 鉴权中间件 + 路由
 │   └── Dockerfile            一份 Dockerfile 服务所有二进制（ARG SERVICE 选择）
 ├── api/openapi/render.yaml   render 域的 HTTP 契约
 ├── api/openapi/diff.yaml     diff 域的 HTTP 契约
@@ -57,6 +59,7 @@ webhook 的动机又是一种新的，而它是六种动机里唯一一个**被�
 ├── api/openapi/search.yaml   search 域的 HTTP 契约
 ├── api/openapi/file-storage.yaml  file-storage 域的 HTTP 契约（含唯一一个非信封响应）
 ├── api/openapi/webhook.yaml  webhook 域的 HTTP 契约（只读；投出去的那份文档另有一节描述）
+├── api/openapi/conduit.yaml  conduit 域的 HTTP 契约（反代网关；错误用 Conduit 信封）
 ├── compat/phorge/README.md   与 Phorge 的兼容约束，改动前必读
 ├── deploy/compose/           本地与单机部署编排
 ├── deploy/kubernetes/        （占位）
@@ -70,13 +73,15 @@ webhook 的动机又是一种新的，而它是六种动机里唯一一个**被�
     ├── contract/search/      同上；另有 unavailable/ 一组，跑一个必然失败的后端
     ├── contract/file-storage/ 同上；读成功那条断言的是裸字节与响应头，不是信封
     ├── contract/webhook/     同上；也分 unavailable/ 一组，理由与 search 相同。runner 注入内存 store 而不连 MySQL
+    ├── contract/conduit/     同上；覆盖鉴权/限流/透传/缺方法，runner 用 httptest 起假上游
     ├── e2e/render.sh         对着运行中实例做的冒烟测试
     ├── e2e/diff.sh           同上，打同一个端口的 /api/diff/*
     ├── e2e/notification.sh   同上，但要 ADMIN_URL 与 CLIENT_URL 两个变量
     ├── e2e/mailer.sh         同上；被测实例必须配了至少一个后端，否则 /readyz 那条按设计失败
     ├── e2e/search.sh         同上；**会销毁索引**，且两条 CJK 场景只在真 ES 上有意义
     ├── e2e/file-storage.sh   同上；被测实例必须配了至少一个存储后端，本地磁盘最省事
-    └── e2e/webhook.sh        同上；**唯一一份碰不到本域主要工作的脚本**，投递不由任何请求启动
+    ├── e2e/webhook.sh        同上；**唯一一份碰不到本域主要工作的脚本**，投递不由任何请求启动
+    └── e2e/conduit.sh        同上；打 :8150，验证 healthz/鉴权/透传/限流
 ```
 
 `contracttest` 是 diff 迁入时从 render 的固件测试里抽出来的。抽出的理由不是省代码，而是**断言词汇必须在两个域之间保持一致**——各写一份 runner，两个域很快会开始用不同的方式描述自己的契约。
@@ -89,7 +94,7 @@ webhook 的动机又是一种新的，而它是六种动机里唯一一个**被�
 |---|---|---|---|
 | 平台层 | `internal/platform/{httpx,auth,health,config}` | HTTP 引导、鉴权、探针、配置读取 | 只依赖标准库与三方库 |
 | 契约层 | `internal/contracts` | 线上数据结构，无行为 | 无 |
-| 域层 | `internal/render`、`internal/diff`、`internal/notification`、`internal/mailer`、`internal/search`、`internal/filestorage`、`internal/webhook` | 业务逻辑与路由 | 平台层 + 契约层 |
+| 域层 | `internal/render`、`internal/diff`、`internal/notification`、`internal/mailer`、`internal/search`、`internal/filestorage`、`internal/webhook`、`internal/conduit` | 业务逻辑与路由 | 平台层 + 契约层 |
 
 平台层不含任何业务知识：`httpx.Config` 里没有一个字段提到高亮，`auth.Token` 不知道自己保护的是哪些路由，`config.Base` 只有 `ListenAddr` 与 `ServiceToken` 两个「每个服务都有」的字段。
 
@@ -106,6 +111,7 @@ var forbiddenPrefixes = []string{
 	"github.com/soulteary/gorge/go/internal/search",
 	"github.com/soulteary/gorge/go/internal/filestorage",
 	"github.com/soulteary/gorge/go/internal/webhook",
+	"github.com/soulteary/gorge/go/internal/conduit",
 	"github.com/soulteary/gorge/go/internal/contracts",
 }
 ```
@@ -114,7 +120,7 @@ var forbiddenPrefixes = []string{
 
 注意 `contracts` 也在禁止列表里。平台层如果引用了某个域的线上结构，`httpx` 就会带上一份业务相关的 JSON 定义，拆分时同样会拽出依赖。
 
-**新增域包时要同步往 `forbiddenPrefixes` 里加一行**，否则这个测试对新域是失效的——它照样通过，只是不再检查任何新东西。除 render 之外的六行都是各自迁入时手工补的，这是目前唯一需要人工维护的地方，改进建议见 [`findings.md`](findings.md) 第 8 条。
+**新增域包时要同步往 `forbiddenPrefixes` 里加一行**，否则这个测试对新域是失效的——它照样通过，只是不再检查任何新东西。除 render 之外的七行都是各自迁入时手工补的，这是目前唯一需要人工维护的地方，改进建议见 [`findings.md`](findings.md) 第 8 条。
 
 ### 3.2 契约层：四个消费方的唯一真源
 

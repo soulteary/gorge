@@ -1,0 +1,20 @@
+{
+  "name": "a client over the rate limit is rejected",
+  "description": "When rate limiting is enabled and a client exceeds its per-IP bucket, the gateway answers 429 ERR-RATE-LIMIT in the Conduit envelope before touching the upstream. This fixture pins the shape of that answer; tripping the limiter is a matter of the runner's configuration (a bucket small enough that the fixture's own request is refused), described in the conduit contract README. The exempt discovery methods (conduit.ping, conduit.getcapabilities) are deliberately not used here so the limiter actually engages.",
+  "request": {
+    "method": "POST",
+    "path": "/api/differential.query",
+    "headers": {
+      "X-Service-Token": "contract-token",
+      "Content-Type": "application/json"
+    },
+    "body": "{}"
+  },
+  "expect": {
+    "status": 429,
+    "jsonHas": ["error_code", "error_info"],
+    "jsonEquals": { "error_code": "ERR-RATE-LIMIT" },
+    "jsonAbsent": ["data", "error"],
+    "bodyContains": ["\"result\":null"]
+  }
+}
