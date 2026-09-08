@@ -184,6 +184,49 @@ func TestReplicationProbeAcceptsModernLagColumn(t *testing.T) {
 	}
 }
 
+func TestReplicationProbeReportsStoppedThreads(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		ioColumn   string
+		sqlColumn  string
+		ioRunning  string
+		sqlRunning string
+	}{
+		{name: "modern receiver stopped", ioColumn: "Replica_IO_Running", sqlColumn: "Replica_SQL_Running", ioRunning: "No", sqlRunning: "Yes"},
+		{name: "legacy applier stopped", ioColumn: "Slave_IO_Running", sqlColumn: "Slave_SQL_Running", ioRunning: "Yes", sqlRunning: "No"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			mock.ExpectPing()
+			mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(
+				sqlmock.NewRows([]string{test.ioColumn, test.sqlColumn, "Seconds_Behind_Source"}).
+					AddRow(test.ioRunning, test.sqlRunning, []byte("0")))
+			mock.ExpectClose()
+
+			ref := &DatabaseRef{Host: "db1", Port: 3306}
+			svc := NewHealthService(&ClusterConfig{Refs: []*DatabaseRef{ref}})
+			svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+				return NewConnFromDB(db, dsn, readOnly), nil
+			})
+
+			got, gotErr := svc.QueryOne(context.Background(), ref.RefKey(), "secret")
+			if gotErr != nil {
+				t.Fatal(gotErr)
+			}
+			if got.ReplicaStatus != string(ReplicationNotReplicating) {
+				t.Fatalf("replicationStatus = %q, want %q", got.ReplicaStatus, ReplicationNotReplicating)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestReplicationProbeReportsResultStreamFailure(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	if err != nil {

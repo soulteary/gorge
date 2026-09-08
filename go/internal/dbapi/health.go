@@ -251,6 +251,11 @@ func (s *HealthService) analyzeReplicaLag(rows *sql.Rows, columns []string, ref 
 	if err := rows.Scan(ptrs...); err != nil {
 		return err
 	}
+	if known, running := replicationThreadsRunning(columns, vals); known && !running {
+		ref.ReplicaStatus = ReplicationNotReplicating
+		ref.ReplicaMessage = "This replica has stopped replication threads"
+		return nil
+	}
 
 	sbmIdx := -1
 	for i, col := range columns {
@@ -274,6 +279,20 @@ func (s *HealthService) analyzeReplicaLag(rows *sql.Rows, columns []string, ref 
 		ref.ReplicaStatus = ReplicationNotReplicating
 	}
 	return nil
+}
+
+func replicationThreadsRunning(columns []string, values []any) (known, running bool) {
+	running = true
+	for i, column := range columns {
+		switch column {
+		case "Replica_IO_Running", "Replica_SQL_Running", "Slave_IO_Running", "Slave_SQL_Running":
+			known = true
+			if !strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%s", values[i])), "yes") {
+				running = false
+			}
+		}
+	}
+	return known, running
 }
 
 // isAccessDeniedMsg and isAuthMsg classify a SHOW REPLICA STATUS error by its

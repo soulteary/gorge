@@ -384,7 +384,10 @@ components:
           description: Present when the probe did not return `okay`.
         replicationStatus:
           type: string
-          description: The replication probe outcome. Empty when the connection failed.
+          description: |
+            The replication probe outcome. `not-replicating` includes a stopped
+            receiver or applier thread even when the reported lag is still zero.
+            Empty when the connection failed.
           enum: [okay, master-replica, replica-none, replica-slow, not-replicating]
         replicaMessage:
           type: string

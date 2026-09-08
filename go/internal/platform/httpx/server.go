@@ -53,6 +53,27 @@ type Server struct {
 	listenerAddr net.Addr
 }
 
+// managedListener reports when Fiber has entered Serve (its first Accept) and
+// makes Close idempotent. RunAll uses the readiness signal to avoid shutting
+// down an app before it has taken ownership of its prebound socket.
+type managedListener struct {
+	net.Listener
+	ready     chan<- struct{}
+	readyOnce sync.Once
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (l *managedListener) Accept() (net.Conn, error) {
+	l.readyOnce.Do(func() { l.ready <- struct{}{} })
+	return l.Listener.Accept()
+}
+
+func (l *managedListener) Close() error {
+	l.closeOnce.Do(func() { l.closeErr = l.Listener.Close() })
+	return l.closeErr
+}
+
 // New builds the server. Domain packages register their routes on App().
 func New(cfg Config) *Server {
 	if cfg.BodyLimit == "" {
@@ -162,6 +183,7 @@ func RunAll(servers ...*Server) error {
 	// Bind every address before any app starts serving. If one bind fails, the
 	// listeners opened earlier are closed before RunAll returns, so a sibling
 	// goroutine cannot race past shutdown and leave a partial service running.
+	serveStarted := make(chan struct{}, len(servers))
 	listeners := make([]net.Listener, 0, len(servers))
 	for _, s := range servers {
 		ln, err := net.Listen("tcp", s.cfg.ListenAddr)
@@ -169,8 +191,9 @@ func RunAll(servers ...*Server) error {
 			closeListeners(listeners)
 			return fmt.Errorf("failed to listen: %w", err)
 		}
-		s.setListenerAddr(ln.Addr())
-		listeners = append(listeners, ln)
+		managed := &managedListener{Listener: ln, ready: serveStarted}
+		s.setListenerAddr(managed.Addr())
+		listeners = append(listeners, managed)
 	}
 
 	// Buffered for every server, so the goroutines behind the listeners we do
@@ -184,6 +207,23 @@ func RunAll(servers ...*Server) error {
 			})
 			serveErr <- err
 		}()
+	}
+
+	// ShutdownWithTimeout cannot close a socket an app has not started serving
+	// yet. Wait until every app reaches Serve; if a signal or early serve error
+	// wins the race, close all raw listeners so a delayed goroutine can never
+	// start accepting after RunAll returns.
+	for range servers {
+		select {
+		case <-serveStarted:
+		case err := <-serveErr:
+			closeListeners(listeners)
+			_ = shutdownAll(servers)
+			return err
+		case <-ctx.Done():
+			closeListeners(listeners)
+			return shutdownAll(servers)
+		}
 	}
 
 	select {

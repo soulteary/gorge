@@ -177,17 +177,28 @@ func TestBuildClusterFromFile(t *testing.T) {
 }
 
 func TestBuildClusterFromFileMissing(t *testing.T) {
-	cfg := &Config{ConfigFile: "/nonexistent/path/config.json"}
-	if _, err := cfg.BuildCluster(); err == nil {
-		t.Error("expected error for a missing config file")
+	cfg := &Config{
+		ConfigFile: "/nonexistent/path/config.json",
+		MySQLHost:  "fallback", MySQLPort: 3307, MySQLUser: "app", Namespace: "fallback_ns",
+	}
+	cc, err := cfg.BuildCluster()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cc.Refs) != 1 || cc.Refs[0].Host != "fallback" || cc.Refs[0].Port != 3307 {
+		t.Fatalf("missing config did not fall back to scalar node: %+v", cc.Refs)
 	}
 }
 
 func TestBuildClusterFromFileInvalidJSON(t *testing.T) {
 	path := writeConfigFile(t, "{invalid")
-	cfg := &Config{ConfigFile: path}
-	if _, err := cfg.BuildCluster(); err == nil {
-		t.Error("expected error for invalid JSON")
+	cfg := &Config{ConfigFile: path, MySQLHost: "fallback", Namespace: "fallback_ns"}
+	cc, err := cfg.BuildCluster()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cc.Refs) != 1 || cc.Refs[0].Host != "fallback" || cc.Namespace != "fallback_ns" {
+		t.Fatalf("invalid config did not fall back to scalar node: refs=%+v namespace=%q", cc.Refs, cc.Namespace)
 	}
 }
 

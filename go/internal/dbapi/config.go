@@ -86,7 +86,7 @@ func (c *Config) BuildCluster() (*ClusterConfig, error) {
 	if c.ConfigFile != "" {
 		cc, err := loadClusterFromFile(c.ConfigFile, c)
 		if err != nil {
-			return nil, err
+			return c.singleNodeCluster(), nil
 		}
 		return cc, nil
 	}
