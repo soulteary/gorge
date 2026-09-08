@@ -159,19 +159,28 @@ func RunAll(servers ...*Server) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Bind every address before any app starts serving. If one bind fails, the
+	// listeners opened earlier are closed before RunAll returns, so a sibling
+	// goroutine cannot race past shutdown and leave a partial service running.
+	listeners := make([]net.Listener, 0, len(servers))
+	for _, s := range servers {
+		ln, err := net.Listen("tcp", s.cfg.ListenAddr)
+		if err != nil {
+			closeListeners(listeners)
+			return fmt.Errorf("failed to listen: %w", err)
+		}
+		s.setListenerAddr(ln.Addr())
+		listeners = append(listeners, ln)
+	}
+
 	// Buffered for every server, so the goroutines behind the listeners we do
 	// not wait for still finish instead of blocking on the send forever.
 	serveErr := make(chan error, len(servers))
-	for _, s := range servers {
+	for i, s := range servers {
 		go func() {
-			slog.Info("listening", "addr", s.cfg.ListenAddr)
-			err := s.app.Listen(s.cfg.ListenAddr, fiber.ListenConfig{
+			slog.Info("listening", "addr", listeners[i].Addr())
+			err := s.app.Listener(listeners[i], fiber.ListenConfig{
 				DisableStartupMessage: true,
-				// 127.0.0.1:0 and an occupied [::]/0.0.0.0 sibling both have to
-				// bind; the default tcp4 network cannot reach an IPv6 address a
-				// test's net.Listen("tcp", ...) may have handed back.
-				ListenerNetwork:  "tcp",
-				ListenerAddrFunc: s.setListenerAddr,
 			})
 			serveErr <- err
 		}()
@@ -188,6 +197,12 @@ func RunAll(servers ...*Server) error {
 	}
 
 	return shutdownAll(servers)
+}
+
+func closeListeners(listeners []net.Listener) {
+	for _, ln := range listeners {
+		_ = ln.Close()
+	}
 }
 
 // shutdownAll drains the servers concurrently, so the wait is the longest
