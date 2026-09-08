@@ -1,0 +1,17 @@
+{
+  "name": "an unknown ref key is a 404, not a database failure",
+  "description": "A health request for a key that matches no configured node is the caller addressing a server that does not exist, so it answers 404 ERR_NOT_FOUND rather than probing anything. This is the one /servers/:ref/health branch that is not a database round-trip, which is why it is a separate fixture from the healthy one.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/servers/nosuch:3306/health",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 404,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_NOT_FOUND" },
+    "jsonAbsent": ["data"]
+  }
+}

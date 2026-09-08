@@ -1,0 +1,21 @@
+{
+  "name": "an unreachable database is an opaque 503 on charset-info",
+  "description": "charset-info opens a connection per node to ask which character sets it has, and a connect failure is the same ERR_DB_UNREACHABLE at 503 with the generic message. Same guarantee as schema-diff: the body names no host, port, database, query or password. The two endpoints share the failure so both fixtures pin it — a regression that started leaking would most likely do so on one code path, not both.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/charset-info",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 503,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": {
+      "error.code": "ERR_DB_UNREACHABLE",
+      "error.message": "a configured database server is unreachable"
+    },
+    "jsonAbsent": ["data"],
+    "bodyNotContains": ["db1", "3306", "phorge_", "CHARACTER_SETS", "SELECT", "secret"]
+  }
+}

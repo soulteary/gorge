@@ -1,0 +1,22 @@
+{
+  "name": "the schema tree is reported per server",
+  "description": "GET /api/db/schema-diff walks INFORMATION_SCHEMA in three tiers — databases, then tables, then columns — and returns a Server -> Database -> Table -> Column tree per node, the input Phorge's schema comparison expects. The seeded node has one database (phorge_meta_data) with one table (patch_status), so the tree has a stable, small shape whose top node carries the refKey.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/schema-diff",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.refKey", "data.0.children.0.database"],
+    "jsonEquals": {
+      "data.0.refKey": "db1:3306",
+      "data.0.status": "ok",
+      "data.0.children.0.database": "phorge_meta_data",
+      "data.0.children.0.children.0.table": "patch_status"
+    },
+    "jsonAbsent": ["error"]
+  }
+}

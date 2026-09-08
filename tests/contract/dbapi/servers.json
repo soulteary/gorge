@@ -1,0 +1,24 @@
+{
+  "name": "the configured servers are reported with their health",
+  "description": "GET /api/db/servers is the cluster's shape as PhabricatorGorgeDBClient reads it: one record per configured node, each carrying its static topology (refKey, host, port, isMaster, isDefaultPartition) and the result of a live probe (connectionStatus, replicaStatus). It never fails on a dead node — an unreachable server is reported in-band with connectionStatus 'fail' — so the array is the whole answer and there is no error branch to parse. The seeded cluster is one healthy master at db1:3306, so its connectionStatus is 'okay'.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/servers",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.refKey", "data.0.connectionStatus"],
+    "jsonEquals": {
+      "data.0.refKey": "db1:3306",
+      "data.0.host": "db1",
+      "data.0.port": 3306,
+      "data.0.isMaster": true,
+      "data.0.isDefaultPartition": true,
+      "data.0.connectionStatus": "okay"
+    },
+    "jsonAbsent": ["error"]
+  }
+}

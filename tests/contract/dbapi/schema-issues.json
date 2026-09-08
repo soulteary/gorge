@@ -1,0 +1,16 @@
+{
+  "name": "a healthy schema reports no issues",
+  "description": "GET /api/db/schema-issues flattens every problem found while walking the schema tree into self-describing records (refKey, database, table, column, issue). A healthy node has none, so the answer is an empty data array — the honest report that there is nothing to fix. What this fixture pins is that 'no issues' is an empty array in the envelope, not a null, an error, or a missing field.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/schema-issues",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonAbsent": ["error"],
+    "bodyContains": ["\"data\":[]"]
+  }
+}

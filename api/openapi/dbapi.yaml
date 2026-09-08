@@ -1,0 +1,703 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge DB API
+  description: |
+    HTTP contract for the `gorge-db-api` binary, which reports on Phorge's MySQL
+    cluster: which servers are configured, how healthy each one is, how each
+    server's schema and environment compare to what Phorge expects, and how far
+    its migrations have run.
+
+    This service owns no state. Every field it returns is derived live from a
+    `SHOW`/`SELECT`/`INFORMATION_SCHEMA` query or from the configured cluster
+    topology, and every answer is read straight back by
+    `PhabricatorGorgeDBClient` on the PHP side. So the field names under
+    `components.schemas` are the wire contract itself — they mirror
+    `go/internal/contracts/dbapi.go`, the single source of truth shared by the
+    Go service, the PHP adapter and the contract fixtures under
+    `tests/contract/dbapi/`.
+
+    **Two response shapes coexist here:**
+
+    - `/api/db/**` endpoints return the `{data, error}` envelope, with exactly
+      one of the two keys populated. This holds for failures the service never
+      reached a handler for — an unknown path, a recovered panic — because
+      `httpx` replaces the framework's default error handler.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them.
+
+    A client branches on the **status code**, never on the body shape.
+
+    **Error bodies never name a host, database or query.** A failure the caller
+    can act on answers a stable code and a generic message; the specific detail
+    goes to the service log. This matters even though `/api/db/**` is
+    authenticated: a service-to-service caller that has the token still must
+    not be handed a map of the cluster in an error body. See
+    `compat/phorge/README.md`.
+
+    Beyond the platform's six error codes this domain defines three, for the
+    failures a caller has a distinct remedy for: `ERR_DB_UNREACHABLE` (503, wait
+    or fix the infrastructure), `ERR_READONLY` (409, direct the write at a
+    reachable master) and `ERR_DB_ACCESS_DENIED` (403, add a GRANT). They are
+    the analogue of file-storage's `ERR_NO_ENGINE`.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: db
+    description: Cluster health, schema, setup and migration reports
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/db/servers:
+    get:
+      tags: [db]
+      summary: List the configured servers with a live health probe
+      description: |
+        Returns every configured node, each probed now: a short read-only
+        connect, a ping, and — where the user is permitted — `SHOW REPLICA
+        STATUS`. A node that cannot be reached still appears, with
+        `connectionStatus` `fail` and the reason in `connectionMessage`, because
+        "this server is down" is what a health report exists to say.
+      operationId: listServers
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The configured servers, each with its probe result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServersResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/db/servers/{ref}/health:
+    get:
+      tags: [db]
+      summary: Probe one server
+      description: |
+        Probes the one server whose `refKey` (`host:port`) matches `ref`. A
+        `ref` that matches no configured server is a 404 — the caller addressed
+        a server that does not exist — not a database failure.
+      operationId: serverHealth
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The server's `refKey`, `host:port`.
+          schema:
+            type: string
+          example: db.internal:3306
+      responses:
+        '200':
+          description: The server's probe result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServerResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/db/schema-diff:
+    get:
+      tags: [db]
+      summary: The schema tree of every server
+      description: |
+        Returns one tree per server, walked from `INFORMATION_SCHEMA` in three
+        tiers — databases matching the namespace, then their tables, then their
+        columns — assembled as Server → Database → Table → Column. Each node
+        repeats its parents' names so it carries its full location on its own.
+      operationId: schemaDiff
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: One schema tree per server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaDiffResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DBUnreachable'
+
+  /api/db/schema-issues:
+    get:
+      tags: [db]
+      summary: Schema problems, flattened
+      description: |
+        The same information as `schema-diff`, but with every node's issues
+        lifted out into flat, self-describing records ready to render in a
+        report without the tree.
+      operationId: schemaIssues
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The flattened schema issues
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaIssuesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DBUnreachable'
+
+  /api/db/setup-issues:
+    get:
+      tags: [db]
+      summary: Environment problems
+      description: |
+        Runs the checks Phorge's `PhabricatorDatabaseSetupCheck` and
+        `PhabricatorMySQLSetupCheck` run — version, InnoDB, the `meta_data`
+        database, and a set of server variables — and returns each finding. The
+        `isFatal` flag matches Phorge's own: a fatal issue is one Phorge blocks
+        startup on. A server that cannot be connected to yields a single fatal
+        `db.connection` issue rather than an error.
+      operationId: setupIssues
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The setup issues
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetupIssuesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/db/charset-info:
+    get:
+      tags: [db]
+      summary: The charset and collation each server supports
+      description: |
+        Reports the character set and collation set each server supports,
+        choosing `utf8mb4` when available and falling back to `binary`/`utf8`
+        otherwise — the same choice `PhabricatorStorageManagementAPI` makes, so
+        Phorge's schema comparison sees the inputs it expects.
+      operationId: charsetInfo
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: One charset info per server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CharsetInfoResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DBUnreachable'
+
+  /api/db/migrations/status:
+    get:
+      tags: [db]
+      summary: How far migrations have run on each master
+      description: |
+        Reads each master's own `{namespace}_meta_data.patch_status` and reports
+        the applied patches. Only masters are reported: a replica receives the
+        same rows through replication. `initialized` false means the `meta_data`
+        database does not exist yet — the pre-`bin/storage upgrade` state, not an
+        error — so this endpoint answers 200 with `initialized: false` rather
+        than failing when Phorge has not been set up.
+      operationId: migrationStatus
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: One migration status per master
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: Always succeeds while the process is serving. Never authenticated.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once at least one configured server answers a ping, bounded by
+        a 5-second timeout. This is the probe orchestration should point at: a
+        service whose database is not up yet is a legitimate state to boot into,
+        but it must not read as healthy.
+
+        **It deliberately does not check whether Phorge's tables exist.** The
+        `{namespace}_meta_data` database is created by `bin/storage upgrade`
+        inside the Phorge container, which is ordered after this service, so a
+        readiness probe that required it would deadlock the stack on first boot.
+        The probe dials a DSN that names no database, so a ping succeeds against
+        a server whose Phorge databases do not exist yet.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: No configured database server is reachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+                reason: no configured database server is reachable
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form, and what the PHP client uses. When the server's
+        configured token is empty, all requests pass unauthenticated.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: Fallback for callers that cannot set headers. Checked only when the header is absent.
+
+  schemas:
+
+    ServerRef:
+      type: object
+      required:
+        - refKey
+        - host
+        - port
+        - user
+        - isMaster
+        - disabled
+        - isIndividual
+        - isDefaultPartition
+        - connectionStatus
+        - connectionLatencySec
+      properties:
+        refKey:
+          type: string
+          description: The stable identifier, `host:port`, matching Phorge's own key.
+          example: db.internal:3306
+        host:
+          type: string
+        port:
+          type: integer
+        user:
+          type: string
+        isMaster:
+          type: boolean
+        disabled:
+          type: boolean
+        isIndividual:
+          type: boolean
+        isDefaultPartition:
+          type: boolean
+        connectionStatus:
+          type: string
+          description: |
+            The connection probe outcome. `replication-client` is not a failure:
+            the node answered but the probing user lacks the privilege for
+            `SHOW REPLICA STATUS`.
+          enum: [okay, fail, auth, replication-client]
+        connectionLatencySec:
+          type: number
+          format: double
+        connectionMessage:
+          type: string
+          description: Present when the probe did not return `okay`.
+        replicaStatus:
+          type: string
+          description: The replication probe outcome. Empty when the connection failed.
+          enum: [okay, master-replica, replica-none, replica-slow, not-replicating]
+        replicaMessage:
+          type: string
+        replicaDelaySec:
+          type: integer
+          nullable: true
+          description: Seconds_Behind_Master. Absent when the node is not replicating or the value is NULL.
+
+    SchemaNode:
+      type: object
+      required: [refKey, status]
+      properties:
+        refKey:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        column:
+          type: string
+        key:
+          type: string
+        issues:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [ok, warn, fail]
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaNode'
+
+    SchemaIssue:
+      type: object
+      required: [refKey, database, issue, status]
+      properties:
+        refKey:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        column:
+          type: string
+        key:
+          type: string
+        issue:
+          type: string
+        status:
+          type: string
+          enum: [ok, warn, fail]
+
+    SetupIssue:
+      type: object
+      required: [key, name, message, isFatal]
+      properties:
+        key:
+          type: string
+          description: Stable check identifier, e.g. `mysql.version`, `storage.upgrade`.
+          example: storage.upgrade
+        name:
+          type: string
+          example: Setup MySQL Schema
+        summary:
+          type: string
+        message:
+          type: string
+        isFatal:
+          type: boolean
+          description: |
+            Load-bearing, not advisory: Phorge blocks startup on a fatal issue
+            (version too old, InnoDB missing, `meta_data` absent) and only warns
+            on the rest.
+        refKey:
+          type: string
+          description: The server the issue was found on; empty for a cluster-wide issue.
+
+    CharsetInfo:
+      type: object
+      required:
+        - refKey
+        - charsetDefault
+        - charsetSort
+        - charsetFulltext
+        - collateText
+        - collateSort
+        - collateFulltext
+      properties:
+        refKey:
+          type: string
+        charsetDefault:
+          type: string
+          example: utf8mb4
+        charsetSort:
+          type: string
+        charsetFulltext:
+          type: string
+        collateText:
+          type: string
+          example: utf8mb4_bin
+        collateSort:
+          type: string
+        collateFulltext:
+          type: string
+
+    MigrationStatus:
+      type: object
+      required: [refKey, initialized, appliedPatches, totalExpected]
+      properties:
+        refKey:
+          type: string
+        initialized:
+          type: boolean
+          description: False means the `meta_data` database does not exist yet.
+        appliedPatches:
+          type: array
+          items:
+            type: string
+        missingPatches:
+          type: array
+          items:
+            type: string
+        totalExpected:
+          type: integer
+
+    ServersResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServerRef'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ServerResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ServerRef'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    SchemaDiffResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaNode'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    SchemaIssuesResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaIssue'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    SetupIssuesResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetupIssue'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    CharsetInfoResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CharsetInfo'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    MigrationStatusResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MigrationStatus'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        data:
+          nullable: true
+          description: Always null on error.
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code; clients branch on this, not on the message.
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_TOO_LARGE
+            - ERR_INTERNAL
+            # The db-api domain's own codes.
+            - ERR_DB_UNREACHABLE
+            - ERR_READONLY
+            - ERR_DB_ACCESS_DENIED
+        message:
+          type: string
+          description: |
+            Human-readable detail. Wording is not part of the contract, and it
+            never names a host, database or query.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        reason:
+          type: string
+          description: Present only when `status` is not `ok`.
+      description: Bare probe payload, deliberately outside the `{data, error}` envelope.
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    Unauthorized:
+      description: Missing or invalid service token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: |
+        Either the resource is not there — a `ref` matching no configured
+        server — or no route matched. The status is all a client needs.
+
+        Under `/api/db/**` the token is checked before the path is resolved, so
+        an unauthenticated request to a non-existent path answers 401, not 404;
+        and a documented path called with an unregistered method answers 404
+        rather than 405, because the group matches every method to authenticate
+        it.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: no such database server
+
+    AccessDenied:
+      description: |
+        The configured database user lacks the privilege the operation needs —
+        a GRANT for the operator to add. Distinct from a 401, which is this
+        service's own token check.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_DB_ACCESS_DENIED
+              message: the database denied access for this operation
+
+    DBUnreachable:
+      description: |
+        A configured database server could not be reached. 503 rather than 500
+        because nothing in this service is broken: the database is down or not
+        up yet, a state an operator waits out or fixes in the infrastructure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_DB_UNREACHABLE
+              message: a configured database server is unreachable
+
+    InternalError:
+      description: |
+        The request failed for a reason the client cannot act on. `ERR_INTERNAL`
+        always carries the same generic message; the specific error is written
+        to the service log, so a 5xx body never describes the service's
+        internals.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: Internal Server Error

@@ -1,0 +1,13 @@
+{
+  "name": "the token is accepted as a query parameter",
+  "description": "?token= is accepted alongside the X-Service-Token header, and checked only when the header is absent. The PHP client (PhabricatorGorgeDBClient) uses the header; this fallback is for a browser or a runbook's curl reaching the read-only endpoints. It answers the same 200 the header form does.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/servers?token=contract-token"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.refKey"],
+    "jsonAbsent": ["error"]
+  }
+}

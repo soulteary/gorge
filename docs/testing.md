@@ -33,6 +33,10 @@
 | `webhook/unavailable/` | 同上，但服务配的是一个必然失败的 store | 同一个文件里的第二个 `Run` |
 | `taskqueue/` | `gorge-taskqueue` | `go/internal/taskqueue/contract_test.go` |
 | `taskqueue/unavailable/` | 同上，但服务配的是一个必然失败的 store | 同一个文件里的第二个 `Run` |
+| `dbapi/` | `gorge-db-api` | `go/internal/dbapi/contract_test.go` |
+| `dbapi/unavailable/` | 同上，但服务对着一个连不上的库 | 同一个文件里的第二个 `Run` |
+
+**db-api 域的固件与 e2e 已落地。** db-api 的 Go 服务迁入的同时，契约固件与 e2e 脚本也一并补齐：`go/internal/dbapi/contract_test.go` 按 webhook / taskqueue 的形状写好，指向 `tests/contract/dbapi/`（七条只读路由 + 401 + 查询参数认证，共 10 份 JSON）与 `tests/contract/dbapi/unavailable/`（3 份：库连不上时 message 保持通用、body 不泄漏 SQL/库名/主机/端口）。`go test ./...` 现已整套变绿，`internal/dbapi` 覆盖率 76.8%。下面第 2.3 节的固件总数与第 4 节的 e2e 脚本数均已把 db-api 计入。
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
 
@@ -108,6 +112,8 @@ Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoute
 
 **taskqueue 域 8 份**：主目录 6 份（`enqueue` 入队并回显 id 与默认优先级、`lease` 用 `X-Lease-Owner` 头租走任务并回显 owner、`stats` 的四个计数、`tasks` 活跃任务列表、`tasks/:id` 单任务带 Phorge 列名、未授权），`unavailable/` 2 份（`stats` 与 `tasks` 在后端不可达时答 500 `ERR_INTERNAL`，且 body 不出现库名、主机、端口、SQL 或 `connection refused`）。worker 域**没有固件**：它唯一的端点读进程内计数器、永不失败，一个「请求加期望应答」的固件对它无可断言，那条路径由 `go/internal/worker/http_test.go` 覆盖。
 
+**db-api 域 13 份**：主目录 10 份（`servers`、`server-health`、`server-health-unknown`、`schema-diff`、`schema-issues`、`setup-issues`、`charset-info`、`migrations-status` 八条只读路由，加未授权与查询参数认证），`unavailable/` 3 份（`schema-diff`、`charset-info` 在库连不上时答 503 `ERR_DB_UNREACHABLE` 且 body 不泄漏 SQL/库名/主机/端口，`servers` 则以 in-band `fail` 记录不可达节点、`refKey` 作为契约字段合法保留）。连同上面各域，契约固件现共 **110 份**。
+
 `index-cjk-document.json` 值得说一句它**验不到**什么：它断言一份中文文档写得进去、答 200 并回显 PHID，这是真的；但固件跑的是内存 `test` 后端，那个后端做子串匹配、不过分析器，所以**它对 `cjk` 子字段一无所知**。中文检索真正能不能工作只有 `tests/e2e/search.sh` 的第 11、12 条对着真 Elasticsearch 才验得到（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条末尾）。别把这份固件当成 CJK 的覆盖。
 
 这批固件让共享 runner 长了两处：`lookupJSONPath` 现在会**先把整段路径当字面量键查一次**再按 `.` 切分，否则 `clients.active` 这类键寻址不到（那些点是键名的一部分，不是嵌套）；`check` 现在对「只断言状态码与原始字节」的固件跳过 JSON 解码，否则 client 口那句纯文本 501 会在解码那一步就失败。两处都是共享词汇的扩展而非 notification 专用分支。
@@ -146,7 +152,7 @@ prose diff 落在两者之间：它的输出没有外部基准，所以固件钉
 
 ## 4. e2e 冒烟
 
-八份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
+九份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西（db-api 的 `dbapi.sh` 已落地，镜像 `webhook.sh` 的形状）：
 
 ```bash
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/render.sh
@@ -158,8 +164,9 @@ BASE_URL=http://127.0.0.1:8120 TOKEN=dev bash tests/e2e/search.sh   # ⚠ 会销
 BASE_URL=http://127.0.0.1:8100 TOKEN=dev bash tests/e2e/file-storage.sh
 BASE_URL=http://127.0.0.1:8160 TOKEN=dev bash tests/e2e/webhook.sh
 BASE_URL=http://127.0.0.1:8090 TOKEN=dev bash tests/e2e/taskqueue.sh
+BASE_URL=http://127.0.0.1:8080 TOKEN=dev bash tests/e2e/dbapi.sh
 # 或
-TOKEN=dev-token make e2e     # 八份都跑
+TOKEN=dev-token make e2e     # 九份都跑
 ```
 
 render 与 diff 共用一个端口，所以那两份是「两个脚本打同一个 `BASE_URL`」，不是两套部署。notification 是另一个进程，而且**要两个变量**：`ADMIN_URL` 与 `CLIENT_URL` 不可互换，同一个请求在两个端口上的正确答案不一样，这正是它第 4、5 条场景要验证的东西。它也没有 `TOKEN`——那个域按设计不鉴权。
@@ -191,7 +198,7 @@ render 与 diff 共用一个端口，所以那两份是「两个脚本打同一�
 
 render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
 
-它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。八个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）**但 `cmd/gorge-webhook` 与 `cmd/gorge-worker` 是这句话第一次不完全成立的地方**：那两个 `main()` 里的一半是「起后台 goroutine（webhook 投递 / worker 消费）、收到信号后先排空再关连接池」这段编排，而 e2e 脚本只打 HTTP 端口，看不见它。
+它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。九个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）**但 `cmd/gorge-webhook` 与 `cmd/gorge-worker` 是这句话第一次不完全成立的地方**：那两个 `main()` 里的一半是「起后台 goroutine（webhook 投递 / worker 消费）、收到信号后先排空再关连接池」这段编排，而 e2e 脚本只打 HTTP 端口，看不见它。
 
 `diff.sh` 还有一个单元测试拿不到的作用：`\ No newline at end of file` 这个标记里含反斜杠，是整个 payload 里唯一会被 JSON 转义错误悄悄改坏的部分，而它只有过一趟真实的 HTTP 编解码才验证得到。
 
@@ -219,6 +226,7 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 | `search/engine/meilisearch` | 91.5%（见下） |
 | `filestorage` | 84.1% |
 | `webhook` | 70.4%（见下） |
+| `dbapi` | 76.8% |
 | `contracttest` | 19.7%（见下） |
 | `cmd/gorge-render` | 0.0% |
 | `cmd/gorge-notification` | 0.0% |
@@ -228,7 +236,10 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 | `cmd/gorge-webhook` | 0.0% |
 | `cmd/gorge-taskqueue` | 0.0% |
 | `cmd/gorge-worker` | 0.0% |
+| `cmd/gorge-db-api` | 0.0% |
 | **总计** | **74.9%** |
+
+上表是基线快照。**db-api 迁入后已把它计入**：`internal/dbapi` 一次干净的 `go test ./...` 覆盖率为 **76.8%**（整套现已全绿，`tests/contract/dbapi/` 与 `tests/contract/dbapi/unavailable/` 固件均已落地）；`cmd/gorge-db-api` 与其余八个 `cmd` 同理为 0.0%，由 e2e 在集成层兜（`tests/e2e/dbapi.sh` 已落地）。
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 
@@ -260,7 +271,7 @@ search 那次拉低总数的两个包：
 - Meilisearch：`exclude` 用 `id` 过滤，而 `id` 没被声明为 filterable，每个带 `exclude` 的查询 400。两条相关测试一条只看渲染出的字符串、一条拿同一个函数当实际值与期望值比对——**同一份误解的两侧**（[`findings.md`](findings.md) 第 17 条）。
 - Elasticsearch：mapping 按文档类型分 key，这在 ES 6 起就被拒绝，ES 7 上 `POST /api/search/init` 直接 `mapper_parsing_exception`。假集群对什么请求都答 200，所以它验不到（[`findings.md`](findings.md) 第 46 条）。同时查出 `exclude` 用的 `not` 查询在 ES 5.0 就已移除——**它在本后端支持的每个版本上都从未真的排除过任何东西**，且完全没有测试覆盖。
 
-所以第 4 节那八份 e2e 脚本不是「单元测试的补充」，在这两个后端上它们是**唯一**能问出问题的地方。`deploy/compose/demo/` 存在的理由正是这个：它把生产编排刻意留给使用者自建的后端一起拉起来，让 `search.sh` 那 18 条能真的对着 ES 7.17 与 Meilisearch 各跑一遍。
+所以第 4 节那九份 e2e 脚本不是「单元测试的补充」，在这两个后端上它们是**唯一**能问出问题的地方。`deploy/compose/demo/` 存在的理由正是这个：它把生产编排刻意留给使用者自建的后端一起拉起来，让 `search.sh` 那 18 条能真的对着 ES 7.17 与 Meilisearch 各跑一遍。
 
 生成报告：
 

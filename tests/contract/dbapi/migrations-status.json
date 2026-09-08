@@ -1,0 +1,21 @@
+{
+  "name": "each master's migration status is reported",
+  "description": "GET /api/db/migrations/status reads {namespace}_meta_data.patch_status on each master and reports how far bin/storage upgrade has run: Initialized true once the meta_data database answers, the applied patches, and their count. Only masters are reported — a replica gets the same rows through replication. The seeded master is initialized with one applied patch. Initialized false would mean the database does not exist yet, which is the honest pre-upgrade state rather than an error.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/migrations/status",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.refKey", "data.0.appliedPatches"],
+    "jsonEquals": {
+      "data.0.refKey": "db1:3306",
+      "data.0.initialized": true,
+      "data.0.totalExpected": 1
+    },
+    "jsonAbsent": ["error"]
+  }
+}

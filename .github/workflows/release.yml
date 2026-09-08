@@ -62,6 +62,10 @@ jobs:
           # processing anything. See the compose service's comment.
           - service: gorge-worker
             port: 8170
+          # gorge-db-api reports on Phorge's MySQL cluster; its listener answers
+          # /api/db/** read-only. It retains the pre-monorepo :8080.
+          - service: gorge-db-api
+            port: 8080
 
     steps:
       - name: Checkout code
