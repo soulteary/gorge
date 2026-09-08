@@ -1,0 +1,16 @@
+{
+  "name": "a healthy schema reports no issues",
+  "description": "GET /api/db/schema-issues compares each selected replica with the master for its application partition and flattens every attribute, missing, or surplus difference into self-describing records (refKey, databaseName, tableName, columnName, issueKey, expected, actual, issue). Canonical application SchemaSpec comparison remains in Phorge and consumes schema-diff. A consistent node has no drift, so the answer is an empty data array — not a null, an error, or a missing field.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/schema-issues",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonAbsent": ["error"],
+    "bodyContains": ["\"data\":[]"]
+  }
+}

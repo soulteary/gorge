@@ -1,0 +1,16 @@
+{
+  "name": "a healthy environment reports no setup issues",
+  "description": "GET /api/db/setup-issues runs the checks Phorge's PhabricatorDatabaseSetupCheck / PhabricatorMySQLSetupCheck run — version, InnoDB, the meta_data database, and a set of server variables — and returns one SetupIssue per finding, with IsFatal matching Phorge's own. The seeded node passes every check (modern MySQL, InnoDB present, meta_data created, sane variables), so the array is empty. That empty array is the contract for 'this install is ready'.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/setup-issues",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonAbsent": ["error"],
+    "bodyContains": ["\"data\":[]"]
+  }
+}

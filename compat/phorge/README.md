@@ -1,6 +1,6 @@
 # Phorge 兼容契约
 
-本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的九项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。（第九项是这句话第一次要打折扣的地方，理由见那一节开头——它的一半约束的对手不是 Phorge，而是一个按 Phorge 原本的投递写好的第三方接收端。）
+本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的十项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。（第九项是这句话第一次要打折扣的地方，理由见那一节开头——它的一半约束的对手不是 Phorge，而是一个按 Phorge 原本的投递写好的第三方接收端。）
 
 | 约定 | 破坏后的表现 |
 |---|---|
@@ -13,6 +13,8 @@
 | 七、search 的字段名与分析器链 | 五条子约束，全部是「写得进去、答 200、就是查不到」型。7.3 的 4 字符字段名与 7.5 的 `cjk` 子字段是其中最安静的两条：索引照常增长、每条路径照常 200，只有检索结果悄悄变空 |
 | 八、file storage 的 handle 与 engine identifier | **既有文件变得读不出来，而且是从改动生效那一刻起、对全部存量文件同时发生**：新写入的文件一切正常，所以问题会在很久以后才以「某些旧附件 404」的形式露头。另有一条不同性质的子约束（8.7）：`/readyz` 的判据会让整个栈在首次启动时**死锁**——而且实测表明，遵守「不查表」这条约定**仍然不够**，DSN 里那个库名足以独立触发它 |
 | 九、webhook 投递的字节与回写字段 | 分成性质相反的两半。出站那半（9.1 payload 的 2 空格缩进与末尾换行、9.2 签名头）**会**报错，只是错误在**别人的服务器上**——签名算的是整个字符串含末尾换行，所以改缩进就是改签名，而你这一侧只看到一批 4xx；回写那半完全静默，其中 9.4 的 `status` 取值域还是 Go 侧整个抢占机制的地基。另有一条独一份的（9.7）：`gorge.webhook.uri` 是**接管开关**而非服务地址，漏配的表现不是失效而是**每个 webhook 发两次**，且接收方分不出它与真正的重复事件 |
+| 十、task queue 与 worker 的字段名与租约语义 | 整节静默型。`taskClass`/`dataID`/`leaseOwner`/`failureCount` 直接映射 `worker_activetask` 列名，改错一个只让 PHP 侧读到空值；`leaseExpires` 与 `(yield)` 哨兵是抢占地基，写坏就让任务被两个 worker 同时取走；必须替换 `phd` 而非并存，否则每个任务跑两遍 |
+| 十一、db-api 的字段名、错误码与库/表名 | 整节静默型。`refKey`/`isFatal`/`connectionStatus` 等是 PHP 侧 `PhabricatorDatabaseRef` / `DatabaseSetupCheck` / `MySQLSetupCheck` 直接按键读的契约，改错一个只让对方读到空值——其中 `isFatal` 决定 Phorge 把一个 setup issue 当阻断还是当告警；库名 `{namespace}_meta_data`、表名 `patch_status`/`hoststate` 都是 Phorge 的，不能顺手现代化。另有一条编排约束（第 8.7 节的逐字翻版）：`/readyz` 若查表或让 DSN 带库名，会让首启死锁 |
 
 第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。第六项的性质又不一样：它**会**产生一个明确的失败状态，只是方向是反的，所以看日志找不出问题——每条记录看起来都合理。第七项则是把「静默」推到了另一个维度：破坏之后**写入侧一切正常**，索引在长大、统计在增加、集群面板全绿，错的只是「写进去的键」与「查出来的键」对不上，而没有任何一层会去比对这两者。第八项的时间尺度是独一份的：它破坏的是**存量数据的可达性**，而验证一次改动是否安全的常规办法（写一个文件、读回来、通过）恰恰完全看不见它——新旧两条路都自洽，只是不再互通。第九项换的是另一个维度：**它的一半约束的对手不在这个系统里。**payload 的字节与签名头是给第三方接收端看的，而那些接收端是按 Phorge 原本的投递写好的、并不知道换了实现；所以这一半破坏之后**会**报错，只是错误发生在别人的服务器上，你这一侧看到的是一批 4xx，而 Herald 界面上它和「接收端自己坏了」没有任何区别。它还带着全仓库唯一一处失配方向是反的东西（9.7）：漏配接管开关的表现不是「配了不生效」，而是每个 webhook 发两次。
 
@@ -815,7 +817,7 @@ GET /readyz  → 503
 
 而 `{namespace}_file` 这个**库**同样是 Phorge 的 `bin/storage upgrade` 建的，跑在同一个要等本服务 healthy 的容器里。于是 8.7 这条约定要防的死锁**照样发生**，只是触发点从「表」挪到了「库」——`db-init` 也帮不上忙，`db-grant.sql` 只有一条 GRANT，一个库都不建。新数据卷上必然发生，而且不会自愈。
 
-**这一条逐字适用于 `webhook.HeraldDSN()`**（`{namespace}_herald`，同样由 `bin/storage upgrade` 建）。webhook 躲过去只是因为它的编排依赖本来就是 `service_started`（[`../../docs/findings.md`](../../docs/findings.md) 第 41 条），**不是因为它的 readiness 有什么本质区别**。别把两者的差异读成「webhook 的探针写得更好」。
+**这一条逐字适用于 `webhook.HeraldDSN()`**（`{namespace}_herald`，同样由 `bin/storage upgrade` 建）**以及 db-api 的探测 DSN**（`{namespace}_meta_data`，见第十一节 11.5）。webhook 躲过去只是因为它的编排依赖本来就是 `service_started`（[`../../docs/findings.md`](../../docs/findings.md) 第 41 条），**不是因为它的 readiness 有什么本质区别**；db-api 走得更远一步——它的探测 DSN 干脆不带库名，理由与实测见第十一节。别把这些域之间的差异读成「谁的探针写得更好」。
 
 所以真正的分界不在「查不查表」，而在这两句话之间：
 
@@ -1129,11 +1131,118 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 ---
 
+## 十一、db-api：字段名、错误码与库/表名
+
+**Go 侧**：`go/internal/dbapi/`（`health.go` / `diff.go` / `setup.go` / `migration.go` 的探测逻辑、`router.go` 的分区路由、`errors.go` 与 `mysqlerr.go` 的错误分类、`config.go` 的 DSN 与库名拼接）、`go/internal/contracts/dbapi.go`（全部字段名）
+**PHP 侧**：`PhabricatorDatabaseRef`、`PhabricatorDatabaseSetupCheck`、`PhabricatorMySQLSetupCheck`、`PhabricatorConfigSchemaQuery`、`PhabricatorGorgeDBClient`
+（参考实现见 `phorge-fork/src/applications/config/` 与 `src/infrastructure/storage/`）
+
+**这一节与 render / mailer / search 那几节同源——本服务与 Phorge PHP 之间是真的走 HTTP 的**（PHP 打 Go 的 `/api/db/**` 读回集群自省），所以它没有 webhook / taskqueue 那种「队列在库里、一次 HTTP 都不发」的特殊性。它值得单独一节的地方，是它同时是好几个「第一」的反面：它像 file-storage 那样**只读**（不建库、不建表、不跑迁移，只 `SHOW` / `SELECT` / `INFORMATION_SCHEMA`），又像 render 那样**由入站请求驱动**（七条路由全是「有人来问、答一句」，没有后台循环），所以它既没有 webhook 第 38 条那种「必须替换不能并存」的耦合，也没有 taskqueue 那种双写同一张表的隐患——**观察一个不改动它的集群，多一个观察者不会弄坏任何东西**。
+
+整节的判据与第五、七节相同：不是「PHP 会不会报错」，而是「破坏之后还有谁能发现」。按这个判据本节分五组，全部是静默型，只有最后一条（11.5 的编排约束）例外——它会让首启死锁，不是静默失效。
+
+| 约束 | 破坏之后谁会发现 |
+|---|---|
+| 11.1 wire 字段名 camelCase | 没人报错。改掉的那个字段静默变成零值，PHP 侧按空值渲染 |
+| 11.2 `isFatal` 的语义 | 没人报错，而且后果比别的字段大一档：它决定 Phorge 阻断启动还是仅告警，改错名字让每个 setup issue 都退化成告警 |
+| 11.3 三个域级错误码的语义 | PHP 侧据不同的码走不同的动作，塌成一个码之后「数据库 down」与「没权限」不可分 |
+| 11.4 库名与表名约定 | 库/表名对不上，探测答「未初始化」或「连不上」，看起来像「Phorge 还没建好」 |
+| 11.5 `/readyz` 的探测形状（编排约束） | **首启死锁**，不是静默失效——第 8.7 节那条的逐字翻版 |
+
+### 11.1 wire 字段名一律 camelCase，改一个就是一次兼容性变更
+
+字段名声明在 [`../../go/internal/contracts/dbapi.go`](../../go/internal/contracts/dbapi.go)，按契约层的规则**改一个字段名就是一次兼容性变更**。`PhabricatorGorgeDBClient` 把应答直接摊成数组、按这些键读，所以这些名字**就是线上契约本身**，不是本服务的命名风格。迁入时它们从旧独立服务的 **snake_case 全量改成了 camelCase**，下面是主要的映射与它们各自的 PHP 消费点：
+
+| camelCase（现） | snake_case（旧） | 结构 | PHP 消费点 |
+|---|---|---|---|
+| `refKey` | `ref_key` | `ServerRef` | `PhabricatorDatabaseRef::getRefKey()`（`host:port`），也是 `/servers/:ref/health` 的路径参数 |
+| `connectionStatus` | `connection_status` | `ServerRef` | 集群数据库面板的连接列（`ok`/`fail`/`auth`/`replication-client`） |
+| `connectionMessage` | `connection_message` | `ServerRef` | 同上，`fail` 时的原因 |
+| `replicationStatus` | `replication_status` | `ServerRef` | 复制列（`ok`/`replica-slow`/…） |
+| `secondsBehindMaster` | `seconds_behind_master` | `ServerRef` | 复制延迟秒数 |
+| `isMaster` | `is_master` | `ServerRef` | 区分 master / replica |
+| `isFatal` | `is_fatal` | `SetupIssue` | 见 11.2——**载重最大的一个** |
+| `issueKey` | `issue_key` | `SetupIssue` / `SchemaIssue` | Phorge 的 issue 常量名，据它去重与定位 |
+| `databaseName` | `database_name` | `SchemaNode` / `SchemaIssue` | 三级树的库层键，`{namespace}_meta_data` 等 |
+| `tableName` / `columnName` | `table_name` / `column_name` | `SchemaNode` / `SchemaIssue` | 树的表层与列层键 |
+| `characterSet` / `collation` / `engine` / `columnType` / `nullable` | 独立服务迁入后补齐 | `SchemaNode` | `INFORMATION_SCHEMA` 的实际库、表、列属性，PHP 据它们构造实际 schema 后比较 |
+| `expected` / `actual` | 同名 | `SchemaIssue` | schema 差异的两侧值 |
+| `patch` / `initialized` | 同名 / `is_initialized` | `MigrationStatus` | `patch_status` 里跑过的 patch 列表与「库建了没」 |
+
+改名的表现是那个字段**静默变成零值**，其余字段照常——症状是局部的：把 `secondsBehindMaster` 改个名，面板照常显示每台服务器、只有复制延迟那一列空着，而没有任何一层报错。
+
+### 11.2 `isFatal` 是本节载重最大的字段
+
+`SetupIssue.isFatal` 镜像 Phorge 的 `PhabricatorSetupIssue::isFatal()`。Phorge 据它决定一个环境/schema 问题是**阻断启动**（fatal，装置根本起不来直到修好）还是**仅在配置页告警**（非 fatal）。所以它不是一个展示字段，是一个控制字段——**改错它的名字或把它的值算反，会让每一个 setup issue 都退化成告警**，包括那些本该阻断启动的（比如 `{namespace}_meta_data` 库缺失、MySQL 版本过低）。装置于是「看起来能起来」，直到某个本该被 fatal 挡住的问题在运行时以另一种形式炸出来。
+
+它单独拎出来，是因为它是本节唯一一个破坏后果不是「少显示一栏」而是「改变 Phorge 的启动决策」的字段——性质更接近第六节的 `ERR_PERMANENT_FAILURE`（改行为，不只改显示）。判断某个 setup issue 该不该 fatal 的规则原样抄自 Phorge 的两个 setup check（`PhabricatorDatabaseSetupCheck` / `PhabricatorMySQLSetupCheck`），**不要按 Go 侧的直觉重新判定**。
+
+### 11.3 三个域级错误码的语义
+
+三个，都从旧独立服务沿用，因为它们是**调用方需要区分**的失败——PHP 侧据不同的码走不同的动作，所以不能塌进平台的 `ERR_INTERNAL`（同 file-storage 的 `ERR_NO_ENGINE` 一个道理）：
+
+| 码 | 状态 | 语义 | 为什么单独一个码 |
+|---|---|---|---|
+| `ERR_DB_UNREACHABLE` | 503 | 一台配置的库服务器连不上 | 503 因为**本服务没坏**——数据库 down 了或还没起来，是运维/编排问题 |
+| `ERR_READONLY` | 409 | 对一个已降级为只读的连接/router 发起了写 | 409 因为调用方可以把写改发向一台可达的 master 来解决 |
+| `ERR_DB_ACCESS_DENIED` | 403 | 配置的库用户缺少该操作所需的权限 | 403 且与本服务自己的 token 校验（401）分开——修法是 GRANT，不是重试 |
+
+映射由 `codeForKind` 完成（`errors.go`）：域内先把驱动错误按 errno 分类成 `DBError`（`mysqlerr.go`，access-denied 一族 → `kindAccessDenied`，2006/2013 连接中断 → `kindUnreachable`），handler 的 `fail` 再把可被调用方处置的 kind 翻成上面三个码，**并且只答一句通用文案**——`genericMessage` 只说「哪一类东西出了问题」，绝不带主机名、库名或查询。一个通过了 token 校验的服务间调用方仍不该从响应体里拿到集群拓扑；真正的错误留给 `slog` 日志（走 `ERR_INTERNAL` 那条 `return err` 的路径）。
+
+**`ERR_READONLY` 目前是一条定义了但七条只读路由都到不了的码。** 它随 `Router` 的只读降级逻辑（抄自 Phorge 的 `PhabricatorLiskDAO`：连不上 master 时翻只读、后续写被 `GetWriter` 拒成 `ERR_READONLY`）一起从旧服务搬来，保留是为了忠实复现 Phorge 的路由/降级语义、也为后续可能的写路径留着接口；但当前七个 handler 全是只读探测，走各 service 自己开的短连接，不经过 Router 的写入分支。**别因为「用不到」就把它删掉**，也别把它塌进平台码——它的语义是调用方可处置的，与另外两个同理。见 [`../../docs/modules/dbapi.md`](../../docs/modules/dbapi.md) 第 1、6 节。
+
+### 11.4 库名与表名约定：都是 Phorge 的，不能顺手现代化
+
+- **库名按 Phorge 的方式拼成 `{namespace}_meta_data`**（以及其它 `{namespace}_<app>`），`{namespace}` 来自 `GORGE_DB_NAMESPACE`（旧名 `STORAGE_NAMESPACE`，默认 `phorge`），**必须与该装置的 `storage.default-namespace` 一致**。拼法在 `config.go` 的 `DatabaseName`。它选错的表现是探测连到一个不存在的库，`MigrationStatus.initialized` 留 `false`，看起来像「Phorge 还没建好」而不是「namespace 配错了」。
+- **迁移状态读 `patch_status` 表**：`MigrationService.Status` 按 Phorge 分区路由选出承载 `meta_data` 的 enabled master，再由 `checkRef` 对它的 `{namespace}_meta_data` 跑 `SELECT patch FROM patch_status`，对齐 Phorge 的 `bin/storage` 写进这张表的账本；其它应用的专属 master 不承载这个库，不能被误报成未初始化。响应字段名是 Phorge 所读的 `patch`。表名和字段名都是兼容契约，改了就读不到迁移进度。replica 的 `patch_status` 通过复制到达，不是它自己迁出来的。建连或 Ping 失败仍表示尚未初始化；一旦 Ping 成功，账本查询失败必须显式报错，不能返回一个看似成功的空 patch 列表。
+- **多 master 同步状态读 `hoststate` 表**：额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，这是 Phorge 在多 master 之间同步 `cluster.databases` 的表。**当前读出来就丢**——保留这个读点只为对上旧服务预留的多 master 同步接口，不消费它的值。表名同样是 Phorge 的。
+
+`{namespace}_meta_data` 库不存在**不是错误，是如实报告**：那正是 `bin/storage upgrade` 跑之前的状态，`initialized` 留 `false`、调用方读到「未初始化」就对了。这一条与 11.5 的死锁直接相关——正因为这个库由 Phorge 建、而 Phorge 排在本服务之后启动。
+
+### 11.5 `/readyz` 不能查表、探测 DSN 不能带库名（编排约束）
+
+这一条是第 8.7 节那条的**逐字翻版，而且走得更远一步**，所以本节结论先写在前面：**本服务的探测 DSN 根本不带库名，healthcheck 打 `/healthz` 而非 `/readyz`，phorge-fork 侧对它的依赖必须是 `service_started` 而非 `service_healthy`。** 三者任一被「顺手修正」都会让首启死锁。
+
+`/readyz` 的判据只有一条：至少一台配置的 master 能被 ping 通（`anyReachable`）。看起来该加的第二条——查一下 `{namespace}_meta_data` 或 `patch_status` 在不在——是一个闭环，与 file-storage / webhook 同源：这个库由 Phorge 的 `bin/storage upgrade` 建，那条命令跑在**排在本服务之后启动**的 Phorge 容器里，于是本服务等一个只有 Phorge 能建的库、Phorge 等本服务健康，两个容器一起停在启动阶段。
+
+**而 8.7 实测出来的那件事在这里同样成立、且被本服务提前一步躲开了**：光「不查表」不够——go-sql-driver 在握手阶段就把 DSN 里的库名发过去，库不存在时 ping 会失败在**连接**上而不是失败在查询上。file-storage 的探测 DSN 带 `{namespace}_file`，于是它即便不查表也会撞上 `Error 1049 Unknown database`（8.7 下半段的证据）。db-api 从那次实测里学到了教训：**它的探测 DSN 干脆不带任何库名**，一个 ping 就能打通一台 Phorge 库还没建出来的服务器，`/readyz` 只据「握手成功」判就绪。
+
+对应的编排结果与理由：
+
+| 说法 | 成立吗 |
+|---|---|
+| ping **数据库服务器**是安全的 | 成立——服务器是独立容器 |
+| ping **不带库名的 DSN** 是安全的 | 成立——这正是 db-api 采取的形状 |
+| ping **带 `{namespace}_meta_data` 的 DSN** 是安全的 | **不成立**——那个库由 Phorge 建，探针会重新指回等它的那个容器 |
+
+所以别把 healthcheck 改成 `/readyz`、别把依赖改成 `service_healthy`、也别为了「探得更实」给探测 DSN 补上库名——三者都会把这个躲开的死锁请回来。这个 compose 文件本身不声明 MySQL 也不声明 Phorge，所以那里没有 `depends_on` 要写，`service_started` 这条约束活在 phorge-fork 的编排里。见 [`../../deploy/compose/docker-compose.yml`](../../deploy/compose/docker-compose.yml) 里 `gorge-db-api` 那段注释、[`../../docs/modules/dbapi.md`](../../docs/modules/dbapi.md) 第 3.5 节，与本文件第 8.7 节。
+
+### 改动本节任何一条之后怎么验证
+
+11.1 与 11.3 靠固件与单元测试；11.4 与 11.5 只能对着一个真实（或缺失）的 `{namespace}_meta_data` 库观察。最短路径是分两种库状态各走一趟：
+
+```bash
+# 库还没建（新装置、bin/storage upgrade 之前）：
+#   /healthz 必须 200，/readyz 视 master 可达性而定，migrations/status 报未初始化
+curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:8080/readyz
+curl -s -H 'X-Service-Token: dev-token' http://127.0.0.1:8080/api/db/migrations/status
+# initialized 必须是 false 而不是一个错误——这是 11.4 的核心
+
+# 库建好之后：migrations/status 报出跑过的 patch 列表，setup-issues 的 isFatal 与
+# Phorge 配置页一致
+curl -s -H 'X-Service-Token: dev-token' http://127.0.0.1:8080/api/db/setup-issues
+```
+
+**11.5 用 curl 只能验到「库缺失时 /readyz 不因带库名而挂在连接上」这一半**：起一个新数据卷、不跑 `bin/storage upgrade`，确认 `/readyz` 要么据 master 可达性答 200、要么答 503 且原因是「master 连不上」而**不是** `Unknown database`。后者一旦出现，就说明探测 DSN 又带上库名了——那正是 8.7 下半段那个 1049 的形状。
+
+---
+
 ## 附：鉴权与响应信封
 
-五个 PHP 客户端（Render / Mailer / Search / FileStorage / Webhook，共同的请求构建与信封解析已抽到 `PhabricatorGorgeServiceClient` 基类）依赖以下两点，改动会直接打断 PHP 侧：
+六个 PHP 客户端（Render / Mailer / Search / FileStorage / Webhook / DB，共同的请求构建与信封解析已抽到 `PhabricatorGorgeServiceClient` 基类）依赖以下两点，改动会直接打断 PHP 侧：
 
-（Webhook 那个是五个里的异类，值得知道：其余四个都是它们所代表的那份能力的**唯一**入口，而 webhook 的投递走数据库、与这个类无关——它上面最要紧的成员因此不是任何一个请求方法，而是 `isDeliveryDelegated()` 这个谓词。见 9.7。）
+（Webhook 那个是六个里的异类，值得知道：其余五个都是它们所代表的那份能力的**唯一**入口，而 webhook 的投递走数据库、与这个类无关——它上面最要紧的成员因此不是任何一个请求方法，而是 `isDeliveryDelegated()` 这个谓词。见 9.7。db-api 是六个里最规矩的一个，它的七条路由全走这个基类，没有 webhook 那样的旁路。）
 
 **鉴权**：请求头 `X-Service-Token` 优先，查询参数 `?token=` 兜底；服务端 token 配置为空时全部放行。PHP 客户端走的是请求头。
 
@@ -1170,11 +1279,13 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 
 `ERR_INTERNAL` 的 `message` 恒为一句通用文案，panic 值与堆栈只进 `slog` 日志。**排查 500 要看服务日志，不要指望响应体。**
 
-域级错误码**仍然是九个**，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)，search 域的 `ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED`（均 502），以及 file-storage 域的 `ERR_NO_ENGINE`(503)。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
+**db-api 的三个也没落进平台码，理由与 mailer 那两个同源——调用方需要区分。**`ERR_DB_UNREACHABLE`(503) / `ERR_READONLY`(409) / `ERR_DB_ACCESS_DENIED`(403) 分别对应「数据库 down 或还没起来」「写打在一个已降级只读的连接上」「库用户权限不足」，PHP 侧据不同的码走不同动作（等编排、改发 master、GRANT），塌成一个码就分不开了，见第十一节 11.3。其中 `ERR_READONLY` 当前是一条**定义了但七条只读路由都到不了**的码——它随 Router 的只读降级逻辑一起保留，不是遗漏。
+
+域级错误码**因此是十二个**，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)，search 域的 `ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED`（均 502），file-storage 域的 `ERR_NO_ENGINE`(503)，以及 db-api 域的 `ERR_DB_UNREACHABLE`(503) / `ERR_READONLY`(409) / `ERR_DB_ACCESS_DENIED`(403)。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
 
 **webhook 域一个都没加，而这是决定而不是遗漏。**它的两个端点都只做一件事——数行——所以唯一的失败是数据库没答话，平台的 `ERR_INTERNAL` 已经说完了；而真正需要被区分出来的那个状态（「服务活着但连不上队列」）由 `/readyz` 报告，还附带一句失败原因，一个新码在这上面改进不了任何东西。这个选择由 `tests/contract/webhook/unavailable/stats-database-unreachable.json` 从**反面**钉住：既然没有域码承载细节，message 就必须保持通用、body 不得泄漏 SQL、库名、主机或端口。**它与 diff 域「刻意没有域级错误码」不是同一个理由**——diff 是「没有可报告的失败模式」，webhook 是「失败模式只有一个，而平台码已经说完了」。判据是那个失败在调用方那里是否引出一个与平台码不同的动作。
 
-**taskqueue 与 worker 也都没加，同 webhook 的理由。**taskqueue 的失败要么是入参错（`ERR_BAD_REQUEST` 400、任务不存在 `ERR_NOT_FOUND` 404），要么是后端没答话（`ERR_INTERNAL` 500）；「服务活着但连不上队列」同样由 `/readyz` 报告。这个选择由 `tests/contract/taskqueue/unavailable/`（`stats.json`、`tasks.json`）从反面钉住：message 保持通用、body 不得泄漏 SQL、库名、主机、端口或「connection refused」。worker 的 `/api/worker/stats` 读进程内计数器，永不失败，连错误路径都没有。所以**域级错误码总数仍然是九个**。
+**taskqueue 与 worker 也都没加，同 webhook 的理由。**taskqueue 的失败要么是入参错（`ERR_BAD_REQUEST` 400、任务不存在 `ERR_NOT_FOUND` 404），要么是后端没答话（`ERR_INTERNAL` 500）；「服务活着但连不上队列」同样由 `/readyz` 报告。这个选择由 `tests/contract/taskqueue/unavailable/`（`stats.json`、`tasks.json`）从反面钉住：message 保持通用、body 不得泄漏 SQL、库名、主机、端口或「connection refused」。worker 的 `/api/worker/stats` 读进程内计数器，永不失败，连错误路径都没有。所以**域级错误码总数是十二个**（webhook / taskqueue / worker 三个域各自都没加，db-api 则带来三个，见上）。
 
 mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另外 mailer 域的后端失败一律落在 422 或 502，**不落 500**——那里的 500 只意味着服务自己出了问题。search 域的五个同理：全部 502，500 在那个域只意味着服务自己坏了。
 
@@ -1188,10 +1299,10 @@ mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另�
 
 **健康探针不套信封**：`GET /`、`GET /healthz`、`GET /readyz` 返回裸 `{"status":"ok"}`。这是给容器探针和负载均衡用的，不要「顺手统一」成信封格式。
 
-本附录讲的是 `/api/**`，即 render、diff、mailer、search、file-storage、webhook、taskqueue 与 worker 八个域——八者的鉴权口径完全一致，信封口径有一处**记录在案的例外**，另外传输上限各不相同：
+本附录讲的是 `/api/**`，即 render、diff、mailer、search、file-storage、webhook、taskqueue、worker 与 db-api 九个域——九者的鉴权口径完全一致，信封口径有一处**记录在案的例外**，另外传输上限各不相同：
 
-- **例外只有一个**：file-storage 的 `GET /api/file/blob` **成功**时答原始 `application/octet-stream` 字节而非信封，失败仍是信封。所以那一条路径上按状态码分支，别按 body 形状分支，理由与陷阱见第八节 8.6。除它之外，本附录对八个域一字不差地成立——包括 file-storage 自己的另外三条路径，以及它端口上任何由框架产生的响应（`TestUnknownPathKeepsTheEnvelope` 断言这一点，webhook 与 taskqueue 域各有一份同名的）。
-- **`ERR_TOO_LARGE` 的来源**：render / diff 的传输层上限是 `2M` 并另有域级字节检查；mailer 是 `10M`（base64 让附件涨三分之一），没有域级字节检查，正文超限是静默截断而不是拒绝；search 用平台默认的 `2M`，也没有域级字节检查——一份文档多大是 Phorge 的事，而语料大到成问题时那是存储的配置问题，不是线上的；file-storage 是 **`16M`**（文件是裸请求体），它的「域级」检查是各存储引擎自己的 `MaxFileSize()`——只有在请求**指名了引擎**时才答 413，未指名而所有引擎都收不下时答的是 503 `ERR_NO_ENGINE`；webhook 用平台默认的 `2M` 而且**永远碰不到它**，因为它的两个端点都是 `GET`、没有请求体；taskqueue 用平台默认的 `2M`（入队的任务负载都远小于此），worker 只有一个 `GET` 状态端点、同样碰不到。
-- **webhook、taskqueue 与 worker 只在这个附录的范围内占一半。**它们的 `/api/**` 完全照本附录办事，但真正要紧的契约在别处：webhook 在它**发出去**的那份文档上（第九节），taskqueue 与 worker 在它们**读写的那几张 worker 表**上（第十节），那些东西都不由本仓库的任何一个端点承载。别把「这些端点都符合附录」读成「这几个域的兼容面已经覆盖了」。
+- **例外只有一个**：file-storage 的 `GET /api/file/blob` **成功**时答原始 `application/octet-stream` 字节而非信封，失败仍是信封。所以那一条路径上按状态码分支，别按 body 形状分支，理由与陷阱见第八节 8.6。除它之外，本附录对九个域一字不差地成立——包括 file-storage 自己的另外三条路径，以及它端口上任何由框架产生的响应（`TestUnknownPathKeepsTheEnvelope` 断言这一点，webhook 与 taskqueue 域各有一份同名的）。
+- **`ERR_TOO_LARGE` 的来源**：render / diff 的传输层上限是 `2M` 并另有域级字节检查；mailer 是 `10M`（base64 让附件涨三分之一），没有域级字节检查，正文超限是静默截断而不是拒绝；search 用平台默认的 `2M`，也没有域级字节检查——一份文档多大是 Phorge 的事，而语料大到成问题时那是存储的配置问题，不是线上的；file-storage 是 **`16M`**（文件是裸请求体），它的「域级」检查是各存储引擎自己的 `MaxFileSize()`——只有在请求**指名了引擎**时才答 413，未指名而所有引擎都收不下时答的是 503 `ERR_NO_ENGINE`；webhook 用平台默认的 `2M` 而且**永远碰不到它**，因为它的两个端点都是 `GET`、没有请求体；taskqueue 用平台默认的 `2M`（入队的任务负载都远小于此），worker 只有一个 `GET` 状态端点、同样碰不到；db-api 的七条路由全是 `GET`、没有请求体，同样碰不到，用平台默认的 `2M`。
+- **webhook、taskqueue 与 worker 只在这个附录的范围内占一半。**它们的 `/api/**` 完全照本附录办事，但真正要紧的契约在别处：webhook 在它**发出去**的那份文档上（第九节），taskqueue 与 worker 在它们**读写的那几张 worker 表**上（第十节），那些东西都不由本仓库的任何一个端点承载。别把「这些端点都符合附录」读成「这几个域的兼容面已经覆盖了」。db-api 与它们相反——它的契约面**完全**落在这些端点上（字段名、错误码都在应答里），只有 11.4 的库/表名约定是个例外，那是它查询的对象而非它的应答。
 
 **notification 的两个端口不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。

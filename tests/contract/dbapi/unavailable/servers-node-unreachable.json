@@ -1,0 +1,21 @@
+{
+  "name": "an unreachable node is reported in-band, not as an error",
+  "description": "GET /api/db/servers is the one endpoint that does not turn a dead database into a 5xx: an unreachable node appears in the array with connectionStatus 'fail', because 'this server is down' is exactly what the health report exists to say. So this is a 200, and the refKey (db1:3306) is present on purpose — it is the public identifier of the node, not a leak. What must still not appear is the configured password or a fragment of SQL: the health report may name the server it probed and carry the driver's reason, but never a credential or a query.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/servers",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.refKey", "data.0.connectionStatus"],
+    "jsonEquals": {
+      "data.0.refKey": "db1:3306",
+      "data.0.connectionStatus": "fail"
+    },
+    "jsonAbsent": ["error"],
+    "bodyNotContains": ["secret", "SELECT ", "INFORMATION_SCHEMA", "patch_status"]
+  }
+}

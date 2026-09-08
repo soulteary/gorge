@@ -1,0 +1,21 @@
+{
+  "name": "an unreachable database is an opaque 503 on schema-diff",
+  "description": "schema-diff must open a connection to walk INFORMATION_SCHEMA, and when it cannot it answers this domain's own ERR_DB_UNREACHABLE at 503 with a generic message. What the fixture really pins is what does not come back: not the host, not the port, not the database name, not a fragment of the SQL, not the password. A caller past the token check still gets no map of the cluster — the failure says only that a configured server is unreachable. A client that needs to know which server reads /readyz or /api/db/servers, which report it in-band.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/schema-diff",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 503,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": {
+      "error.code": "ERR_DB_UNREACHABLE",
+      "error.message": "a configured database server is unreachable"
+    },
+    "jsonAbsent": ["data"],
+    "bodyNotContains": ["db1", "3306", "phorge_", "INFORMATION_SCHEMA", "SELECT", "secret", "SCHEMATA"]
+  }
+}

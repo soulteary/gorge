@@ -1,0 +1,14 @@
+{
+  "name": "missing service token is rejected before the handler runs",
+  "description": "401 ERR_UNAUTHORIZED with no data field, on a route that would otherwise touch the database. The token is checked by the group middleware before the path is resolved or a connection is opened, so what the guard protects is the cluster's shape: a caller without the token learns nothing about which servers are configured, how they are replicating, or how far their migrations have run. Every one of the seven routes is behind the same guard; /api/db/servers stands in for all of them.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/servers"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_UNAUTHORIZED" },
+    "jsonAbsent": ["data"]
+  }
+}

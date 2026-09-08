@@ -496,6 +496,75 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- gorge-db-api: Phorge's MySQL cluster behind a read-only HTTP API ---
+  #
+  # The ninth domain, and another with a hard external dependency: it answers
+  # /api/db/** by running SHOW / SELECT / INFORMATION_SCHEMA against the MySQL
+  # a Phorge install is built on, reporting which servers are configured, how
+  # healthy each is, how its schema compares to what Phorge expects, and how
+  # far `bin/storage upgrade` has run. It owns no state of its own — every
+  # answer is derived live from the cluster it is pointed at.
+  #
+  # Same posture as gorge-webhook and gorge-taskqueue: the host is not a switch
+  # — there is nothing here to switch off. Left empty it falls through to
+  # 127.0.0.1, which inside a container is the container, and /readyz reports
+  # the failure. There is no MySQL in this compose file, so that is the state
+  # here; a deployment next to a real Phorge points GORGE_DB_MYSQL_HOST at that
+  # install's database and matches the namespace to its
+  # `storage.default-namespace`.
+  #
+  # The healthcheck probes /healthz rather than /readyz, and its dependency on
+  # MySQL must be `service_started`, never `service_healthy`. Both follow the
+  # same reasoning file-storage and webhook document: the DSN the readiness
+  # probe would dial names `{namespace}_meta_data`, a database created by
+  # `bin/storage upgrade` inside the Phorge container — which is ordered after
+  # this service. A `service_healthy` gate (or a /readyz healthcheck) would
+  # therefore deadlock first boot. This compose file declares no MySQL and no
+  # Phorge, so there is no depends_on to write here; the ordering constraint
+  # lives in the phorge-fork orchestration. See docs/modules/dbapi.md section 3
+  # and compat/phorge/README.md section 8.7.
+  gorge-db-api:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-db-api
+        PORT: 8080
+    image: ghcr.io/soulteary/gorge-db-api:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8080"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # Phorge's database. The service only reads — INFORMATION_SCHEMA, SHOW,
+      # and `{namespace}_meta_data.patch_status` — and needs no DDL rights.
+      # Empty host falls through to 127.0.0.1 and /readyz reports it unready;
+      # it is not a switch, there is nothing here to turn off.
+      GORGE_DB_MYSQL_HOST: ${GORGE_DB_MYSQL_HOST:-}
+      GORGE_DB_MYSQL_PORT: ${GORGE_DB_MYSQL_PORT:-3306}
+      GORGE_DB_MYSQL_USER: ${GORGE_DB_MYSQL_USER:-root}
+      GORGE_DB_MYSQL_PASS: ${GORGE_DB_MYSQL_PASS:-}
+      # Selects the databases as `{namespace}_meta_data` (and the rest), so it
+      # has to match the `storage.default-namespace` of the Phorge install.
+      GORGE_DB_NAMESPACE: ${GORGE_DB_NAMESPACE:-phorge}
+      # Optional path to a Phorge local.json. When set, the cluster topology is
+      # read from its `cluster.databases` and the scalars above are used only
+      # as per-node fallbacks. Blank = the single node described above. The
+      # path is resolved inside the container, so the file has to be mounted
+      # there first — a compose override adding a volume is the usual way.
+      GORGE_DB_CONFIG_FILE: ${GORGE_DB_CONFIG_FILE:-}
+    ports:
+      - "${GORGE_DB_API_PORT:-8080}:8080"
+    healthcheck:
+      # /healthz, not /readyz: a /readyz probe dials `{namespace}_meta_data`,
+      # which does not exist until `bin/storage upgrade` runs in the Phorge
+      # container that starts after this one — probing it here would deadlock
+      # first boot. See the comment above and compat/phorge/README.md 8.7.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
 networks:
   gorge:
     driver: bridge

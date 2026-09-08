@@ -6,7 +6,7 @@
 
 Gorge 是 Phorge（Phabricator 社区维护分支）的 Go 服务层单仓库。Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以常驻 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及将来 PHP 侧的适配层。
 
-当前产出九个二进制、承载**十个域**：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口，`gorge-mailer`、`gorge-search`、`gorge-file-storage`、`gorge-webhook`、`gorge-conduit`、`gorge-taskqueue` 与 `gorge-worker` 各独占一个进程与一个端口。其中 taskqueue 与 worker 是第一对拆成两个二进制的域——worker 是 taskqueue 的 HTTP 客户端（走 `TASK_QUEUE_URL` 租任务），两者独立伸缩，合进一个进程会把这层 HTTP 契约变成进程内调用。代码规模：生产代码 14397 行，测试代码 16201 行（约为生产代码的 1.13 倍），外加 101 份语言中立的契约固件（render 12 + diff 14 + notification 11 + mailer 10 + search 23 + file-storage 14 + webhook 5 + conduit 4 + taskqueue 8）与八份 e2e 冒烟脚本。
+当前产出十个二进制、承载**十一个域**：`gorge-render` 里住着 render 与 diff，`gorge-notification` 独占一个进程与两个端口，`gorge-mailer`、`gorge-search`、`gorge-file-storage`、`gorge-webhook`、`gorge-conduit`、`gorge-taskqueue`、`gorge-worker` 与 `gorge-db-api` 各独占一个进程与一个端口。其中 taskqueue 与 worker 是第一对拆成两个二进制的域——worker 是 taskqueue 的 HTTP 客户端（走 `TASK_QUEUE_URL` 租任务），两者独立伸缩，合进一个进程会把这层 HTTP 契约变成进程内调用。最新迁入的 db-api 是此前最复杂的一个，它同时是「只读」（像 file-storage）与「由入站请求驱动」（像 render）的第一个交集，对着 Phorge 的 MySQL 集群现查自省、不改动任何东西。代码规模：生产代码 17233 行，测试代码 19503 行（约为生产代码的 1.13 倍），外加 114 份语言中立的契约固件（render 12 + diff 14 + notification 11 + mailer 10 + search 23 + file-storage 14 + webhook 5 + conduit 4 + taskqueue 8 + db-api 13）与九份 e2e 冒烟脚本。
 
 ### 1.1 为什么要替换掉进程内实现
 
@@ -26,6 +26,8 @@ mailer、search 与 file-storage 的动机又换了一种：它们替换的是**
 
 webhook 的动机又是一种新的，而它是六种动机里唯一一个**被替换掉的东西不是一次调用**的：它替换的是 phd 的 `HeraldWebhookWorker`，也就是 Phorge 守护进程池里的一份常驻负载。所以省下的既不是进程创建开销、也不是一条运行时依赖，而是**PHP 守护进程的工作量**——那也正是它不能被做成「PHP 调 Go 的投递代理」的原因，那样 Go 就只是个 HTTP 转发器，这个核心价值全没了。代价是它成了唯一一个**没有调用方**的域：队列是数据库里的一张表，PHP 侧写它、Go 侧排空它，两边之间一次 HTTP 都不发。由此得到的兼容边界形状也是独一份的——它分成性质相反的两半，出站的那半（payload 字节与 HMAC 签名）**会**报错，只是错误发生在第三方的服务器上；回写的那半（`status` / `lastRequestResult` / `properties.error*`）完全静默，而其中 `status` 的取值范围还是 Go 侧整个抢占机制的地基（见 [`modules/webhook.md`](modules/webhook.md) 第 3.1 与第 5 节）。
 
+db-api 的动机回到「有外部依赖」这一类，但它替换的东西又与前几个不同：它替换的是 Phorge **自己 PHP 内联**跑的那批集群自省——`PhabricatorDatabaseRef::queryAll` 逐台探连接与复制、`PhabricatorDatabaseSetupCheck` / `PhabricatorMySQLSetupCheck` 检环境、`PhabricatorConfigSchemaQuery` 比对 schema、读 `patch_status` 报迁移进度。省下的是把这些**散在 PHP 请求路径里的、要临时连一圈库的**动作收拢成一个常驻服务，让 PHP 侧只发一次 HTTP。它的兼容边界因此又与众不同：它**只读**（不改集群，所以没有 file-storage 那种存量数据可达性的风险、也没有 webhook 那种双消费者的耦合），字段名一律 camelCase（迁入时从旧 snake_case 改过来）且直接被 PHP 的那几个类按键读，其中 `isFatal` 是唯一一个改错会改变 Phorge **启动决策**的字段（见 [`modules/dbapi.md`](modules/dbapi.md) 第 5 节与 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第十一节）。它也把 file-storage 8.7 那条首启死锁的教训又推进一步：探测 DSN 干脆不带库名，因为 go-sql-driver 在握手阶段就会发库名，而 `{namespace}_meta_data` 要等 Phorge 建。
+
 conduit 的动机又是一种前面都没出现过的，而它是八个域里唯一一个**消费方不是 Phorge PHP 而是其它 Go 服务**的：前七个域都在 Phorge 前面被 Phorge 调用，conduit 挡在 Phorge 前面、被别的 Go 服务调用。它替换的既不是子进程、也不是运行时依赖、也不是某个外部存储/投递通道，而是一种**调用拓扑**——把「各 Go 服务直连 Phorge `/api/*`」的多对一直连改成「多对一经网关」，在网关层收敛鉴权/限流/审计。它的兼容边界形状也是独一份的：不是输出格式、不是别名表，而是**错误信封必须是 Conduit 专用的 `{result,error_code,error_info}`**（不是其它域的 `{data,error}`）且成功路径必须纯透传（见 [`modules/conduit.md`](modules/conduit.md) 第 5 节）。而「失效时不报错」这个特征在这里同样成立。
 
 ## 2. 仓库结构
@@ -41,6 +43,7 @@ conduit 的动机又是一种前面都没出现过的，而它是八个域里唯
 │   ├── cmd/gorge-webhook/    同上；唯一一个除 httpx.Server 外还起一个后台 goroutine 的入口
 │   ├── cmd/gorge-taskqueue/  同上；被动服务，无后台循环；MySQL 或 Redis 后端
 │   ├── cmd/gorge-worker/     同上；起一个租约循环 goroutine，Ready 为 nil（就绪即存活）
+│   ├── cmd/gorge-db-api/      同上；被动服务，无后台循环；Ready 只查「至少一台 master 能 ping 通」，探测 DSN 不带库名
 │   ├── cmd/gorge-conduit/    同上；唯一一个消费方是其它 Go 服务而非 Phorge PHP 的入口
 │   ├── internal/contracts/   线上数据结构，PHP / Go / OpenAPI / 固件的唯一真源
 │   ├── internal/contracttest/ 契约固件 runner，各域写一个 wrapper 指向自己的目录
@@ -54,6 +57,7 @@ conduit 的动机又是一种前面都没出现过的，而它是八个域里唯
 │   ├── internal/webhook/     webhook 域：Dispatcher 轮询循环 + Store 接口 + 两个只读路由
 │   ├── internal/taskqueue/   taskqueue 域：Store 接口 + MySQL/Redis 两实现 + db.go + 十条 /api/queue 路由
 │   ├── internal/worker/      worker 域：Consumer 租约循环 + Registry + Client + handlers/（Conduit 委派）
+│   ├── internal/dbapi/       db-api 域：Health/Diff/Setup/Migration 四 service + Router 分区路由 + 七条只读 /api/db 路由
 │   ├── internal/conduit/     conduit 域：反向代理 + IP 令牌桶限流 + 鉴权中间件 + 路由
 │   └── Dockerfile            一份 Dockerfile 服务所有二进制（ARG SERVICE 选择）
 ├── api/openapi/render.yaml   render 域的 HTTP 契约
@@ -64,6 +68,7 @@ conduit 的动机又是一种前面都没出现过的，而它是八个域里唯
 ├── api/openapi/file-storage.yaml  file-storage 域的 HTTP 契约（含唯一一个非信封响应）
 ├── api/openapi/webhook.yaml  webhook 域的 HTTP 契约（只读；投出去的那份文档另有一节描述）
 ├── api/openapi/taskqueue.yaml taskqueue 与 worker 两域的 HTTP 契约（/api/queue/** + /api/worker/stats）
+├── api/openapi/dbapi.yaml    db-api 域的 HTTP 契约（七条只读 /api/db/**）
 ├── api/openapi/conduit.yaml  conduit 域的 HTTP 契约（反代网关；错误用 Conduit 信封）
 ├── compat/phorge/README.md   与 Phorge 的兼容约束，改动前必读
 ├── deploy/compose/           本地与单机部署编排
@@ -100,7 +105,7 @@ conduit 的动机又是一种前面都没出现过的，而它是八个域里唯
 |---|---|---|---|
 | 平台层 | `internal/platform/{httpx,auth,health,config}` | HTTP 引导、鉴权、探针、配置读取 | 只依赖标准库与三方库 |
 | 契约层 | `internal/contracts` | 线上数据结构，无行为 | 无 |
-| 域层 | `internal/render`、`internal/diff`、`internal/notification`、`internal/mailer`、`internal/search`、`internal/filestorage`、`internal/webhook`、`internal/conduit`、`internal/taskqueue`、`internal/worker` | 业务逻辑与路由 | 平台层 + 契约层 |
+| 域层 | `internal/render`、`internal/diff`、`internal/notification`、`internal/mailer`、`internal/search`、`internal/filestorage`、`internal/webhook`、`internal/conduit`、`internal/taskqueue`、`internal/worker`、`internal/dbapi` | 业务逻辑与路由 | 平台层 + 契约层 |
 
 平台层不含任何业务知识：`httpx.Config` 里没有一个字段提到高亮，`auth.Token` 不知道自己保护的是哪些路由，`config.Base` 只有 `ListenAddr` 与 `ServiceToken` 两个「每个服务都有」的字段。
 
@@ -118,6 +123,7 @@ var forbiddenPrefixes = []string{
 	"github.com/soulteary/gorge/go/internal/filestorage",
 	"github.com/soulteary/gorge/go/internal/webhook",
 	"github.com/soulteary/gorge/go/internal/conduit",
+	"github.com/soulteary/gorge/go/internal/dbapi",
 	"github.com/soulteary/gorge/go/internal/taskqueue",
 	"github.com/soulteary/gorge/go/internal/worker",
 	"github.com/soulteary/gorge/go/internal/contracts",
@@ -128,11 +134,11 @@ var forbiddenPrefixes = []string{
 
 注意 `contracts` 也在禁止列表里。平台层如果引用了某个域的线上结构，`httpx` 就会带上一份业务相关的 JSON 定义，拆分时同样会拽出依赖。
 
-**新增域包时要同步往 `forbiddenPrefixes` 里加一行**，否则这个测试对新域是失效的——它照样通过，只是不再检查任何新东西。除 render 之外的九行都是各自迁入时手工补的（taskqueue 与 worker 各一行），这是目前唯一需要人工维护的地方，改进建议见 [`findings.md`](findings.md) 第 8 条。
+**新增域包时要同步往 `forbiddenPrefixes` 里加一行**，否则这个测试对新域是失效的——它照样通过，只是不再检查任何新东西。除 render 之外的十行都是各自迁入时手工补的（taskqueue 与 worker 各一行），这是目前唯一需要人工维护的地方，改进建议见 [`findings.md`](findings.md) 第 8 条。
 
 ### 3.2 契约层：四个消费方的唯一真源
 
-`internal/contracts` 一共 686 行（`render.go` 20 + `diff.go` 42 + `notification.go` 37 + `mailer.go` 74 + `search.go` 150 + `filestorage.go` 41 + `webhook.go` 81 + `conduit.go` 56 + `taskqueue.go` 185），装的是过网络的数据结构，包注释写明了它的地位：
+`internal/contracts` 一共 837 行（`render.go` 20 + `diff.go` 42 + `notification.go` 37 + `mailer.go` 74 + `search.go` 150 + `filestorage.go` 41 + `webhook.go` 81 + `conduit.go` 56 + `taskqueue.go` 185 + `dbapi.go` 151），装的是过网络的数据结构，包注释写明了它的地位：
 
 ```go
 // It is the single source of truth for what goes over the network: nothing in
@@ -142,7 +148,7 @@ var forbiddenPrefixes = []string{
 四个消费方围着它转：
 
 ```
-   internal/contracts/{render,diff,notification,mailer,search,filestorage,webhook,conduit,taskqueue}.go
+   internal/contracts/{render,diff,notification,mailer,search,filestorage,webhook,conduit,taskqueue,dbapi}.go
                                 │
         ┌───────────────┬───────┴───────┬────────────────┐
         ▼               ▼               ▼                ▼

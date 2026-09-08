@@ -27,10 +27,12 @@ func runAllInBackground(servers ...*Server) <-chan error {
 func waitForListener(t *testing.T, s *Server) string {
 	t.Helper()
 
+	client := noKeepAliveClient()
+	defer client.CloseIdleConnections()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if addr := s.ListenerAddr(); addr != nil {
-			resp, err := http.Get("http://" + addr.String() + "/healthz")
+			resp, err := client.Get("http://" + addr.String() + "/healthz")
 			if err == nil {
 				_ = resp.Body.Close()
 				return addr.String()
@@ -41,6 +43,10 @@ func waitForListener(t *testing.T, s *Server) string {
 
 	t.Fatal("server never started listening")
 	return ""
+}
+
+func noKeepAliveClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 }
 
 // terminate delivers a real SIGTERM to the test process, the only way to reach
@@ -127,7 +133,18 @@ func TestRunAllDrainsInFlightRequests(t *testing.T) {
 	}
 	answered := make(chan result, 1)
 	go func() {
-		resp, err := http.Get("http://" + addr + "/slow")
+		client := noKeepAliveClient()
+		defer client.CloseIdleConnections()
+		req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/slow", nil)
+		if err != nil {
+			answered <- result{err: err}
+			return
+		}
+		// Fiber deliberately leaves keep-alive connections open during graceful
+		// shutdown. Close this one after its response so the test measures the
+		// in-flight handler drain rather than the client's idle connection pool.
+		req.Close = true
+		resp, err := client.Do(req)
 		if err != nil {
 			answered <- result{err: err}
 			return

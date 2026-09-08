@@ -1,0 +1,21 @@
+{
+  "name": "the charset set is reported per server",
+  "description": "GET /api/db/charset-info reports the charset and collation set each node supports, choosing utf8mb4 when the server has it and falling back to the binary/utf8 pair otherwise — the same choice PhabricatorStorageManagementAPI makes, so Phorge's schema comparison sees the inputs it expects. The seeded node has utf8mb4, so it reports the utf8mb4 set keyed by its refKey.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/charset-info",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.refKey"],
+    "jsonEquals": {
+      "data.0.refKey": "db1:3306",
+      "data.0.charsetDefault": "utf8mb4",
+      "data.0.collateText": "utf8mb4_bin"
+    },
+    "jsonAbsent": ["error"]
+  }
+}

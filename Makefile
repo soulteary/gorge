@@ -15,6 +15,7 @@ SEARCH_URL        ?= http://127.0.0.1:8120
 FILESTORAGE_URL   ?= http://127.0.0.1:8100
 WEBHOOK_URL       ?= http://127.0.0.1:8160
 TASKQUEUE_URL     ?= http://127.0.0.1:8090
+DBAPI_URL         ?= http://127.0.0.1:8080
 
 .DEFAULT_GOAL := help
 
@@ -92,7 +93,7 @@ compose-logs: ## Tail service logs
 ## --- Tests ----------------------------------------------------------------
 
 .PHONY: e2e
-e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
+e2e: ## Run all e2e smoke tests against their configured URLs
 	# render and diff share one binary on one port, so those two are two
 	# scripts against one BASE_URL rather than two deployments. notification is
 	# a separate binary and needs both of its ports; every service under test
@@ -125,6 +126,10 @@ e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
 	# taskqueue's smoke test mutates the queue: it enqueues, leases and
 	# completes one PhabricatorTestWorker row, leaving the expected archive row.
 	BASE_URL=$(TASKQUEUE_URL) bash tests/e2e/taskqueue.sh
+	# db-api is read-only, but needs a configured MySQL node to exercise its
+	# successful schema and migration paths; unreachable-node behavior is still
+	# covered when no MySQL server is present.
+	BASE_URL=$(DBAPI_URL) bash tests/e2e/dbapi.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts
