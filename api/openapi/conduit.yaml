@@ -1,0 +1,342 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Conduit Gateway API
+  description: |
+    HTTP contract for the `gorge-conduit` binary, a reverse-proxy gateway in
+    front of Phorge's Conduit API. It is the odd one out in this repository:
+    every other domain answers calls that originate in Phorge's PHP, while this
+    one sits between the *other Go services* and Phorge and answers calls that
+    go to it. It replaces each service dialling Phorge's `/api/*` directly,
+    folding service-token authentication, per-IP rate limiting and request
+    auditing into a single gateway.
+
+    Two response shapes coexist, and both differ from the rest of the repo:
+
+    - `ANY /api/{method}` proxies to `{upstream}/api/{method}`. On success the
+      upstream's status code, headers and body are passed through verbatim —
+      the gateway does not wrap or re-encode them, so the shape is whatever the
+      Conduit method returns. On failure the gateway answers with the **Conduit
+      envelope** `{result, error_code, error_info}`, not the platform's
+      `{data, error}`. This is deliberate: callers of a Conduit endpoint already
+      parse Phorge's own error shape, so the gateway speaks it too. See
+      `go/internal/contracts/conduit.go` for the note recording this exception.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes and load
+      balancers consume them directly. Do not "unify" them.
+
+    The error codes are hyphenated (`ERR-CONDUIT-AUTH`), matching Phorge's
+    Conduit convention, and are *not* the underscored platform codes
+    (`ERR_UNAUTHORIZED`) used elsewhere in Gorge.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8150
+    description: Local development
+
+tags:
+  - name: proxy
+    description: Conduit API reverse proxy
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/{method}:
+    parameters:
+      - name: method
+        in: path
+        required: true
+        schema:
+          type: string
+        description: |
+          The Conduit method name, e.g. `conduit.ping` or `conduit.search`. It
+          is appended to the upstream base URL as `{upstream}/api/{method}`.
+    get:
+      tags: [proxy]
+      summary: Proxy a Conduit call (GET)
+      description: &proxyDesc |
+        Forwards the request to `{upstream}/api/{method}`, preserving the query
+        string, method and body. Every HTTP method is accepted and passed
+        through, so a Conduit method that expects POST is called with POST.
+
+        The gateway filters hop-by-hop headers (`Connection`, `Keep-Alive`,
+        `Proxy-Authenticate`, `Proxy-Authorization`, `Te`, `Trailer`,
+        `Transfer-Encoding`, `Upgrade`) and injects `X-Forwarded-For`,
+        `X-Forwarded-Proto` and `X-Conduit-Gateway: go-conduit`. Redirects from
+        the upstream are returned as-is rather than followed.
+
+        On success the upstream's status code, headers and body are passed
+        through unchanged; the body shape is whatever the Conduit method
+        returns. Only failures the gateway itself produces carry the Conduit
+        error envelope below.
+      operationId: proxyConduitGet
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          $ref: '#/components/responses/ProxyPassthrough'
+        '400':
+          $ref: '#/components/responses/MissingMethod'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamFailed'
+    post:
+      tags: [proxy]
+      summary: Proxy a Conduit call (POST)
+      description: *proxyDesc
+      operationId: proxyConduitPost
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              params: '{}'
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          $ref: '#/components/responses/ProxyPassthrough'
+        '400':
+          $ref: '#/components/responses/MissingMethod'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamFailed'
+    put:
+      tags: [proxy]
+      summary: Proxy a Conduit call (PUT)
+      description: *proxyDesc
+      operationId: proxyConduitPut
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          $ref: '#/components/responses/ProxyPassthrough'
+        '400':
+          $ref: '#/components/responses/MissingMethod'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamFailed'
+    delete:
+      tags: [proxy]
+      summary: Proxy a Conduit call (DELETE)
+      description: *proxyDesc
+      operationId: proxyConduitDelete
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          $ref: '#/components/responses/ProxyPassthrough'
+        '400':
+          $ref: '#/components/responses/MissingMethod'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamFailed'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: Always succeeds while the process is serving. Never authenticated.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once the service can accept traffic. The gateway is stateless
+        and does not dial its upstream to decide it is up, so it reports ready
+        as soon as it is listening — readiness here means the same thing as
+        liveness. A proxied call still fails 502 when the upstream is
+        unreachable; that condition is deliberately not folded into this probe,
+        because it reports Phorge's health, not the gateway's.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: |
+        Preferred form. When the server's configured token is empty, all
+        requests pass unauthenticated. Compared in constant time.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        Fallback for callers that cannot set headers. Checked only when
+        `X-Service-Token` is absent.
+
+  schemas:
+
+    ConduitError:
+      type: object
+      required: [result, error_code, error_info]
+      description: |
+        The Conduit-compatible error envelope. This is Phorge's own error
+        shape, not Gorge's `{data, error}`, so callers already parsing a
+        Conduit response handle gateway failures with the same logic.
+      properties:
+        result:
+          nullable: true
+          description: Always null on error.
+          example: null
+        error_code:
+          type: string
+          description: Stable machine-readable code; clients branch on this.
+          enum:
+            - ERR-CONDUIT-CORE
+            - ERR-CONDUIT-AUTH
+            - ERR-RATE-LIMIT
+            - ERR-CONDUIT-PROXY
+        error_info:
+          type: string
+          description: Human-readable detail. Wording is not part of the contract.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+      description: |
+        Bare probe payload, deliberately outside any envelope.
+
+  responses:
+
+    ProxyPassthrough:
+      description: |
+        The upstream answered. Its status code, headers and body are returned
+        verbatim; the body shape is whatever the Conduit method produces, which
+        is Phorge's own `{result, error_code, error_info}` envelope for a
+        Conduit call. The gateway does not touch it on the success path.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+          example:
+            result:
+              phid: PHID-USER-xxxx
+            error_code: null
+            error_info: null
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    MissingMethod:
+      description: |
+        No Conduit method was given in the path — the caller reached `/api/`
+        with an empty method segment. Produced by the proxy handler before any
+        upstream request is made.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConduitError'
+          example:
+            result: null
+            error_code: ERR-CONDUIT-CORE
+            error_info: No Conduit method specified.
+
+    Unauthorized:
+      description: |
+        Missing or invalid service token. Checked by the gateway's auth
+        middleware before rate limiting or proxying, using a constant-time
+        comparison. When the configured token is empty this response never
+        occurs — all calls pass.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConduitError'
+          example:
+            result: null
+            error_code: ERR-CONDUIT-AUTH
+            error_info: Invalid or missing service token.
+
+    RateLimited:
+      description: |
+        The per-client-IP token bucket is empty. Only reachable when
+        `GORGE_CONDUIT_RATE_LIMIT_RPS` is a positive value; at the default of 0
+        rate limiting is disabled and this response never occurs. Methods in
+        `GORGE_CONDUIT_RATE_LIMIT_EXEMPT` are never throttled.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConduitError'
+          example:
+            result: null
+            error_code: ERR-RATE-LIMIT
+            error_info: Rate limit exceeded.
+
+    UpstreamFailed:
+      description: |
+        The gateway could not build or complete the upstream request — the
+        upstream is unreachable, timed out, or refused the connection. In a
+        pure service-layer stack, where no Phorge container is declared, every
+        proxied call lands here because `GORGE_CONDUIT_UPSTREAM_URL` points at a
+        host that does not resolve. That is the absence of an upstream, not a
+        broken gateway.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConduitError'
+          example:
+            result: null
+            error_code: ERR-CONDUIT-PROXY
+            error_info: Upstream request failed.

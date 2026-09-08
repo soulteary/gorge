@@ -1,0 +1,19 @@
+{
+  "name": "no Conduit method in URI is rejected",
+  "description": "A request to /api with no method segment is answered ERR-CONDUIT-CORE (400) in the Conduit envelope, not a platform 404. The gateway registers the method-less path explicitly for this: an empty method is a client error the caller can act on, and it must be reported in the same shape as every other gateway failure. The request carries the service token so the check reached here is the method one, not auth.",
+  "request": {
+    "method": "GET",
+    "path": "/api",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    },
+    "body": ""
+  },
+  "expect": {
+    "status": 400,
+    "jsonHas": ["error_code", "error_info"],
+    "jsonEquals": { "error_code": "ERR-CONDUIT-CORE" },
+    "jsonAbsent": ["data", "error"],
+    "bodyContains": ["\"result\":null"]
+  }
+}
