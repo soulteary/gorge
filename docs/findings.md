@@ -233,15 +233,28 @@ Aphlict 的 admin server 对非 POST 的 `/` 回 405（`support/aphlict/server/l
 
 ## search 模块
 
-### 17. Meilisearch 后端零测试覆盖
+### 17. Meilisearch 后端的测试补上了，但补测试并没有发现它的第一个真 bug（**已改，登记教训**）
 
-**影响**：中。它是两个真实后端之一，且没有任何一层碰到它。
+**影响**：中→低。覆盖率已从 `[no test files]` 到 91.5%，但这条留下来，因为它记的是一件比覆盖率更有用的事。
 
-`internal/search/engine/meilisearch/` 目前是全仓库唯一一个 `[no test files]` 的非 `cmd` 包。它不影响 PHP 契约——契约在 `internal/search` 那一层，两个后端之下——所以迁入时刻意没有扩大范围去补它。但「不影响契约」不等于「不会坏」：它自己翻译查询、自己管索引设置、自己实现 `IndexIsSane`，这些都只有它一份，坏掉的表现是配了 Meilisearch 的部署检索行为不对，而 Elasticsearch 那条路径的测试一条都不会红。
+原始条目说这个包零覆盖、说 Elasticsearch 的 `backend_test.go` 是可以照抄的模板。测试后来照着补了，覆盖率也上去了，**然后第一次把服务对着真 Meilisearch 跑，第一个查询就 400 了**：
 
-Elasticsearch 后端的测试是可以照抄的模板：`backend_test.go` 用 `httptest` 起一个假集群，断言请求打到的路径、发出去的 spec 形状与 `configDeepMatch` 的判定。Meilisearch 的 HTTP 面更小，照这个形状写一份不需要新设施。
+```
+Attribute `id` is not filterable.
+```
 
-**建议**：优先补三处，它们各对应一个只有这个后端才有的决定——查询翻译（`filter` 表达式的拼法）、索引设置的比对（`IndexIsSane` 在这个后端上比 ES 宽得多）、以及 `apiKey` 不出现在 `Info()` 里。第三条最要紧，因为它是 7.1 那条凭据约束在这个后端上的唯一落点，而 `tests/contract/search/list-backends.json` 跑的是 `test` 后端，看不到它。
+`buildFilters()` 把 `SearchQuery.Exclude` 渲染成 `id != {phid}`，而 `filterableAttributes()` 只声明了 `docType` 与那批 relationship。Meilisearch 不给主键破例，所以**每一个带 `exclude` 的查询都失败**，而不是少排除一条。
+
+值得记的是**两条测试为什么都是绿的**：
+
+- `TestBuildFiltersExclude` 只断言渲染出的字符串是 `id != PHID-TASK-9`——它是对的，问题不在这一侧。
+- `TestIndexIsSane` 拿 `filterableAttributes()` 同时当实际值和期望值，所以它比对的是那个函数**和它自己**。
+
+也就是说两侧都来自同一份误解，于是它们一起错、一起通过。这与第 42 条 `MySQLStore` 的形状完全相同，只是那里的边界是 SQL 驱动、这里是 Meilisearch 的过滤器声明规则。
+
+修法是给 `filterableAttributes()` 加上 `id`。**新增的测试刻意不是"期望列表里应该有 id"**——那还是在重述——而是 `TestEveryFilterableAttributeIsDeclared`：把一个触达每条过滤分支的查询交给 `buildFilters()`，取出每个表达式的属性名，断言它都在 `filterableAttributes()` 里。它把两个函数绑在了一起，所以抓的是这一类而不是这一个。它也自带一条空转防护（渲染出零个过滤器就 fail），否则一个什么都不产出的 `buildFilters` 会让它假通过。
+
+**教训**：一个后端的"HTTP 面更小、照抄一份不需要新设施"是真的，但照抄出来的 fake 只能证明本域**以为**对端会怎么答。这个包 91.5% 的覆盖率是在那次 400 之前就达到的。
 
 ### 18. CJK mapping 变更强制全量重建索引（**已改，登记代价**）
 
@@ -293,6 +306,29 @@ JSON 写错了落在与「还没配」同一个地方——零个后端、`/read
 **不要据此收敛 Go 侧的五个码。**它们的价值在另外两个消费方上，都真实存在：`bin/search` 的输出，以及运维读 502 响应体时看到的那个字符串。收敛成一个码，那两处拿到的就只有「搜索服务返回了 502」。
 
 要记的只有一件事：**别在 Go 侧新增一个「PHP 必须按码分支」的搜索域错误码而不同时覆盖 `newServiceErrorException()`。**那种码写出来会看起来生效，实际上没有读者——形状与 `compat/phorge/README.md` 第 5.3 节末尾那条「不要指望用响应体给 PHP 侧传递失败原因」相同。
+
+### 46. Elasticsearch 后端只在 ES 5 上能建索引，而文档声称支持 7/8（**已改，登记原因**）
+
+**影响**：高。配了 ES 7/8 的部署检索完全不可用，且不是退化而是从建索引就失败。
+
+`buildIndexConfig()` 原本无条件按文档类型给 mapping 分 key（`mappings[docType]`），那是 Phorge 自带引擎的布局，也是 ES 5 及更早的模型。但 **ES 6 把一个索引收紧到只能有一个 mapping type，ES 7 起把 type 整个移除了**，而本域要索引七种类型。于是对着 ES 7 集群调 `POST /api/search/init` 直接拿到：
+
+```
+mapper_parsing_exception: Root mapping definition has unsupported parameters: [PSTE : ...] [TASK : ...] ...
+```
+
+代码里唯一的版本分支是 `version >= 5`，它只切文本字段类型（`text`/`string`）与 relationship 的写法，**从来没有处理过 type 被移除这件事**。而 `.env.example` 与 `docker-compose.gorge.yml` 的注释都写着「ES 7 / 8 都走 >= 5 的那条分支，填准确的值只是为了日志好读」——那句话是错的，`version` 恰恰是本文件里最不能填错的一项。
+
+顺着这条查出的另外两处同源缺陷，都属于**旧写法在新集群上不是被忽略而是被拒绝**：
+
+- **`include_in_all`**：`_all` 在 6.0 随之移除，mapping 里再提它就会被拒。原先无条件写出。
+- **`not` 查询**：`exclude` 用的是 `{"not": {"ids": ...}}`，而 `not` 在 2.0 弃用、**5.0 移除**。也就是说它在本后端支持的每一个版本上都只换回一个解析错误，**从来没有真的排除过任何东西**——包括默认的 ES 5。这一处没有任何测试覆盖，而 `esquery` 里 `AddMustNot` 一直存在、一直没被用上。
+
+三处的修法与形状见 [`modules/search.md`](modules/search.md) 第 3.6 节。`must_not` 从 1.x 起语义未变，所以那一处不需要版本分支，对每个版本都是修复。
+
+**登记的代价与第 18 条同源**：`version >= 6` 的 mapping 形状与 `< 6` 不同，所以从 ES 5 迁到 6/7 不是改一个数字，**必须重建索引**。`IndexIsSane()` 会明确报 false，所以这件事是响的，不是静默的。
+
+**这条也是"真后端才验得到"的又一例**，与第 17 条成对：ES 后端 83.5% 的覆盖率、`httptest` 假集群里断言的路径与 spec 形状，全都通过了——因为假集群对什么请求都答 200，而 `mapper_parsing_exception` 只有真 ES 会说。`tests/e2e/search.sh` 第 5 条是唯一能问出这个问题的地方，而它要一个真集群才有意义。现在 `deploy/compose/demo/` 提供了一个（ES 7.17 + Meilisearch 同时挂上），18 条场景在两个后端上各自全过。
 
 ---
 

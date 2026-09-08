@@ -2,9 +2,11 @@ package elasticsearch
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -300,6 +302,256 @@ func roundTrip(t *testing.T, v map[string]any) map[string]any {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
 	}
+	return out
+}
+
+// --- mapping types across versions -----------------------------------------
+//
+// Elasticsearch 6 narrowed an index to one mapping type and 7 removed types
+// altogether, which moves a document's type out of the index's structure and
+// into a field on the document. The tests below pin all three shapes, because
+// the failure mode of the 7.x one is total: a multi-type mapping is rejected
+// with mapper_parsing_exception, so the index is never created and every later
+// request fails for want of it.
+
+func esBackend(version int) *Backend {
+	return newBackend(engine.BackendDef{Hosts: []string{"es:9200"}, Version: version})
+}
+
+// Version 5 keeps Phorge's layout verbatim: one identical property set per
+// document type. This is the regression guard for the branch — the shape below
+// is what an index shared with Phorge's own engine has to have.
+func TestVersion5KeepsAMappingPerDocumentType(t *testing.T) {
+	cfg := esBackend(5).buildIndexConfig([]string{"TASK", "DREV"})
+
+	mappings := dig(t, cfg, "mappings").(map[string]any)
+	if len(mappings) != 2 {
+		t.Fatalf("expected one mapping per document type, got %d: %v", len(mappings), mappings)
+	}
+	for _, docType := range []string{"TASK", "DREV"} {
+		dig(t, cfg, "mappings", docType, "properties", esquery.FieldTitle)
+	}
+	// The type is the mapping, so it must not also be a field.
+	if props, ok := dig(t, cfg, "mappings", "TASK", "properties").(map[string]any); ok {
+		if _, exists := props[fieldDocType]; exists {
+			t.Error("a typed mapping must not also carry a docType field")
+		}
+	}
+}
+
+// Version 7 carries the properties at the mapping's root, with no type level of
+// any kind.
+func TestVersion7HasNoMappingTypes(t *testing.T) {
+	cfg := esBackend(7).buildIndexConfig([]string{"TASK", "DREV", "CMIT"})
+
+	mappings := dig(t, cfg, "mappings").(map[string]any)
+	if _, ok := mappings["properties"]; !ok {
+		t.Fatalf("expected properties at the mapping root, got keys %v", sortedMapKeys(mappings))
+	}
+	if len(mappings) != 1 {
+		t.Errorf("the mapping root must hold nothing but properties, got %v", sortedMapKeys(mappings))
+	}
+	// The document types must not have leaked back in under any spelling.
+	for _, docType := range []string{"TASK", "DREV", "CMIT", docEndpointType} {
+		if _, exists := mappings[docType]; exists {
+			t.Errorf("%q must not be a mapping type on version 7", docType)
+		}
+	}
+}
+
+// The document types stop shaping the mapping entirely, so the same index
+// serves any list of them. This is what makes it safe for InitIndex to keep
+// taking the argument.
+func TestVersion7MappingIgnoresTheDocumentTypeList(t *testing.T) {
+	b := esBackend(7)
+	one := roundTrip(t, b.buildIndexConfig([]string{"TASK"}))
+	many := roundTrip(t, b.buildIndexConfig([]string{"TASK", "DREV", "CMIT", "USER"}))
+
+	if !reflect.DeepEqual(one, many) {
+		t.Error("the version 7 mapping must not depend on which document types are passed")
+	}
+}
+
+// With the type gone from the mapping and the URL, this field is the only
+// record of it, and a type-scoped query filters on it. Analysed it would match
+// the four-character constants approximately, which for a filter is wrong.
+func TestVersion7IndexesTheDocumentTypeAsAKeyword(t *testing.T) {
+	cfg := esBackend(7).buildIndexConfig([]string{"TASK"})
+
+	field := dig(t, cfg, "mappings", "properties", fieldDocType).(map[string]any)
+	if field["type"] != "keyword" {
+		t.Errorf("expected docType to be a keyword, got %v", field["type"])
+	}
+}
+
+// Version 6 wants exactly one mapping type and no more, conventionally _doc.
+func TestVersion6NestsASingleMappingType(t *testing.T) {
+	cfg := esBackend(6).buildIndexConfig([]string{"TASK", "DREV"})
+
+	mappings := dig(t, cfg, "mappings").(map[string]any)
+	if len(mappings) != 1 {
+		t.Fatalf("expected exactly one mapping type, got %v", sortedMapKeys(mappings))
+	}
+	dig(t, cfg, "mappings", docEndpointType, "properties", fieldDocType)
+}
+
+// _all was removed in 6.0, and a mapping that still mentions include_in_all is
+// rejected rather than ignored — so this is not tidiness, it is the difference
+// between an index that gets created and one that does not.
+func TestIncludeInAllIsOmittedFromVersion6Onwards(t *testing.T) {
+	for _, version := range []int{6, 7, 8} {
+		cfg := roundTrip(t, esBackend(version).buildIndexConfig([]string{"TASK"}))
+		if where := findKey(cfg, "include_in_all"); where != "" {
+			t.Errorf("version %d: include_in_all must not appear, found at %s", version, where)
+		}
+	}
+	// It has to stay on 5, where _all still exists and Phorge writes it: an
+	// index missing it would report itself insane against Phorge's engine.
+	cfg := roundTrip(t, esBackend(5).buildIndexConfig([]string{"TASK"}))
+	if findKey(cfg, "include_in_all") == "" {
+		t.Error("version 5 must keep include_in_all, which Phorge's own mapping carries")
+	}
+}
+
+// A typeless cluster reads a type in the URL as an index name, so leaving it
+// there would write into an index nobody created instead of the one configured.
+func TestVersion7IndexesThroughTheDocEndpoint(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	b := newBackend(engine.BackendDef{
+		Hosts:   []string{strings.TrimPrefix(srv.URL, "http://")},
+		Version: 7,
+	})
+	if err := b.IndexDocument(&contracts.Document{PHID: "PHID-TASK-1", Type: "TASK"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/phabricator/_doc/PHID-TASK-1"; gotPath != want {
+		t.Errorf("expected %s, got %s", want, gotPath)
+	}
+}
+
+func TestVersion7DocumentCarriesItsType(t *testing.T) {
+	spec := esBackend(7).buildDocSpec(&contracts.Document{PHID: "PHID-TASK-1", Type: "TASK"})
+	if spec[fieldDocType] != "TASK" {
+		t.Errorf("expected the document to carry its type, got %v", spec[fieldDocType])
+	}
+
+	// On 5 the type is the mapping, so repeating it in the body would add a
+	// field the mapping does not declare.
+	spec5 := esBackend(5).buildDocSpec(&contracts.Document{PHID: "PHID-TASK-1", Type: "TASK"})
+	if _, exists := spec5[fieldDocType]; exists {
+		t.Error("a version 5 document must not carry a docType field")
+	}
+}
+
+// The type restriction does not disappear, it moves: out of the URL and into
+// the query as a filter. Losing it would widen every scoped search to the whole
+// index, which returns plausible results and so would not look like a failure.
+func TestVersion7ScopesTypesThroughTheQuery(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"hits":{"hits":[]}}`))
+	}))
+	defer srv.Close()
+
+	b := newBackend(engine.BackendDef{
+		Hosts:   []string{strings.TrimPrefix(srv.URL, "http://")},
+		Version: 7,
+	})
+	q := &contracts.SearchQuery{Query: "x", Types: []string{"TASK", "DREV"}}
+	if _, err := b.Search(q); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/phabricator/_search"; gotPath != want {
+		t.Errorf("expected the type to leave the URL: wanted %s, got %s", want, gotPath)
+	}
+
+	spec := roundTrip(t, b.buildSearchSpec(q))
+	if where := findValue(spec, "TASK"); where == "" {
+		t.Error("the requested types must appear in the query as a filter")
+	}
+}
+
+// bool.must_not, not the "not" query: that one was removed in 5.0, so on every
+// version this backend supports it comes back as a parsing error instead of
+// excluding anything.
+func TestExcludeUsesMustNot(t *testing.T) {
+	for _, version := range []int{5, 7} {
+		spec := roundTrip(t, esBackend(version).buildSearchSpec(
+			&contracts.SearchQuery{Exclude: "PHID-TASK-9"}))
+
+		if where := findKey(spec, "not"); where != "" {
+			t.Errorf("version %d: the removed \"not\" query must not be used, found at %s", version, where)
+		}
+		mustNot, ok := dig(t, spec, "query", "bool", "must_not").([]any)
+		if !ok || len(mustNot) != 1 {
+			t.Fatalf("version %d: expected one must_not clause, got %v", version, spec)
+		}
+		if findValue(mustNot[0], "PHID-TASK-9") == "" {
+			t.Errorf("version %d: the excluded phid is missing from the clause: %v", version, mustNot[0])
+		}
+	}
+}
+
+// findKey reports a dotted path to the first occurrence of key, or "" if the
+// tree does not contain it. Used for asserting a key's *absence* everywhere,
+// which a targeted dig cannot express.
+func findKey(v any, key string) string {
+	switch node := v.(type) {
+	case map[string]any:
+		for k, child := range node {
+			if k == key {
+				return k
+			}
+			if where := findKey(child, key); where != "" {
+				return k + "." + where
+			}
+		}
+	case []any:
+		for i, child := range node {
+			if where := findKey(child, key); where != "" {
+				return fmt.Sprintf("[%d].%s", i, where)
+			}
+		}
+	}
+	return ""
+}
+
+// findValue is findKey's counterpart for leaf values.
+func findValue(v any, want string) string {
+	switch node := v.(type) {
+	case map[string]any:
+		for k, child := range node {
+			if where := findValue(child, want); where != "" {
+				return k + "." + where
+			}
+		}
+	case []any:
+		for i, child := range node {
+			if where := findValue(child, want); where != "" {
+				return fmt.Sprintf("[%d].%s", i, where)
+			}
+		}
+	case string:
+		if node == want {
+			return node
+		}
+	}
+	return ""
+}
+
+func sortedMapKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
 }
 

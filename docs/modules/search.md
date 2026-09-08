@@ -138,7 +138,33 @@ analyzerCJKText: map[string]any{
 - **主机初始为健康**。标记成未知会让一个新进程的第一个请求直接失败在「no healthy hosts」上，而那时集群完全正常。
 - **只有传输层失败与 5xx 会把主机标记为不健康。** 4xx 是请求的问题，不是主机的问题；跟着 4xx 摘主机，一个写错的查询能在几次请求里把整个集群摘空。
 
-`version` 默认 5，它决定三件事：时间戳字段名（`< 2` 用另一个名字）、文本字段类型（`>= 5` 用 `text`，否则 `string`）、以及 `IndexExists` 走 `_stats` 还是 `_status`。
+`version` 默认 5，它决定四件事：时间戳字段名（`< 2` 用另一个名字）、文本字段类型（`>= 5` 用 `text`，否则 `string`）、`IndexExists` 走 `_stats` 还是 `_status`，以及下一节那件比前三件都重要的事。
+
+### 3.6 `version` 决定文档类型放在哪儿，而这不是一个可以填错的值
+
+前三个版本差异都是"某个名字换一种拼法"。这一个不是：它决定**文档类型是索引结构的一部分，还是文档上的一个字段**。
+
+Elasticsearch 6 把一个索引收紧到只能有一个 mapping type，7 起把 type 整个移除了。而 Phorge 要索引七种文档类型，所以从 6 开始它们不可能各占一个 mapping type。三种形状：
+
+| `version` | mapping | 写入 URL | 类型如何收窄检索 |
+|---|---|---|---|
+| `< 6` | 每个文档类型一份，内容完全相同 | `/{index}/{TYPE}/{phid}` | URL 里列出类型 |
+| `6` | 一份，嵌在 `_doc` 下 | `/{index}/_doc/{phid}` | `docType` 过滤 |
+| `>= 7` | 一份，`properties` 直接在根上 | `/{index}/_doc/{phid}` | `docType` 过滤 |
+
+`< 6` 那一列刻意与 Phorge 自带引擎逐字段相同——那份冗余不是疏忽，是为了让同一个索引同时满足两边的 sanity check。从 6 开始类型变成文档上的 `docType` keyword 字段（名字与 Meilisearch 后端用的属性一致），URL 里的类型段换成 `_doc`，而 URL 里那道"只搜请求的类型"的限制**移进了查询**，成为一个 `docType` 的 terms 过滤。
+
+**这一项填错的代价不对称，而且两个方向都不温和：**
+
+- 对着 ES 7 集群填 5，多 type mapping 会被 `mapper_parsing_exception` 直接拒掉。索引根本没建出来，之后每一次检索都失败——`/init` 就报错，所以至少它是响的。
+- 反过来（对着 ES 5 集群填 7）更糟：`_doc` 在 ES 5 上是一个合法的 type 名，索引建得出来、文档写得进去，但类型收窄会依赖一个 Phorge 自带引擎不认识的字段。
+
+`ES_VERSION` 因此**必须与集群的真实主版本一致**。`backend_test.go` 里 `TestVersion5KeepsAMappingPerDocumentType`、`TestVersion7HasNoMappingTypes`、`TestVersion6NestsASingleMappingType` 三条各钉一种形状。
+
+还有两处同源的版本差异值得一起记住，它们都属于"旧写法在新集群上不是被忽略而是被拒绝"：
+
+- **`include_in_all`**：`_all` 在 6.0 随之移除，mapping 里再提它会被拒。所以它只在 `< 6` 写出来——而在 5 上必须写，否则对着 Phorge 自带引擎的 sanity check 会报不一致。
+- **`not` 查询**：`exclude` 曾经用 `{"not": {"ids": ...}}`，而 `not` 在 2.0 弃用、**5.0 移除**。也就是说它在本后端支持的每一个版本上都只会换回一个解析错误，从来没有真的排除过任何东西。现在用 `bool.must_not`，它从 1.x 起语义未变，所以这一处不需要版本分支。
 
 ## 4. 配置
 
@@ -158,7 +184,7 @@ analyzerCJKText: map[string]any{
 |---|---|---|
 | `ES_HOST` | 无 | 逗号分隔，**设了它才会拼出后端** |
 | `ES_INDEX` | `phabricator` | |
-| `ES_VERSION` | `5` | |
+| `ES_VERSION` | `5` | 必须与集群真实主版本一致，它决定 mapping 形状——见 3.6 节 |
 | `ES_TIMEOUT` | `15` | 秒 |
 | `ES_PROTOCOL` | `http` | |
 | `MEILI_HOST` / `MEILI_INDEX` / `MEILI_MASTER_KEY` / `MEILI_TIMEOUT` / `MEILI_PROTOCOL` | 同上 | |

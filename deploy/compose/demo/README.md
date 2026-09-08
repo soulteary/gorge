@@ -13,6 +13,10 @@
 > 搜索集群等存储后端（原因见该文件注释）。本 demo 把它们塞进来只是为了本机验证，
 > 数据都在命名卷里，`down -v` 一并清掉。
 
+> 📖 想系统性地做一遍联调、按步骤读结果、以及遇到端口冲突 / `Created` / webhook
+> `failed` 等问题怎么排查，见 [`INTEGRATION-TESTING.md`](INTEGRATION-TESTING.md)。
+> 本 README 偏「怎么启动」，那份手册偏「怎么系统性联调 + 排障」。
+
 ## 目录
 
 ```

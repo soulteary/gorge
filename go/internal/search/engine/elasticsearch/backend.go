@@ -47,6 +47,18 @@ const (
 	defaultVersion    = 5
 	defaultTimeoutSec = 15
 	defaultProtocol   = "http"
+
+	// docEndpointType is the endpoint a typeless cluster indexes through. It
+	// looks like a type name and is not one: on 7.x it is a fixed path segment
+	// that replaced the type, which is why it is spelled the same for every
+	// document regardless of its Phorge type.
+	docEndpointType = "_doc"
+
+	// fieldDocType holds the Phorge document type once the cluster no longer
+	// keeps types in the mapping. The name matches the attribute the
+	// Meilisearch backend uses for the same purpose, so the two backends
+	// describe a document the same way even though they never share an index.
+	fieldDocType = "docType"
 )
 
 // New builds the backend from its definition.
@@ -167,13 +179,53 @@ func (b *Backend) textFieldType() string {
 	return "string"
 }
 
+// usesMappingTypes reports whether the cluster still keys an index's mapping by
+// document type, the way Phorge's own engine assumes throughout.
+//
+// This is the single most consequential version difference in this file,
+// because it is not a matter of one field's spelling: it decides whether a
+// document's type is part of the index's structure or just another field on the
+// document. Elasticsearch 6 narrowed an index to one mapping type and 7 removed
+// types altogether, so on 6 and later the seven types Phorge indexes cannot
+// each be a mapping type — they become values of the docType field below, and
+// the type disappears from the URLs as well.
+//
+// Getting this wrong does not degrade quietly: a multi-type mapping sent to a
+// 7.x cluster is rejected outright with mapper_parsing_exception, so the index
+// is never created and every subsequent request fails for want of one.
+func (b *Backend) usesMappingTypes() bool { return b.version < 6 }
+
+// singleMappingType is the type name the mapping body is nested under when the
+// cluster wants exactly one, and "" when it wants none.
+//
+// Elasticsearch 6 still requires a name and conventionally uses _doc; 7 dropped
+// the level entirely and carries the properties at the mapping's root.
+func (b *Backend) singleMappingType() string {
+	if b.version >= 7 {
+		return ""
+	}
+	return docEndpointType
+}
+
+// supportsIncludeInAll reports whether the mapping may still carry
+// include_in_all. The _all field was deprecated in 6.0 and removed with it, and
+// a mapping that mentions it is rejected rather than ignored.
+func (b *Backend) supportsIncludeInAll() bool { return b.version < 6 }
+
 func (b *Backend) IndexDocument(doc *contracts.Document) error {
 	host, err := b.hostForRole("write")
 	if err != nil {
 		return err
 	}
 	spec := b.buildDocSpec(doc)
-	url := fmt.Sprintf("%s/%s/%s", b.baseURL(host), doc.Type, doc.PHID)
+	// The type is a path segment only while it is part of the mapping; after
+	// that every document goes through the same _doc endpoint and carries its
+	// type in the body instead.
+	segment := doc.Type
+	if !b.usesMappingTypes() {
+		segment = docEndpointType
+	}
+	url := fmt.Sprintf("%s/%s/%s", b.baseURL(host), segment, doc.PHID)
 	return b.doRequest(host, url, http.MethodPut, spec)
 }
 
@@ -190,8 +242,14 @@ func (b *Backend) Search(q *contracts.SearchQuery) ([]string, error) {
 		// Restricting the URL to the requested types rather than searching the
 		// whole index matters when "phabricator" is an alias over something
 		// larger; Phorge's own engine does the same for that reason.
+		//
+		// Once types leave the mapping that restriction has to move into the
+		// query, and buildSearchSpec puts it there as a docType filter. The two
+		// are not interchangeable: a type in the URL of a 7.x cluster is read
+		// as an index name, so leaving it would search an index that does not
+		// exist instead of narrowing the one that does.
 		var uri string
-		if len(q.Types) > 0 {
+		if b.usesMappingTypes() && len(q.Types) > 0 {
 			uri = fmt.Sprintf("%s/%s/_search", b.baseURL(host), strings.Join(q.Types, ","))
 		} else {
 			uri = fmt.Sprintf("%s/_search", b.baseURL(host))
@@ -419,6 +477,12 @@ func (b *Backend) buildDocSpec(doc *contracts.Document) map[string]any {
 		ts:            doc.DateModified,
 	}
 
+	// Without mapping types this is the only record of what kind of object the
+	// document describes, and the only thing a type-scoped query can filter on.
+	if !b.usesMappingTypes() {
+		spec[fieldDocType] = doc.Type
+	}
+
 	for _, f := range doc.Fields {
 		key := f.Name
 		existing, ok := spec[key]
@@ -516,12 +580,21 @@ func (b *Backend) buildSearchSpec(q *contracts.SearchQuery) map[string]any {
 		})
 	}
 
+	// The type restriction the URL can no longer express. It is a filter rather
+	// than a must clause because it contributes nothing to relevance.
+	if !b.usesMappingTypes() && len(q.Types) > 0 {
+		bq.AddTerms(fieldDocType, q.Types)
+	}
+
 	if q.Exclude != "" {
-		bq.AddFilter(map[string]any{
-			"not": map[string]any{
-				"ids": map[string]any{
-					"values": []string{q.Exclude},
-				},
+		// bool.must_not, not the "not" query: that one was deprecated in 2.0
+		// and removed in 5.0, so on any cluster this backend actually supports
+		// it comes back as a parsing error rather than excluding anything.
+		// must_not has meant the same thing since 1.x, so this needs no version
+		// branch.
+		bq.AddMustNot(map[string]any{
+			"ids": map[string]any{
+				"values": []string{q.Exclude},
 			},
 		})
 	}
@@ -631,8 +704,6 @@ const (
 // existing index is compared against — so any change here makes every existing
 // index report itself insane until it is rebuilt.
 func (b *Backend) buildIndexConfig(docTypes []string) map[string]any {
-	textType := b.textFieldType()
-
 	data := map[string]any{
 		"settings": map[string]any{
 			"index": map[string]any{
@@ -694,74 +765,96 @@ func (b *Backend) buildIndexConfig(docTypes []string) map[string]any {
 		},
 	}
 
-	fields := esquery.AllFields()
-	rels := esquery.AllRelationships()
-	mappings := map[string]any{}
+	// Where the document types go depends entirely on whether the cluster still
+	// has mapping types. While it does, each type gets its own copy of an
+	// identical property set — that redundancy is Phorge's layout, kept so an
+	// index built by either implementation satisfies the other's sanity check.
+	// Once it does not, there is one property set and the types become values
+	// of a field in it, so docTypes stops affecting the mapping at all.
+	if b.usesMappingTypes() {
+		mappings := map[string]any{}
+		for _, docType := range docTypes {
+			mappings[docType] = map[string]any{"properties": b.buildProperties()}
+		}
+		data["mappings"] = mappings
+		return data
+	}
 
-	for _, docType := range docTypes {
-		props := map[string]any{}
+	body := map[string]any{"properties": b.buildProperties()}
+	if t := b.singleMappingType(); t != "" {
+		body = map[string]any{t: body}
+	}
+	data["mappings"] = body
+	return data
+}
 
-		for _, f := range fields {
-			props[f] = map[string]any{
-				"type": textType,
-				"fields": map[string]any{
-					"raw": map[string]any{
-						"type":                  textType,
-						"analyzer":              analyzerEnglishExact,
-						"search_analyzer":       "english",
-						"search_quote_analyzer": analyzerEnglishExact,
-					},
-					"keywords": map[string]any{
-						"type":     textType,
-						"analyzer": analyzerLetterStop,
-					},
-					"stems": map[string]any{
-						"type":     textType,
-						"analyzer": analyzerEnglishStem,
-					},
-					// The three subfields above are English-only chains: the
-					// letter tokenizer swallows a run of Han characters whole,
-					// and the standard one shatters it into single characters.
-					// This one is the only place CJK text is segmented in a
-					// way a query can hit.
-					esquery.SubfieldCJK: map[string]any{
-						"type":     textType,
-						"analyzer": analyzerCJKText,
-					},
+// buildProperties builds the field definitions shared by every document type.
+func (b *Backend) buildProperties() map[string]any {
+	textType := b.textFieldType()
+	props := map[string]any{}
+
+	for _, f := range esquery.AllFields() {
+		props[f] = map[string]any{
+			"type": textType,
+			"fields": map[string]any{
+				"raw": map[string]any{
+					"type":                  textType,
+					"analyzer":              analyzerEnglishExact,
+					"search_analyzer":       "english",
+					"search_quote_analyzer": analyzerEnglishExact,
 				},
-			}
-		}
-
-		for _, rel := range rels {
-			if b.version >= 5 {
-				props[rel] = map[string]any{
-					"type":           "keyword",
-					"include_in_all": false,
-					"doc_values":     false,
-				}
-			} else {
-				props[rel] = map[string]any{
-					"type":           "string",
-					"index":          "not_analyzed",
-					"include_in_all": false,
-				}
-			}
-			props[rel+"_ts"] = map[string]any{
-				"type":           "date",
-				"include_in_all": false,
-			}
-		}
-
-		props["dateCreated"] = map[string]any{"type": "date"}
-		props["lastModified"] = map[string]any{"type": "date"}
-
-		mappings[docType] = map[string]any{
-			"properties": props,
+				"keywords": map[string]any{
+					"type":     textType,
+					"analyzer": analyzerLetterStop,
+				},
+				"stems": map[string]any{
+					"type":     textType,
+					"analyzer": analyzerEnglishStem,
+				},
+				// The three subfields above are English-only chains: the
+				// letter tokenizer swallows a run of Han characters whole,
+				// and the standard one shatters it into single characters.
+				// This one is the only place CJK text is segmented in a
+				// way a query can hit.
+				esquery.SubfieldCJK: map[string]any{
+					"type":     textType,
+					"analyzer": analyzerCJKText,
+				},
+			},
 		}
 	}
 
-	data["mappings"] = mappings
-	return data
+	for _, rel := range esquery.AllRelationships() {
+		if b.version >= 5 {
+			props[rel] = map[string]any{
+				"type":       "keyword",
+				"doc_values": false,
+			}
+		} else {
+			props[rel] = map[string]any{
+				"type":  "string",
+				"index": "not_analyzed",
+			}
+		}
+		props[rel+"_ts"] = map[string]any{"type": "date"}
+
+		if b.supportsIncludeInAll() {
+			asMap(props[rel])["include_in_all"] = false
+			asMap(props[rel+"_ts"])["include_in_all"] = false
+		}
+	}
+
+	props["dateCreated"] = map[string]any{"type": "date"}
+	props["lastModified"] = map[string]any{"type": "date"}
+
+	// Indexed as a keyword so a type-scoped query is an exact-term filter. An
+	// analysed field would tokenise the four-character constants and match
+	// them approximately, which for a filter is simply wrong.
+	if !b.usesMappingTypes() {
+		props[fieldDocType] = map[string]any{"type": "keyword"}
+	}
+
+	return props
 }
 
 // Utility helpers

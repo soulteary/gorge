@@ -206,8 +206,8 @@ render、diff、mailer、search、file-storage 与 webhook 六份都在 `TOKEN` 
 | `search` | 97.5% |
 | `search/engine` | 99.5% |
 | `search/esquery` | 100.0% |
-| `search/engine/elasticsearch` | 81.4% |
-| `search/engine/meilisearch` | **0.0%**（见下） |
+| `search/engine/elasticsearch` | 83.5% |
+| `search/engine/meilisearch` | 91.5%（见下） |
 | `filestorage` | 84.1% |
 | `webhook` | 70.4%（见下） |
 | `contracttest` | 19.7%（见下） |
@@ -239,10 +239,17 @@ render、diff、mailer、search、file-storage 与 webhook 六份都在 `TOKEN` 
 
 search 那次拉低总数的两个包：
 
-- `search/engine/meilisearch` **0.0%**，全仓库唯一一个零覆盖的非 `cmd` 包。它不影响 PHP 契约（契约在 `internal/search` 那一层，两个后端之下），所以迁入时刻意没有扩大范围，但它自己翻译查询、自己管索引设置、自己实现 `IndexIsSane`，坏掉的表现是配了 Meilisearch 的部署检索行为不对，而 Elasticsearch 那条路径的测试一条都不会红。登记在 [`findings.md`](findings.md) 第 17 条，那里写了 Elasticsearch 后端的测试怎么照抄。
-- `search/engine/elasticsearch` 81.4%，缺口是**真实的 HTTP 往返分支**：`httptest` 假集群覆盖了路径拼接、spec 形状与 `configDeepMatch` 的判定，没覆盖的是主机健康表在多主机 failover 下的那几条状态迁移。
+- `search/engine/meilisearch` 当时 **0.0%**，全仓库唯一一个零覆盖的非 `cmd` 包。测试后来照着 Elasticsearch 那份补上了，现在 91.5%。
+- `search/engine/elasticsearch` 81.4%（现在 83.5%），缺口是**真实的 HTTP 往返分支**：`httptest` 假集群覆盖了路径拼接、spec 形状与 `configDeepMatch` 的判定，没覆盖的是主机健康表在多主机 failover 下的那几条状态迁移。
 
 **这两个数字不该被「顺手补测试」抹平。** 一个假集群能验证的是「本服务发出了正确的请求」，验证不了「Elasticsearch 会怎么回答」——后者是 `tests/e2e/search.sh` 的活，而它只在有真集群时才有意义。
+
+**而这句话后来以最直接的方式得到了印证，值得当成本节的结论读。**两个后端的覆盖率都补上去之后，第一次把服务对着真后端跑，**两边各暴露一个从建索引/第一个查询就失败的缺陷**，而两边的单元测试都是绿的：
+
+- Meilisearch：`exclude` 用 `id` 过滤，而 `id` 没被声明为 filterable，每个带 `exclude` 的查询 400。两条相关测试一条只看渲染出的字符串、一条拿同一个函数当实际值与期望值比对——**同一份误解的两侧**（[`findings.md`](findings.md) 第 17 条）。
+- Elasticsearch：mapping 按文档类型分 key，这在 ES 6 起就被拒绝，ES 7 上 `POST /api/search/init` 直接 `mapper_parsing_exception`。假集群对什么请求都答 200，所以它验不到（[`findings.md`](findings.md) 第 46 条）。同时查出 `exclude` 用的 `not` 查询在 ES 5.0 就已移除——**它在本后端支持的每个版本上都从未真的排除过任何东西**，且完全没有测试覆盖。
+
+所以第 4 节那七份 e2e 脚本不是「单元测试的补充」，在这两个后端上它们是**唯一**能问出问题的地方。`deploy/compose/demo/` 存在的理由正是这个：它把生产编排刻意留给使用者自建的后端一起拉起来，让 `search.sh` 那 18 条能真的对着 ES 7.17 与 Meilisearch 各跑一遍。
 
 生成报告：
 

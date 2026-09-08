@@ -277,8 +277,14 @@ func (b *Backend) searchableAttributes() []string {
 
 func (b *Backend) filterableAttributes() []string {
 	rels := esquery.AllRelationships()
-	attrs := make([]string, 0, len(rels)+1)
-	attrs = append(attrs, "docType")
+	attrs := make([]string, 0, len(rels)+2)
+	// "id" is here because buildFilters renders SearchQuery.Exclude as
+	// `id != {phid}`, and Meilisearch rejects a filter on any attribute that is
+	// not declared filterable — so without it every excluding query fails with a
+	// 400 instead of returning one fewer result. It is the primary key, which is
+	// exactly why it is easy to assume it needs no declaration; Meilisearch
+	// makes no exception for it.
+	attrs = append(attrs, "id", "docType")
 	attrs = append(attrs, rels...)
 	return attrs
 }
