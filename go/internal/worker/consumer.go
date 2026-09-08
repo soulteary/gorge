@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,8 @@ type Consumer struct {
 	maxWorkers   int
 	idleTimeout  time.Duration
 	filter       map[string]bool
+	leaseClasses []string
+	canLease     bool
 
 	processed atomic.Int64
 	failed    atomic.Int64
@@ -36,6 +39,7 @@ func NewConsumer(client *Client, registry *Registry, cfg *Config) *Consumer {
 	for _, tc := range cfg.TaskClassFilter {
 		filter[tc] = true
 	}
+	leaseClasses := leaseableClasses(registry, filter)
 	return &Consumer{
 		client:       client,
 		registry:     registry,
@@ -44,7 +48,48 @@ func NewConsumer(client *Client, registry *Registry, cfg *Config) *Consumer {
 		maxWorkers:   cfg.MaxWorkers,
 		idleTimeout:  time.Duration(cfg.IdleTimeoutSec) * time.Second,
 		filter:       filter,
+		leaseClasses: leaseClasses,
+		canLease:     registry.HasFallback() || len(leaseClasses) > 0,
 	}
+}
+
+// leaseableClasses computes the filter sent to taskqueue. nil means all
+// classes and is only returned for a registry with a fallback and no explicit
+// allowlist. Without a fallback, the request is restricted to the intersection
+// of registered handlers and the configured allowlist.
+func leaseableClasses(registry *Registry, configured map[string]bool) []string {
+	if registry.HasFallback() && len(configured) == 0 {
+		return nil
+	}
+
+	var classes []string
+	for _, taskClass := range registry.SupportedClasses() {
+		if taskClass == "*" {
+			continue
+		}
+		if len(configured) == 0 || configured[taskClass] {
+			classes = append(classes, taskClass)
+		}
+	}
+	if registry.HasFallback() {
+		for taskClass := range configured {
+			if !registry.Has(taskClass) {
+				continue
+			}
+			found := false
+			for _, existing := range classes {
+				if existing == taskClass {
+					found = true
+					break
+				}
+			}
+			if !found {
+				classes = append(classes, taskClass)
+			}
+		}
+	}
+	sort.Strings(classes)
+	return classes
 }
 
 // Stats reports this worker's lifetime counters and the classes it supports.
@@ -80,7 +125,10 @@ func (c *Consumer) Run(ctx context.Context) {
 			slog.Info("worker consumer shutting down")
 			return
 		case <-ticker.C:
-			tasks, err := c.client.Lease(ctx, c.leaseLimit)
+			if !c.canLease {
+				continue
+			}
+			tasks, err := c.client.Lease(ctx, c.leaseLimit, c.leaseClasses)
 			if err != nil {
 				// The queue may not be up yet, or may have gone away. Logged
 				// and retried on the next tick rather than fatal, the same
@@ -110,7 +158,9 @@ func (c *Consumer) Run(ctx context.Context) {
 					// Returned to the queue temporarily rather than dropped:
 					// another worker with the right handler may lease it.
 					retryWait := 60
-					_ = c.client.Fail(ctx, task.ID, false, &retryWait)
+					c.reportOutcome(ctx, task, "unsupported class", func(reportCtx context.Context) error {
+						return c.client.Fail(reportCtx, task.ID, false, &retryWait)
+					})
 					continue
 				}
 
@@ -155,14 +205,27 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		data = json.RawMessage(task.Data)
 	}
 
-	err := handler(ctx, task, data)
+	// A delegated task may legitimately run until the queue lease expires. The
+	// HTTP client has no unrelated fixed timeout; this deadline is the actual
+	// ownership window returned by taskqueue.
+	taskCtx := ctx
+	var cancel context.CancelFunc
+	if task.LeaseExpires != nil {
+		taskCtx, cancel = context.WithDeadline(ctx, time.Unix(*task.LeaseExpires, 0))
+		defer cancel()
+	}
+
+	err := handler(taskCtx, task, data)
 	durationUs := time.Since(start).Microseconds()
 
 	if err == nil {
 		slog.Info("task completed",
 			"taskClass", task.TaskClass, "id", task.ID, "duration", time.Since(start).String())
-		_ = c.client.Complete(ctx, task.ID, durationUs)
-		c.processed.Add(1)
+		if c.reportOutcome(taskCtx, task, "complete", func(reportCtx context.Context) error {
+			return c.client.Complete(reportCtx, task.ID, durationUs)
+		}) {
+			c.processed.Add(1)
+		}
 		return
 	}
 
@@ -173,8 +236,11 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 	case errors.As(err, &permErr):
 		slog.Warn("permanent task failure",
 			"taskClass", task.TaskClass, "id", task.ID, "error", err)
-		_ = c.client.Fail(ctx, task.ID, true, nil)
-		c.failed.Add(1)
+		if c.reportOutcome(taskCtx, task, "permanent failure", func(reportCtx context.Context) error {
+			return c.client.Fail(reportCtx, task.ID, true, nil)
+		}) {
+			c.failed.Add(1)
+		}
 	case errors.As(err, &yieldErr):
 		dur := yieldErr.Duration
 		if dur < 5 {
@@ -182,13 +248,54 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		}
 		slog.Info("task yielded",
 			"taskClass", task.TaskClass, "id", task.ID, "duration_sec", dur, "reason", err)
-		_ = c.client.Yield(ctx, task.ID, dur)
+		c.reportOutcome(taskCtx, task, "yield", func(reportCtx context.Context) error {
+			return c.client.Yield(reportCtx, task.ID, dur)
+		})
 	default:
 		slog.Warn("temporary task failure",
 			"taskClass", task.TaskClass, "id", task.ID, "error", err)
-		_ = c.client.Fail(ctx, task.ID, false, nil)
-		c.failed.Add(1)
+		if c.reportOutcome(taskCtx, task, "temporary failure", func(reportCtx context.Context) error {
+			return c.client.Fail(reportCtx, task.ID, false, nil)
+		}) {
+			c.failed.Add(1)
+		}
 	}
+}
+
+const (
+	resultReportAttempts = 5
+	resultReportBackoff  = 200 * time.Millisecond
+)
+
+// reportOutcome does not let a transient taskqueue outage silently turn a
+// completed side effect into an unacknowledged lease. Counters advance only
+// after the queue records the outcome. After bounded retries, the row remains
+// leased and the error is explicit; the queue's normal lease-expiry recovery
+// remains the final fallback.
+func (c *Consumer) reportOutcome(ctx context.Context, task *contracts.Task, outcome string, report func(context.Context) error) bool {
+	for attempt := 1; attempt <= resultReportAttempts; attempt++ {
+		err := report(ctx)
+		if err == nil {
+			return true
+		}
+		slog.Error("task outcome report failed",
+			"taskClass", task.TaskClass,
+			"id", task.ID,
+			"outcome", outcome,
+			"attempt", attempt,
+			"error", err)
+		if attempt == resultReportAttempts {
+			break
+		}
+		timer := time.NewTimer(resultReportBackoff * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+	return false
 }
 
 // hibernate sleeps out a long idle stretch, waking on cancellation. It keeps an

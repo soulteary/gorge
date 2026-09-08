@@ -93,6 +93,25 @@ func TestConduitCallWireFormat(t *testing.T) {
 	}
 }
 
+func TestRegisterAllAlwaysInstallsNativeFeedHandler(t *testing.T) {
+	registry := worker.NewRegistry()
+	RegisterAll(registry, "", "")
+
+	if !registry.Has("FeedPublisherHTTPWorker") {
+		t.Fatal("native FeedPublisherHTTPWorker handler was not registered")
+	}
+	if registry.Has("SomeOtherWorker") {
+		t.Fatal("an arbitrary class must remain unsupported without Conduit")
+	}
+}
+
+func TestConduitClientHasNoTimeoutShorterThanTheTaskLease(t *testing.T) {
+	client := NewConduitClient("http://phorge.example", "")
+	if client.httpClient.Timeout != 0 {
+		t.Fatalf("Conduit client timeout = %s, want task-context deadline only", client.httpClient.Timeout)
+	}
+}
+
 // TestConduitCallHTMLResponse verifies a misrouted call that returns HTML
 // yields a bounded, diagnosable error instead of the bare
 // "invalid character '<'" JSON decode error.

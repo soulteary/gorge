@@ -114,6 +114,11 @@ paths:
         into `worker_activetask.leaseOwner`; a request without it is attributed
         to the client IP.
 
+        `taskClasses`, when present, filters candidates before ownership is
+        acquired. Dedicated worker pools use it to avoid leasing, failing and
+        delaying tasks intended for another pool. An omitted or empty list
+        accepts every class.
+
         Unleased tasks are preferred over ones whose lease expired, and both are
         ordered by `priority` ascending then `id` ascending. An empty result is
         `data: []`, never `null`.
@@ -625,6 +630,11 @@ components:
         limit:
           type: integer
           default: 1
+        taskClasses:
+          type: array
+          items:
+            type: string
+          description: Optional allowlist applied before tasks are leased; omitted or empty means every class.
 
     CompleteRequest:
       type: object

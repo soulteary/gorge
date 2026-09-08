@@ -144,7 +144,10 @@ func envelopeOf(t *testing.T, r response) Error {
 // a real listener because that rejection happens at the fasthttp server layer,
 // which app.Test does not exercise.
 func TestBodyOverLimitIsEnveloped(t *testing.T) {
-	r := sendLive(t, Config{BodyLimit: "1K"}, http.MethodPost, "/api/thing",
+	// Bind an explicit loopback address. With :0, ListenerAddr may report an
+	// unspecified IPv6 address; HTTP proxy environments can route that address
+	// through the proxy instead of back to this test server and return a 502.
+	r := sendLive(t, Config{ListenAddr: "127.0.0.1:0", BodyLimit: "1K"}, http.MethodPost, "/api/thing",
 		strings.Repeat("x", 4096),
 		map[string]string{fiber.HeaderContentType: fiber.MIMEApplicationJSON})
 

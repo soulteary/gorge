@@ -65,10 +65,13 @@ func NewNoop() TaskHandler {
 type fakeQueue struct {
 	mu sync.Mutex
 
-	pending   []*contracts.Task
-	completed []int64
-	failed    []int64
-	yielded   []int64
+	pending          []*contracts.Task
+	completed        []int64
+	failed           []int64
+	yielded          []int64
+	lastLease        contracts.LeaseRequest
+	completeFailures int
+	completeAttempts int
 }
 
 func (q *fakeQueue) handler() http.HandlerFunc {
@@ -78,10 +81,20 @@ func (q *fakeQueue) handler() http.HandlerFunc {
 
 		switch r.URL.Path {
 		case "/api/queue/lease":
+			_ = json.NewDecoder(r.Body).Decode(&q.lastLease)
 			tasks := q.pending
 			q.pending = nil
 			writeData(w, tasks)
 		case "/api/queue/complete":
+			q.completeAttempts++
+			if q.completeFailures > 0 {
+				q.completeFailures--
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]string{"code": "ERR_INTERNAL", "message": "queue unavailable"},
+				})
+				return
+			}
 			var req contracts.CompleteRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			q.completed = append(q.completed, req.TaskID)
@@ -163,6 +176,60 @@ func TestConsumerCompletesSuccessfulTasks(t *testing.T) {
 	}
 }
 
+func TestConsumerFiltersClassesInLeaseRequest(t *testing.T) {
+	q, client := newFakeQueue(t, nil)
+	registry := NewRegistry()
+	registry.Register("A", NewNoop())
+	registry.Register("B", NewNoop())
+	cfg := testConfig()
+	cfg.TaskClassFilter = []string{"B"}
+
+	consumer := NewConsumer(client, registry, cfg)
+	drainConsumer(t, consumer)
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.lastLease.TaskClasses) != 1 || q.lastLease.TaskClasses[0] != "B" {
+		t.Fatalf("lease taskClasses = %v, want [B]", q.lastLease.TaskClasses)
+	}
+}
+
+func TestConsumerRetriesCompletionBeforeCountingProcessed(t *testing.T) {
+	q, client := newFakeQueue(t, []*contracts.Task{{ID: 1, TaskClass: "A"}})
+	q.completeFailures = 2
+	registry := NewRegistry()
+	registry.Register("A", NewNoop())
+
+	consumer := NewConsumer(client, registry, testConfig())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		consumer.Run(ctx)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		q.mu.Lock()
+		attempts := q.completeAttempts
+		q.mu.Unlock()
+		if attempts >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.completeAttempts != 3 {
+		t.Fatalf("complete attempts = %d, want 3", q.completeAttempts)
+	}
+	if len(q.completed) != 1 || consumer.Stats().Processed != 1 {
+		t.Fatalf("completion was not acknowledged exactly once: completed=%v stats=%+v", q.completed, consumer.Stats())
+	}
+}
+
 func TestConsumerPermanentFailureIsReportedPermanent(t *testing.T) {
 	q, client := newFakeQueue(t, []*contracts.Task{{ID: 1, TaskClass: "A"}})
 	registry := NewRegistry()
@@ -230,7 +297,7 @@ func TestClientLeaseParsesContractTasks(t *testing.T) {
 	})
 	_ = q
 
-	tasks, err := client.Lease(context.Background(), 5)
+	tasks, err := client.Lease(context.Background(), 5, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +316,7 @@ func TestClientReportsAPIError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := NewClient(srv.URL, "")
-	_, err := client.Lease(context.Background(), 1)
+	_, err := client.Lease(context.Background(), 1, nil)
 	if err == nil {
 		t.Fatal("an error envelope must surface as an error")
 	}

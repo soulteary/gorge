@@ -26,7 +26,7 @@ type Store interface {
 	// Lease takes ownership of up to limit runnable tasks for leaseOwner and
 	// returns them with their data. Unleased tasks are preferred over ones
 	// whose lease expired, and both are ordered by priority then id.
-	Lease(ctx context.Context, limit int, leaseOwner string) ([]*contracts.Task, error)
+	Lease(ctx context.Context, limit int, leaseOwner string, taskClasses []string) ([]*contracts.Task, error)
 
 	// Complete archives a task as succeeded, recording its runtime.
 	Complete(ctx context.Context, taskID int64, duration int64) (*contracts.ArchivedTask, error)

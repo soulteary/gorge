@@ -14,6 +14,7 @@ MAILER_URL        ?= http://127.0.0.1:8110
 SEARCH_URL        ?= http://127.0.0.1:8120
 FILESTORAGE_URL   ?= http://127.0.0.1:8100
 WEBHOOK_URL       ?= http://127.0.0.1:8160
+TASKQUEUE_URL     ?= http://127.0.0.1:8090
 
 .DEFAULT_GOAL := help
 
@@ -121,6 +122,9 @@ e2e: ## Run the e2e smoke tests against BASE_URL and the notification ports
 	# What the script cannot reach is delivery itself, since nothing calls in to
 	# start one; that lives in go/internal/webhook/dispatcher_test.go.
 	BASE_URL=$(WEBHOOK_URL) bash tests/e2e/webhook.sh
+	# taskqueue's smoke test mutates the queue: it enqueues, leases and
+	# completes one PhabricatorTestWorker row, leaving the expected archive row.
+	BASE_URL=$(TASKQUEUE_URL) bash tests/e2e/taskqueue.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

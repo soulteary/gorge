@@ -98,7 +98,7 @@ func lease(deps *Deps) fiber.Handler {
 			leaseOwner = c.IP() + ":gorge-taskqueue"
 		}
 
-		tasks, err := deps.Store.Lease(c.Context(), req.Limit, leaseOwner)
+		tasks, err := deps.Store.Lease(c.Context(), req.Limit, leaseOwner, req.TaskClasses)
 		if err != nil {
 			return err
 		}
