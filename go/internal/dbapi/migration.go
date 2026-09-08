@@ -40,43 +40,51 @@ func (m *MigrationService) Status(ctx context.Context) ([]contracts.MigrationSta
 		if ref.Disabled || !ref.IsMaster {
 			continue
 		}
-		statuses = append(statuses, m.checkRef(ctx, ref))
+		status, err := m.checkRef(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, status)
 	}
 	return statuses, nil
 }
 
 // checkRef reads one master. A connection or ping failure leaves Initialized
-// false, which is the honest report: the meta_data database does not exist yet
-// or the server is unreachable, and the caller reads "not initialized" either
-// way — the same as the pre-upgrade state.
-func (m *MigrationService) checkRef(ctx context.Context, ref *DatabaseRef) contracts.MigrationStatus {
+// false, which is the honest pre-upgrade report when the meta_data database does
+// not exist yet. Once Ping succeeds, patch_status failures are returned so an
+// unreadable ledger is not reported as an initialized database with no patches.
+func (m *MigrationService) checkRef(ctx context.Context, ref *DatabaseRef) (contracts.MigrationStatus, error) {
 	st := contracts.MigrationStatus{RefKey: ref.RefKey(), AppliedPatches: []string{}}
 
 	dsn := m.buildDSN(ref)
 	conn, err := m.connFactory(dsn, true)
 	if err != nil {
-		return st
+		return st, nil
 	}
 	defer func() { _ = conn.Close() }()
 
 	if err := conn.Ping(ctx); err != nil {
-		return st
+		return st, nil
 	}
 	st.Initialized = true
 
 	rows, err := conn.QueryContext(ctx, "SELECT patch FROM patch_status")
 	if err != nil {
-		return st
+		return st, classifyMySQLError(err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	applied := make(map[string]bool)
 	for rows.Next() {
 		var patch string
-		if err := rows.Scan(&patch); err == nil {
-			applied[patch] = true
-			st.AppliedPatches = append(st.AppliedPatches, patch)
+		if err := rows.Scan(&patch); err != nil {
+			return st, err
 		}
+		applied[patch] = true
+		st.AppliedPatches = append(st.AppliedPatches, patch)
+	}
+	if err := rows.Err(); err != nil {
+		return st, classifyMySQLError(err)
 	}
 	st.TotalExpected = len(applied)
 
@@ -87,5 +95,5 @@ func (m *MigrationService) checkRef(ctx context.Context, ref *DatabaseRef) contr
 	_ = conn.QueryRowContext(ctx,
 		"SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'").Scan(&stateValue)
 
-	return st
+	return st, nil
 }

@@ -71,66 +71,102 @@ func (s *SetupService) checkRef(ctx context.Context, ref *DatabaseRef) []contrac
 		}}
 	}
 
-	issues = append(issues, s.checkVersionAndEngine(ctx, conn, refKey)...)
-	issues = append(issues, s.checkMetaDataDB(ctx, conn, refKey)...)
-	issues = append(issues, s.checkServerVariables(ctx, conn, refKey)...)
+	versionIssues, err := s.checkVersionAndEngine(ctx, conn, refKey)
+	if err != nil {
+		return setupQueryFailure(refKey)
+	}
+	issues = append(issues, versionIssues...)
+
+	metadataIssues, err := s.checkMetaDataDB(ctx, conn, refKey)
+	if err != nil {
+		return setupQueryFailure(refKey)
+	}
+	issues = append(issues, metadataIssues...)
+
+	variableIssues, err := s.checkServerVariables(ctx, conn, refKey)
+	if err != nil {
+		return setupQueryFailure(refKey)
+	}
+	issues = append(issues, variableIssues...)
 	return issues
 }
 
-func (s *SetupService) checkVersionAndEngine(ctx context.Context, conn *Conn, refKey string) []contracts.SetupIssue {
+func setupQueryFailure(refKey string) []contracts.SetupIssue {
+	return []contracts.SetupIssue{{
+		Key: "db.connection", Name: "Database Query Failed",
+		Message: fmt.Sprintf("A setup query failed on %s", refKey), IsFatal: true, RefKey: refKey,
+	}}
+}
+
+func (s *SetupService) checkVersionAndEngine(ctx context.Context, conn *Conn, refKey string) ([]contracts.SetupIssue, error) {
 	var issues []contracts.SetupIssue
 
 	var version string
-	if err := conn.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err == nil {
-		issues = append(issues, s.checkVersion(refKey, version)...)
+	if err := conn.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+		return nil, err
 	}
+	issues = append(issues, s.checkVersion(refKey, version)...)
 
 	rows, err := conn.QueryContext(ctx, "SHOW ENGINES")
-	if err == nil {
-		hasInnoDB := false
-		for rows.Next() {
-			var engine, support string
-			var extra1, extra2, extra3, extra4 sql.NullString
-			if err := rows.Scan(&engine, &support, &extra1, &extra2, &extra3, &extra4); err != nil {
-				continue
-			}
-			if engine == "InnoDB" && (support == "YES" || support == "DEFAULT") {
-				hasInnoDB = true
-			}
+	if err != nil {
+		return nil, err
+	}
+	hasInnoDB := false
+	for rows.Next() {
+		var engine, support string
+		var extra1, extra2, extra3, extra4 sql.NullString
+		if err := rows.Scan(&engine, &support, &extra1, &extra2, &extra3, &extra4); err != nil {
+			_ = rows.Close()
+			return nil, err
 		}
-		_ = rows.Close()
-		if !hasInnoDB {
-			issues = append(issues, contracts.SetupIssue{
-				Key: "mysql.innodb", Name: "InnoDB Not Available",
-				Message: fmt.Sprintf("InnoDB engine not available on %s", refKey), IsFatal: true, RefKey: refKey,
-			})
+		if engine == "InnoDB" && (support == "YES" || support == "DEFAULT") {
+			hasInnoDB = true
 		}
 	}
-	return issues
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if !hasInnoDB {
+		issues = append(issues, contracts.SetupIssue{
+			Key: "mysql.innodb", Name: "InnoDB Not Available",
+			Message: fmt.Sprintf("InnoDB engine not available on %s", refKey), IsFatal: true, RefKey: refKey,
+		})
+	}
+	return issues, nil
 }
 
-func (s *SetupService) checkMetaDataDB(ctx context.Context, conn *Conn, refKey string) []contracts.SetupIssue {
+func (s *SetupService) checkMetaDataDB(ctx context.Context, conn *Conn, refKey string) ([]contracts.SetupIssue, error) {
 	metaDB := s.config.DatabaseName("meta_data")
 	rows, err := conn.QueryContext(ctx, "SHOW DATABASES")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	found := false
 	for rows.Next() {
 		var db string
-		if err := rows.Scan(&db); err == nil && db == metaDB {
+		if err := rows.Scan(&db); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if db == metaDB {
 			found = true
 		}
 	}
+	err = rows.Err()
 	_ = rows.Close()
+	if err != nil {
+		return nil, err
+	}
 	if !found {
 		return []contracts.SetupIssue{{
 			Key: "storage.upgrade", Name: "Setup MySQL Schema",
 			Message: fmt.Sprintf("Database %s not found on %s. Run bin/storage upgrade.", metaDB, refKey),
 			IsFatal: true, RefKey: refKey,
-		}}
+		}}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func (s *SetupService) checkVersion(refKey, version string) []contracts.SetupIssue {
@@ -154,11 +190,14 @@ func (s *SetupService) checkVersion(refKey, version string) []contracts.SetupIss
 	return nil
 }
 
-func (s *SetupService) checkServerVariables(ctx context.Context, conn *Conn, refKey string) []contracts.SetupIssue {
+func (s *SetupService) checkServerVariables(ctx context.Context, conn *Conn, refKey string) ([]contracts.SetupIssue, error) {
 	var issues []contracts.SetupIssue
 
 	var maxPacket int64
-	if err := conn.QueryRowContext(ctx, "SELECT @@max_allowed_packet").Scan(&maxPacket); err == nil && maxPacket < 32*1024*1024 {
+	if err := conn.QueryRowContext(ctx, "SELECT @@max_allowed_packet").Scan(&maxPacket); err != nil {
+		return nil, err
+	}
+	if maxPacket < 32*1024*1024 {
 		issues = append(issues, contracts.SetupIssue{
 			Key: "mysql.max_allowed_packet", Name: "Small max_allowed_packet",
 			Message: fmt.Sprintf("max_allowed_packet=%d on %s, recommended >= 33554432", maxPacket, refKey),
@@ -167,7 +206,10 @@ func (s *SetupService) checkServerVariables(ctx context.Context, conn *Conn, ref
 	}
 
 	var sqlMode string
-	if err := conn.QueryRowContext(ctx, "SELECT @@sql_mode").Scan(&sqlMode); err == nil && !strings.Contains(sqlMode, "STRICT_ALL_TABLES") {
+	if err := conn.QueryRowContext(ctx, "SELECT @@sql_mode").Scan(&sqlMode); err != nil {
+		return nil, err
+	}
+	if !strings.Contains(sqlMode, "STRICT_ALL_TABLES") {
 		issues = append(issues, contracts.SetupIssue{
 			Key: "sql_mode.strict", Name: "STRICT_ALL_TABLES Not Set",
 			Summary: fmt.Sprintf("MySQL on %s not in strict mode", refKey),
@@ -177,7 +219,10 @@ func (s *SetupService) checkServerVariables(ctx context.Context, conn *Conn, ref
 	}
 
 	var poolSize int64
-	if err := conn.QueryRowContext(ctx, "SELECT @@innodb_buffer_pool_size").Scan(&poolSize); err == nil && poolSize < 225*1024*1024 {
+	if err := conn.QueryRowContext(ctx, "SELECT @@innodb_buffer_pool_size").Scan(&poolSize); err != nil {
+		return nil, err
+	}
+	if poolSize < 225*1024*1024 {
 		issues = append(issues, contracts.SetupIssue{
 			Key: "mysql.innodb_buffer_pool_size", Name: "Small Buffer Pool",
 			Message: fmt.Sprintf("innodb_buffer_pool_size=%d on %s, recommended >= 235929600", poolSize, refKey),
@@ -186,7 +231,10 @@ func (s *SetupService) checkServerVariables(ctx context.Context, conn *Conn, ref
 	}
 
 	var localInfile int
-	if err := conn.QueryRowContext(ctx, "SELECT @@local_infile").Scan(&localInfile); err == nil && localInfile != 0 {
+	if err := conn.QueryRowContext(ctx, "SELECT @@local_infile").Scan(&localInfile); err != nil {
+		return nil, err
+	}
+	if localInfile != 0 {
 		issues = append(issues, contracts.SetupIssue{
 			Key: "mysql.local_infile", Name: "Unsafe local_infile Enabled",
 			Message: fmt.Sprintf("local_infile is enabled on %s, disable it for security", refKey),
@@ -195,21 +243,22 @@ func (s *SetupService) checkServerVariables(ctx context.Context, conn *Conn, ref
 	}
 
 	var epoch int64
-	if err := conn.QueryRowContext(ctx, "SELECT UNIX_TIMESTAMP()").Scan(&epoch); err == nil {
-		delta := time.Now().Unix() - epoch
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta > 60 {
-			issues = append(issues, contracts.SetupIssue{
-				Key: "mysql.clock", Name: "Major Clock Skew",
-				Message: fmt.Sprintf("Clock skew of %d seconds between app server and %s", delta, refKey),
-				RefKey:  refKey,
-			})
-		}
+	if err := conn.QueryRowContext(ctx, "SELECT UNIX_TIMESTAMP()").Scan(&epoch); err != nil {
+		return nil, err
+	}
+	delta := time.Now().Unix() - epoch
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > 60 {
+		issues = append(issues, contracts.SetupIssue{
+			Key: "mysql.clock", Name: "Major Clock Skew",
+			Message: fmt.Sprintf("Clock skew of %d seconds between app server and %s", delta, refKey),
+			RefKey:  refKey,
+		})
 	}
 
-	return issues
+	return issues, nil
 }
 
 // compareVersions compares two dotted version strings numerically over their

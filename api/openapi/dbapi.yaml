@@ -241,7 +241,9 @@ paths:
         same rows through replication. `initialized` false means the `meta_data`
         database does not exist yet — the pre-`bin/storage upgrade` state, not an
         error — so this endpoint answers 200 with `initialized: false` rather
-        than failing when Phorge has not been set up.
+        than failing when Phorge has not been set up. Once that database is
+        reachable, a failure to read `patch_status` is returned as an explicit
+        access-denied or database-unreachable error instead of an empty ledger.
       operationId: migrationStatus
       security:
         - ServiceTokenHeader: []
@@ -255,8 +257,12 @@ paths:
                 $ref: '#/components/schemas/MigrationStatusResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DBUnreachable'
 
   /healthz:
     get:
@@ -509,14 +515,14 @@ components:
 
     MigrationStatus:
       type: object
-      required: [refKey, initialized, appliedPatches, totalExpected]
+      required: [refKey, initialized, patch, totalExpected]
       properties:
         refKey:
           type: string
         initialized:
           type: boolean
           description: False means the `meta_data` database does not exist yet.
-        appliedPatches:
+        patch:
           type: array
           items:
             type: string

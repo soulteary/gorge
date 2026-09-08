@@ -65,7 +65,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 ### 3.1 单节点与集群两种配置，每次启动只用一种
 
-有两种描述集群的方式，每次启动恰好用一种：`GORGE_DB_MYSQL_*` 那组标量描述单个节点，而 `GORGE_DB_CONFIG_FILE` 指向的 Phorge 风格 local.json 通过它的 `cluster.databases` 描述完整拓扑。**文件存在时文件赢**——有 local.json 的部署跑的是真集群，标量只够描述其中一个节点。每个 `cluster.databases` 节点自己的 `pass` 优先于全局 `mysql.pass`，没有节点密码时才回落到全局值；所有探针和 Router 都遵守同一优先级。`BuildCluster` 解析文件失败时**回退到单节点**而不是启动失败：一份坏文件降级成「一台服务器」，真实状态随后由健康探针报出来，比直接拒绝启动更符合本域「如实报告」的职责。
+有两种描述集群的方式，每次启动恰好用一种：`GORGE_DB_MYSQL_*` 那组标量描述单个节点，而 `GORGE_DB_CONFIG_FILE` 指向的 Phorge 风格 local.json 通过它的 `cluster.databases` 描述完整拓扑。**文件存在时文件赢**——有 local.json 的部署跑的是真集群，标量只够描述其中一个节点。节点角色和分区以 Phorge 当前的 `role` 字符串与 `partition` 字符串列表为标准；为兼容旧版或分支配置，解析器也接受 `roles` 布尔对象和标量 `partition`，进入拓扑前统一归一化。每个节点自己的 `pass` 优先于全局 `mysql.pass`，没有节点密码时才回落到全局值；所有探针和 Router 都遵守同一优先级。`BuildCluster` 解析文件失败时**回退到单节点**而不是启动失败：一份坏文件降级成「一台服务器」，真实状态随后由健康探针报出来，比直接拒绝启动更符合本域「如实报告」的职责。
 
 ### 3.2 应用分区路由与只读降级，原样保留自 Phorge
 
@@ -81,7 +81,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 ### 3.4 迁移状态读 `patch_status`，另读一次 `hoststate` 并丢弃
 
-`MigrationService.checkRef` 连到每台 master 的 `{namespace}_meta_data` 库读 `SELECT patch FROM patch_status`。**连不上或库不存在时 `initialized` 留 `false`，这是如实报告而不是错误**：`{namespace}_meta_data` 库还不存在，正是 `bin/storage upgrade` 跑之前的状态，调用方读到「未初始化」就对了。
+`MigrationService.checkRef` 连到每台 master 的 `{namespace}_meta_data` 库读 `SELECT patch FROM patch_status`。**建连或 Ping 失败时 `initialized` 留 `false`，这是如实报告而不是错误**：`{namespace}_meta_data` 库还不存在，正是 `bin/storage upgrade` 跑之前的状态，调用方读到「未初始化」就对了。但 Ping 已成功后，读取 `patch_status` 失败会按域错误显式返回（权限不足为 403、连接中断为 503），不能伪装成 `initialized:true` 且 patch 列表为空。
 
 它还额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，**读出来就丢**——`hoststate` 是 Phorge 在多 master 之间同步 `cluster.databases` 状态用的表，这里读它只是保留独立服务预留的那个多 master 同步接口点，当前不消费。两张表名（`patch_status`、`hoststate`）与库名约定（`{namespace}_meta_data`）都是兼容契约，见第 5 节。
 

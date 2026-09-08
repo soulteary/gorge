@@ -191,6 +191,29 @@ func TestBuildClusterFromFileInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestBuildClusterAcceptsRolesObjectAndScalarPartition(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"mysql.user": "root",
+		"cluster.databases": [
+			{"host": "master1", "roles": {"master": true}, "partition": "default"},
+			{"host": "replica1", "roles": {"replica": true}}
+		]
+	}`)
+	cc, err := (&Config{ConfigFile: path}).BuildCluster()
+	if err != nil {
+		t.Fatalf("BuildCluster rejected a compatible cluster shape: %v", err)
+	}
+	if len(cc.Masters()) != 1 || cc.Masters()[0].Host != "master1" {
+		t.Fatalf("roles.master was not parsed: %+v", cc.Refs)
+	}
+	if !cc.Masters()[0].IsDefaultPartition {
+		t.Fatal("scalar default partition was not parsed")
+	}
+	if len(cc.replicas) != 1 || cc.replicas[0].Host != "replica1" {
+		t.Fatalf("roles.replica was not parsed: %+v", cc.Refs)
+	}
+}
+
 func TestBuildClusterMultiNode(t *testing.T) {
 	path := writeConfigFile(t, `{
 		"mysql.user": "root",

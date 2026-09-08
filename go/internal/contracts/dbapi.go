@@ -145,7 +145,7 @@ type CharsetInfo struct {
 type MigrationStatus struct {
 	RefKey         string   `json:"refKey"`
 	Initialized    bool     `json:"initialized"`
-	AppliedPatches []string `json:"appliedPatches"`
+	AppliedPatches []string `json:"patch"`
 	MissingPatches []string `json:"missingPatches,omitempty"`
 	TotalExpected  int      `json:"totalExpected"`
 }

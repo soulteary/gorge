@@ -1,18 +1,58 @@
 package dbapi
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/soulteary/gorge/go/internal/platform/config"
 )
 
+// stringList accepts both Phorge's list form and the scalar form used by
+// older/forked local.json files.
+type stringList []string
+
+func (s *stringList) UnmarshalJSON(data []byte) error {
+	var values []string
+	if err := json.Unmarshal(data, &values); err == nil {
+		*s = values
+		return nil
+	}
+
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("partition must be a string or string list: %w", err)
+	}
+	if value == "" {
+		*s = nil
+	} else {
+		*s = []string{value}
+	}
+	return nil
+}
+
 // nodeSpec is one node of a Phorge `cluster.databases` array.
 type nodeSpec struct {
-	Host      string   `json:"host"`
-	Port      int      `json:"port,omitempty"`
-	User      string   `json:"user,omitempty"`
-	Pass      string   `json:"pass,omitempty"`
-	Role      string   `json:"role"`
-	Disabled  bool     `json:"disabled,omitempty"`
-	Partition []string `json:"partition,omitempty"`
+	Host      string          `json:"host"`
+	Port      int             `json:"port,omitempty"`
+	User      string          `json:"user,omitempty"`
+	Pass      string          `json:"pass,omitempty"`
+	Role      string          `json:"role"`
+	Roles     map[string]bool `json:"roles,omitempty"`
+	Disabled  bool            `json:"disabled,omitempty"`
+	Partition stringList      `json:"partition,omitempty"`
+}
+
+func (s nodeSpec) role() string {
+	if s.Role != "" {
+		return s.Role
+	}
+	if s.Roles["master"] {
+		return "master"
+	}
+	if s.Roles["replica"] {
+		return "replica"
+	}
+	return ""
 }
 
 // rawClusterFile is the subset of a Phorge local.json this service reads. The
@@ -69,7 +109,7 @@ func buildClusterFromRaw(raw rawClusterFile, base *Config) *ClusterConfig {
 			Port:     firstNonZero(spec.Port, raw.MysqlPort, base.MySQLPort, DefaultMySQLPort),
 			User:     firstNonEmpty(spec.User, raw.MysqlUser, base.MySQLUser),
 			Password: firstNonEmpty(spec.Pass, pass),
-			IsMaster: spec.Role == "master",
+			IsMaster: spec.role() == "master",
 			Disabled: spec.Disabled,
 		}
 		if len(spec.Partition) > 0 {

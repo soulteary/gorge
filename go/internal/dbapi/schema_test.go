@@ -131,6 +131,21 @@ func TestCheckRefPingFailed(t *testing.T) {
 	}
 }
 
+func TestCheckRefReportsQueryFailureAfterSuccessfulPing(t *testing.T) {
+	db, mock, _ := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	defer func() { _ = db.Close() }()
+	mock.ExpectPing()
+	mock.ExpectQuery("SELECT VERSION").WillReturnError(sql.ErrConnDone)
+	mock.ExpectClose()
+
+	cfg := singleNode(t)
+	svc := &SetupService{config: cfg, connFactory: mockConnFactory(db)}
+	issues := svc.checkRef(context.Background(), cfg.Refs[0])
+	if len(issues) != 1 || issues[0].Key != "db.connection" || !issues[0].IsFatal {
+		t.Fatalf("query failure should be a fatal connection issue, got %+v", issues)
+	}
+}
+
 // expectHealthyServerVariables queues the five server-variable rows at their
 // healthy values, so a full-pass check produces no variable warnings.
 func expectHealthyServerVariables(mock sqlmock.Sqlmock) {
@@ -230,7 +245,10 @@ func TestCheckServerVariablesAllWarn(t *testing.T) {
 		sqlmock.NewRows([]string{"v"}).AddRow(int64(1_000_000)))
 
 	svc := &SetupService{}
-	issues := svc.checkServerVariables(context.Background(), NewConnFromDB(db, DSN{}, true), "h1:3306")
+	issues, err := svc.checkServerVariables(context.Background(), NewConnFromDB(db, DSN{}, true), "h1:3306")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, key := range []string{
 		"mysql.max_allowed_packet", "sql_mode.strict",
 		"mysql.innodb_buffer_pool_size", "mysql.local_infile", "mysql.clock",
@@ -252,7 +270,10 @@ func TestCheckServerVariablesAllGood(t *testing.T) {
 	expectHealthyServerVariables(mock)
 
 	svc := &SetupService{}
-	issues := svc.checkServerVariables(context.Background(), NewConnFromDB(db, DSN{}, true), "h1:3306")
+	issues, err := svc.checkServerVariables(context.Background(), NewConnFromDB(db, DSN{}, true), "h1:3306")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(issues) != 0 {
 		t.Errorf("expected 0 issues for healthy variables, got %v", issues)
 	}

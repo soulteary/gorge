@@ -48,6 +48,12 @@ func TestDBAPIWireFieldNamesMatchPhorge(t *testing.T) {
 			want:   []string{"issueKey"},
 			absent: []string{"key"},
 		},
+		{
+			name:   "migration status",
+			value:  contracts.MigrationStatus{AppliedPatches: []string{"patch-1"}},
+			want:   []string{"patch"},
+			absent: []string{"appliedPatches"},
+		},
 	}
 
 	for _, tc := range cases {

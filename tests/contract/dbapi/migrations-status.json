@@ -10,12 +10,12 @@
   },
   "expect": {
     "status": 200,
-    "jsonHas": ["data.0.refKey", "data.0.appliedPatches"],
+    "jsonHas": ["data.0.refKey", "data.0.patch"],
     "jsonEquals": {
       "data.0.refKey": "db1:3306",
       "data.0.initialized": true,
       "data.0.totalExpected": 1
     },
-    "jsonAbsent": ["error"]
+    "jsonAbsent": ["error", "data.0.appliedPatches"]
   }
 }
