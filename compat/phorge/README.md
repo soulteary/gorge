@@ -1187,7 +1187,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 | `ERR_READONLY` | 409 | 对一个已降级为只读的连接/router 发起了写 | 409 因为调用方可以把写改发向一台可达的 master 来解决 |
 | `ERR_DB_ACCESS_DENIED` | 403 | 配置的库用户缺少该操作所需的权限 | 403 且与本服务自己的 token 校验（401）分开——修法是 GRANT，不是重试 |
 
-映射由 `codeForKind` 完成（`errors.go`）：域内先把驱动错误按 errno 分类成 `DBError`（`mysqlerr.go`，access-denied 一族 → `kindAccessDenied`），handler 的 `fail` 再把可被调用方处置的 kind 翻成上面三个码，**并且只答一句通用文案**——`genericMessage` 只说「哪一类东西出了问题」，绝不带主机名、库名或查询。一个通过了 token 校验的服务间调用方仍不该从响应体里拿到集群拓扑；真正的错误留给 `slog` 日志（走 `ERR_INTERNAL` 那条 `return err` 的路径）。
+映射由 `codeForKind` 完成（`errors.go`）：域内先把驱动错误按 errno 分类成 `DBError`（`mysqlerr.go`，access-denied 一族 → `kindAccessDenied`，2006/2013 连接中断 → `kindUnreachable`），handler 的 `fail` 再把可被调用方处置的 kind 翻成上面三个码，**并且只答一句通用文案**——`genericMessage` 只说「哪一类东西出了问题」，绝不带主机名、库名或查询。一个通过了 token 校验的服务间调用方仍不该从响应体里拿到集群拓扑；真正的错误留给 `slog` 日志（走 `ERR_INTERNAL` 那条 `return err` 的路径）。
 
 **`ERR_READONLY` 目前是一条定义了但七条只读路由都到不了的码。** 它随 `Router` 的只读降级逻辑（抄自 Phorge 的 `PhabricatorLiskDAO`：连不上 master 时翻只读、后续写被 `GetWriter` 拒成 `ERR_READONLY`）一起从旧服务搬来，保留是为了忠实复现 Phorge 的路由/降级语义、也为后续可能的写路径留着接口；但当前七个 handler 全是只读探测，走各 service 自己开的短连接，不经过 Router 的写入分支。**别因为「用不到」就把它删掉**，也别把它塌进平台码——它的语义是调用方可处置的，与另外两个同理。见 [`../../docs/modules/dbapi.md`](../../docs/modules/dbapi.md) 第 1、6 节。
 

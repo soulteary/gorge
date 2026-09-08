@@ -92,6 +92,19 @@ func (m *TxManager) IsInsideTransaction() bool {
 	return m.depth > 0
 }
 
+// queryContext executes through the active *sql.Tx. The active flag lets the
+// caller fall back to the pool when no transaction exists without racing a
+// separate IsInsideTransaction check against Commit or Rollback.
+func (m *TxManager) queryContext(ctx context.Context, query string, args ...any) (*sql.Rows, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.depth <= 0 || m.tx == nil {
+		return nil, false, nil
+	}
+	rows, err := m.tx.QueryContext(ctx, query, args...)
+	return rows, true, err
+}
+
 func (m *TxManager) savepointName() string {
 	return fmt.Sprintf("Aphront_Savepoint_%d", m.depth)
 }

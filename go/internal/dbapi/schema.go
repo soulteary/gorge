@@ -119,11 +119,14 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 	}
 	var tables []tableInfo
 	for rows.Next() {
-		var tableName, collation, engine string
+		var tableName string
+		var collation, engine sql.NullString
 		if err := rows.Scan(&tableName, &collation, &engine); err != nil {
 			return nil, classifyMySQLError(err)
 		}
-		tables = append(tables, tableInfo{name: tableName, collation: collation, engine: engine})
+		tables = append(tables, tableInfo{
+			name: tableName, collation: collation.String, engine: engine.String,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, classifyMySQLError(err)

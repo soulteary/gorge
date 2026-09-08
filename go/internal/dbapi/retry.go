@@ -52,7 +52,12 @@ func ConnectWithRetry(dsn DSN, readOnly bool, policy RetryPolicy) (*Conn, error)
 // transaction would break its atomicity — the same constraint Phorge's own
 // connection enforces.
 func QueryWithRetry(ctx context.Context, conn *Conn, txm *TxManager, policy RetryPolicy, query string, args ...any) (*sql.Rows, error) {
-	if !isReadQuery(query) || (txm != nil && txm.IsInsideTransaction()) {
+	if txm != nil {
+		if rows, active, err := txm.queryContext(ctx, query, args...); active {
+			return rows, err
+		}
+	}
+	if !isReadQuery(query) {
 		return conn.QueryContext(ctx, query, args...)
 	}
 

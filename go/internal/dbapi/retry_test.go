@@ -75,6 +75,45 @@ func TestQueryWithRetryInsideTransactionNoRetry(t *testing.T) {
 	}
 }
 
+func TestQueryWithRetryUsesActiveTransactionInsteadOfPassedPool(t *testing.T) {
+	txDB, txMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = txDB.Close() }()
+	poolDB, poolMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = poolDB.Close() }()
+
+	txMock.ExpectBegin()
+	txMock.ExpectQuery("SELECT transaction_value").
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("inside"))
+	txMock.ExpectRollback()
+
+	txm := NewTxManager(NewConnFromDB(txDB, DSN{}, false))
+	ctx := context.Background()
+	if err := txm.Begin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	outside := NewConnFromDB(poolDB, DSN{}, false)
+	rows, err := QueryWithRetry(ctx, outside, txm, DefaultRetryPolicy(), "SELECT transaction_value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rows.Close()
+	if err := txm.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := txMock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	if err := poolMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("query unexpectedly used the passed pool: %v", err)
+	}
+}
+
 func TestQueryWithRetryReadSuccess(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

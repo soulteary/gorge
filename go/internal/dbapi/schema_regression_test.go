@@ -280,3 +280,35 @@ func TestLoadActualSchemaPropagatesNestedQueryFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadActualSchemaAcceptsNullableViewMetadata(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").WillReturnRows(
+		sqlmock.NewRows([]string{"SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME"}).
+			AddRow("phorge_config", "utf8mb4", "utf8mb4_bin"))
+	mock.ExpectQuery("INFORMATION_SCHEMA.TABLES").WillReturnRows(
+		sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}).
+			AddRow("active_config", nil, nil))
+	mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").WillReturnRows(
+		sqlmock.NewRows([]string{"COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME"}))
+	mock.ExpectClose()
+
+	ref := &DatabaseRef{Host: "db1", Port: 3306}
+	svc := NewDiffService(&ClusterConfig{Refs: []*DatabaseRef{ref}, Namespace: "phorge"}, "secret")
+	svc.SetConnFactory(mockConnFactory(db))
+	tree, gotErr := svc.LoadActualSchema(context.Background(), ref)
+	if gotErr != nil {
+		t.Fatal(gotErr)
+	}
+	view := tree.Children[0].Children[0]
+	if view.Table != "active_config" || view.Engine != "" || view.Collation != "" {
+		t.Fatalf("nullable view metadata was not preserved: %+v", view)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+		t.Fatal(err)
+	}
+}

@@ -56,18 +56,20 @@ func isRetryableQueryErr(err error) bool {
 }
 
 // classifyMySQLError turns a driver error into a domain DBError, choosing the
-// kind from the errno. An access-denied maps to kindAccessDenied; anything
-// else that is a MySQL error but not otherwise special is treated as an
-// internal failure, since the caller cannot act on, say, a deadlock any
-// differently than on a bug. A non-MySQL query error is a connection-level
-// failure from database/sql (the lazy pool dials on first use), so it is
-// classified as unreachable.
+// kind from the errno. An access-denied maps to kindAccessDenied, and a dropped
+// connection maps to kindUnreachable. Other MySQL errors are internal since a
+// caller cannot act on, say, a deadlock differently than on a bug. A non-MySQL
+// query error is also a connection-level failure from database/sql (the lazy
+// pool dials on first use), so it is classified as unreachable.
 func classifyMySQLError(err error) *DBError {
 	var myErr *mysql.MySQLError
 	if errors.As(err, &myErr) {
 		kind := kindInternal
-		if accessDeniedCodes[myErr.Number] {
+		switch {
+		case accessDeniedCodes[myErr.Number]:
 			kind = kindAccessDenied
+		case retryableQueryCodes[myErr.Number]:
+			kind = kindUnreachable
 		}
 		return &DBError{Kind: kind, Message: err.Error(), Errno: myErr.Number}
 	}

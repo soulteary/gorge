@@ -126,7 +126,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 | `ERR_READONLY` | 409 | 对一个已降级为只读的连接/router 发起了写。409 因为调用方可以把写改发向一台可达的 master 来解决 |
 | `ERR_DB_ACCESS_DENIED` | 403 | 配置的库用户缺少该操作所需的权限。403 因为这是数据库上的授权问题，与本服务自己的 token 校验（401）不同——修法是 GRANT，不是重试 |
 
-映射由 `codeForKind` 完成（`errors.go`）：域内把驱动错误分类成 `DBError`（`mysqlerr.go` 按 errno 表，access-denied 一族 → `kindAccessDenied`），handler 的 `fail` 再把可被调用方处置的 kind 翻成上面三个码，**并且答一句通用文案**——`genericMessage` 只说「哪一类东西出了问题」，绝不带主机名、库名或查询。一个通过了 token 校验的服务间调用方，仍然不该从响应体里拿到集群的拓扑细节；真正的错误留给 `slog` 日志（走 `ERR_INTERNAL` 那条 return err 的路径）。
+映射由 `codeForKind` 完成（`errors.go`）：域内把驱动错误分类成 `DBError`（`mysqlerr.go` 按 errno 表，access-denied 一族 → `kindAccessDenied`，2006/2013 连接中断 → `kindUnreachable`），handler 的 `fail` 再把可被调用方处置的 kind 翻成上面三个码，**并且答一句通用文案**——`genericMessage` 只说「哪一类东西出了问题」，绝不带主机名、库名或查询。一个通过了 token 校验的服务间调用方，仍然不该从响应体里拿到集群的拓扑细节；真正的错误留给 `slog` 日志（走 `ERR_INTERNAL` 那条 return err 的路径）。
 
 **其余失败一律收敛进平台六码**：鉴权→`ERR_UNAUTHORIZED`(401)、`:ref` 无匹配→`ERR_NOT_FOUND`(404)、无路由→`ERR_NOT_FOUND`、内部/不可处置的驱动错误→`ERR_INTERNAL`(500)。如第 1 节所述，`ERR_READONLY` 当前是一条定义了但七条只读路由都到不了的码，它随 Router 的写入路径一起保留。
 

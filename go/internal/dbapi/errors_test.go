@@ -107,6 +107,18 @@ func TestClassifyMySQLErrorOther(t *testing.T) {
 	}
 }
 
+func TestClassifyMySQLConnectionLossAsUnreachable(t *testing.T) {
+	for _, errno := range []uint16{2006, 2013} {
+		err := classifyMySQLError(&mysql.MySQLError{Number: errno, Message: "connection lost"})
+		if err.Kind != kindUnreachable {
+			t.Errorf("errno %d: kind = %d, want kindUnreachable", errno, err.Kind)
+		}
+		if err.Errno != errno {
+			t.Errorf("errno %d: preserved errno = %d", errno, err.Errno)
+		}
+	}
+}
+
 // TestClassifyMySQLErrorNonDriver: database/sql dials lazily, so a non-driver
 // query error is a connection-level failure and must be caller-actionable.
 func TestClassifyMySQLErrorNonDriver(t *testing.T) {
