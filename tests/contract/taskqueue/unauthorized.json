@@ -1,0 +1,14 @@
+{
+  "name": "missing service token is rejected",
+  "description": "401 ERR_UNAUTHORIZED with no data field. The token guards a queue whose contents drive Phorge's daemons: an unauthenticated caller could enqueue work, lease and complete other workers' tasks, or read how much is backing up. The token is checked before the path is resolved, so an unauthenticated request to any /api/queue path answers 401 rather than 404. /healthz, /readyz and / are exempt so orchestration can probe without a secret.",
+  "request": {
+    "method": "GET",
+    "path": "/api/queue/stats"
+  },
+  "expect": {
+    "status": 401,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": { "error.code": "ERR_UNAUTHORIZED" },
+    "jsonAbsent": ["data"]
+  }
+}

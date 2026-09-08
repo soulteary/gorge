@@ -1,0 +1,23 @@
+{
+  "name": "enqueue accepts a task and returns it with an id and default priority",
+  "description": "POST /api/queue/enqueue is what Phorge's PhabricatorWorker::scheduleTask reaches over HTTP. The request body carries taskClass and the serialised data; an omitted priority defaults to 2000 (PriorityDefault), which is the value Phorge assigns a task scheduled without one. The response is the created task, carrying the id the caller uses to complete or fail it and the dataID linking it to its payload. This fixture mutates the queue — it is why stats.json pins only archivedCount exactly.",
+  "request": {
+    "method": "POST",
+    "path": "/api/queue/enqueue",
+    "headers": {
+      "X-Service-Token": "contract-token",
+      "Content-Type": "application/json"
+    },
+    "body": "{\"taskClass\":\"PhabricatorTestWorker\",\"data\":\"{\\\"key\\\":\\\"value\\\"}\"}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.id", "data.dataID", "data.dateCreated"],
+    "jsonEquals": {
+      "data.taskClass": "PhabricatorTestWorker",
+      "data.priority": 2000,
+      "data.failureCount": 0
+    },
+    "jsonAbsent": ["error"]
+  }
+}

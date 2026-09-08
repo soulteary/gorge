@@ -1,0 +1,20 @@
+{
+  "name": "an unreachable backend is an opaque 500 on stats",
+  "description": "This domain defines no error code of its own for a backend failure, and this fixture is what that decision looks like on the wire: the only failure the read endpoints have is 'the backend did not answer', and ERR_INTERNAL already says it. What the fixture pins is what does not come back — the DSN, the host, the port, the driver's message. A client that needs to tell 'the service is broken' from 'the service cannot reach the queue' reads /readyz, which does carry a reason.",
+  "request": {
+    "method": "GET",
+    "path": "/api/queue/stats",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 500,
+    "jsonEquals": {
+      "error.code": "ERR_INTERNAL",
+      "error.message": "internal server error"
+    },
+    "jsonAbsent": ["data"],
+    "bodyNotContains": ["3306", "10.0.0.9", "SELECT", "connection refused", "worker database"]
+  }
+}

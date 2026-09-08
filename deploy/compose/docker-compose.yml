@@ -309,6 +309,133 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- gorge-taskqueue: Phorge's daemon work queue behind an HTTP API ---
+  #
+  # The service half of a two-binary pipeline. It owns `{namespace}_worker`'s
+  # worker_activetask, worker_taskdata and worker_archivetask, and answers the
+  # /api/queue/** routes: enqueue puts a row in, lease hands rows to a worker,
+  # complete/fail/yield/cancel/awaken move them through their lifecycle. The
+  # gorge-worker service below is its only client.
+  #
+  # Like gorge-webhook it has a hard external dependency and no way to run
+  # without one — the database *is* the queue. Left unconfigured in this stack
+  # it dials 127.0.0.1, which inside a container is the container, and reports
+  # itself unready; that is the same answer it gives for a configured backend
+  # that is down, and there is nothing more useful to say. The default backend
+  # is MySQL; set GORGE_TASKQUEUE_BACKEND=redis with GORGE_TASKQUEUE_REDIS_ADDR
+  # to keep the queue off the primary database instead.
+  #
+  # It must be deployed *instead of* Phorge's own taskmaster daemons draining
+  # the same queue, not alongside them: two drains on one queue runs each task
+  # twice. See compat/phorge/README.md.
+  gorge-taskqueue:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-taskqueue
+        PORT: 8090
+    image: ghcr.io/soulteary/gorge-taskqueue:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8090"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # "mysql" (the default) or "redis". The Redis settings below are read
+      # only when this is "redis".
+      GORGE_TASKQUEUE_BACKEND: ${GORGE_TASKQUEUE_BACKEND:-mysql}
+      # Same posture as gorge-webhook: a blank host does not switch anything
+      # off — there is nothing to switch off — it falls through to 127.0.0.1
+      # and the service sits unready until this points at the MySQL holding the
+      # Phorge install's `{namespace}_worker` database.
+      GORGE_TASKQUEUE_MYSQL_HOST: ${GORGE_TASKQUEUE_MYSQL_HOST:-}
+      GORGE_TASKQUEUE_MYSQL_PORT: ${GORGE_TASKQUEUE_MYSQL_PORT:-3306}
+      GORGE_TASKQUEUE_MYSQL_USER: ${GORGE_TASKQUEUE_MYSQL_USER:-phorge}
+      GORGE_TASKQUEUE_MYSQL_PASS: ${GORGE_TASKQUEUE_MYSQL_PASS:-}
+      # Selects the database as `{namespace}_worker`, so it has to match the
+      # `storage.default-namespace` of the Phorge install being served.
+      GORGE_TASKQUEUE_NAMESPACE: ${GORGE_TASKQUEUE_NAMESPACE:-phorge}
+      # Read only when GORGE_TASKQUEUE_BACKEND is "redis".
+      GORGE_TASKQUEUE_REDIS_ADDR: ${GORGE_TASKQUEUE_REDIS_ADDR:-127.0.0.1:6379}
+      GORGE_TASKQUEUE_REDIS_PASSWORD: ${GORGE_TASKQUEUE_REDIS_PASSWORD:-}
+      GORGE_TASKQUEUE_REDIS_DB: ${GORGE_TASKQUEUE_REDIS_DB:-0}
+      GORGE_TASKQUEUE_REDIS_KEY_PREFIX: ${GORGE_TASKQUEUE_REDIS_KEY_PREFIX:-gorge:tq:}
+      # How long a leased task is left alone before another worker may take it,
+      # and how long a temporarily failed task waits before it is leasable
+      # again. Both are Phorge's own defaults, in seconds.
+      GORGE_TASKQUEUE_LEASE_DURATION: ${GORGE_TASKQUEUE_LEASE_DURATION:-7200}
+      GORGE_TASKQUEUE_RETRY_WAIT: ${GORGE_TASKQUEUE_RETRY_WAIT:-300}
+    ports:
+      - "${GORGE_TASKQUEUE_PORT:-8090}:8090"
+    healthcheck:
+      # /readyz, for the same reason gorge-webhook uses it: a taskqueue that
+      # cannot reach its backend is listening and answers /healthz with 200 but
+      # cannot lease a single task. Only this probe notices.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+  # --- gorge-worker: Phorge's taskmaster daemon as a standalone process ---
+  #
+  # The client half of the pipeline. It leases tasks from gorge-taskqueue over
+  # HTTP, runs them, and reports each result back — completing, failing, or
+  # yielding — the way PhabricatorTaskmasterDaemon does against the local queue.
+  # It touches no database of its own; its one dependency is the taskqueue
+  # service, which is why the two are separate binaries rather than one.
+  #
+  # Its only HTTP route is GET /api/worker/stats, and its healthcheck probes
+  # /healthz, not /readyz: with no external store to reach, readiness collapses
+  # into liveness. A worker that cannot reach the taskqueue simply leases
+  # nothing and keeps trying; that is a taskqueue problem, reported by the
+  # taskqueue's own /readyz, not a reason to cycle this container.
+  #
+  # Without GORGE_WORKER_CONDUIT_URL set it runs only the task classes it
+  # implements natively and fails the rest. Point that at Phorge's Conduit
+  # endpoint to install a fallback that delegates every other class to PHP.
+  gorge-worker:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-worker
+        PORT: 8170
+    image: ghcr.io/soulteary/gorge-worker:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8170"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # The taskqueue service this worker leases from. The default resolves the
+      # sibling service by its compose name; the token must match the
+      # taskqueue's GORGE_SERVICE_TOKEN.
+      GORGE_WORKER_TASK_QUEUE_URL: ${GORGE_WORKER_TASK_QUEUE_URL:-http://gorge-taskqueue:8090}
+      GORGE_WORKER_TASK_QUEUE_TOKEN: ${GORGE_WORKER_TASK_QUEUE_TOKEN:-${GORGE_SERVICE_TOKEN:-}}
+      # Lease loop behaviour: how many tasks to take per poll, how often to
+      # poll, how many to run at once, and how long to idle before backing off.
+      GORGE_WORKER_LEASE_LIMIT: ${GORGE_WORKER_LEASE_LIMIT:-4}
+      GORGE_WORKER_POLL_INTERVAL_MS: ${GORGE_WORKER_POLL_INTERVAL_MS:-1000}
+      GORGE_WORKER_MAX_WORKERS: ${GORGE_WORKER_MAX_WORKERS:-4}
+      GORGE_WORKER_IDLE_TIMEOUT_SEC: ${GORGE_WORKER_IDLE_TIMEOUT_SEC:-180}
+      # Blank = native handlers only. Point it at Phorge's Conduit to delegate
+      # every unhandled task class to PHP.
+      GORGE_WORKER_CONDUIT_URL: ${GORGE_WORKER_CONDUIT_URL:-}
+      GORGE_WORKER_CONDUIT_TOKEN: ${GORGE_WORKER_CONDUIT_TOKEN:-}
+      # Comma-separated allowlist of task classes; blank means everything the
+      # worker supports.
+      GORGE_WORKER_TASK_CLASS_FILTER: ${GORGE_WORKER_TASK_CLASS_FILTER:-}
+    ports:
+      - "${GORGE_WORKER_PORT:-8170}:8170"
+    depends_on:
+      - gorge-taskqueue
+    healthcheck:
+      # /healthz, not /readyz: this service has no external store of its own to
+      # prove reachable, so readiness is liveness. See the comment above.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8170/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
 networks:
   gorge:
     driver: bridge

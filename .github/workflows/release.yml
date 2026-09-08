@@ -54,6 +54,14 @@ jobs:
           # is delivering anything. See the compose service's comment.
           - service: gorge-webhook
             port: 8160
+          - service: gorge-taskqueue
+            port: 8090
+          # gorge-worker's listener is status only, like gorge-webhook's — its
+          # work is a lease loop against gorge-taskqueue — so this port's
+          # healthcheck is liveness, not a statement about whether it is
+          # processing anything. See the compose service's comment.
+          - service: gorge-worker
+            port: 8170
 
     steps:
       - name: Checkout code

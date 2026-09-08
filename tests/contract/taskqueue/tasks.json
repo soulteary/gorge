@@ -1,0 +1,16 @@
+{
+  "name": "the active tasks are listed as an array",
+  "description": "GET /api/queue/tasks lists active tasks ordered by priority then id, which is the order a worker leases them in. An empty queue answers [] not null so a JSON client can iterate without a nil check; the seeded queue is not empty, so this asserts the first element carries the same Phorge field names the single-task read does. The list omits each task's data payload — that is only returned on lease — so this fixture does not assert data.0.data.",
+  "request": {
+    "method": "GET",
+    "path": "/api/queue/tasks?limit=100",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.id", "data.0.taskClass", "data.0.priority"],
+    "jsonAbsent": ["error"]
+  }
+}
