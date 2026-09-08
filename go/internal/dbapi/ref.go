@@ -82,6 +82,14 @@ func (r *DatabaseRef) IsApplicationHost(app string) bool {
 	return r.ApplicationMap[app]
 }
 
+// ServesApplication reports whether the node carries an application's
+// database. An unpartitioned ref is the legacy generic form and serves every
+// application; an explicitly partitioned ref serves only its named apps (or
+// the default partition when flagged).
+func (r *DatabaseRef) ServesApplication(app string) bool {
+	return r.IsDefaultPartition || r.IsApplicationHost(app) || len(r.ApplicationMap) == 0
+}
+
 // toContract projects the ref onto its wire shape. The probe fields are copied
 // as-is; empty replica fields stay empty and are dropped by omitempty.
 func (r *DatabaseRef) toContract() contracts.ServerRef {

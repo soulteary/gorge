@@ -6,9 +6,9 @@ import (
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
 
-// MigrationService reports how far Phorge's `bin/storage upgrade` has run on
-// each master, by reading `{namespace}_meta_data.patch_status`. Only masters
-// are reported: a replica receives the same rows through replication.
+// MigrationService reports how far Phorge's `bin/storage upgrade` has run by
+// reading `{namespace}_meta_data.patch_status` on the master that owns the
+// metadata partition. A replica receives the same rows through replication.
 type MigrationService struct {
 	config      *ClusterConfig
 	password    string
@@ -33,20 +33,19 @@ func (m *MigrationService) buildDSN(ref *DatabaseRef) DSN {
 	}
 }
 
-// Status returns the migration status of each enabled master.
+// Status returns the migration status of the enabled master that serves the
+// meta_data application. Other application partitions do not carry this
+// database and must not be reported as uninitialized.
 func (m *MigrationService) Status(ctx context.Context) ([]contracts.MigrationStatus, error) {
-	statuses := make([]contracts.MigrationStatus, 0)
-	for _, ref := range m.config.GetAllRefs() {
-		if ref.Disabled || !ref.IsMaster {
-			continue
-		}
-		status, err := m.checkRef(ctx, ref)
-		if err != nil {
-			return nil, err
-		}
-		statuses = append(statuses, status)
+	ref := m.config.GetMasterForApplication("meta_data")
+	if ref == nil {
+		return []contracts.MigrationStatus{}, nil
 	}
-	return statuses, nil
+	status, err := m.checkRef(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return []contracts.MigrationStatus{status}, nil
 }
 
 // checkRef reads one master. A connection or ping failure leaves Initialized

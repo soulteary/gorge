@@ -77,11 +77,13 @@ func (s *SetupService) checkRef(ctx context.Context, ref *DatabaseRef) []contrac
 	}
 	issues = append(issues, versionIssues...)
 
-	metadataIssues, err := s.checkMetaDataDB(ctx, conn, refKey)
-	if err != nil {
-		return setupQueryFailure(refKey)
+	if ref.ServesApplication("meta_data") {
+		metadataIssues, err := s.checkMetaDataDB(ctx, conn, refKey)
+		if err != nil {
+			return setupQueryFailure(refKey)
+		}
+		issues = append(issues, metadataIssues...)
 	}
-	issues = append(issues, metadataIssues...)
 
 	variableIssues, err := s.checkServerVariables(ctx, conn, refKey)
 	if err != nil {

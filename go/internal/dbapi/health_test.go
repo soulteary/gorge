@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
@@ -32,6 +33,40 @@ func TestReadinessRequiresAnEnabledMaster(t *testing.T) {
 	}
 	if replicaProbed {
 		t.Fatal("readiness should probe enabled masters only")
+	}
+}
+
+func TestReadinessProbesMastersConcurrently(t *testing.T) {
+	healthyDB, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = healthyDB.Close() }()
+	mock.ExpectPing()
+	mock.ExpectClose()
+
+	masters := []*DatabaseRef{
+		{Host: "blackhole-1", IsMaster: true},
+		{Host: "blackhole-2", IsMaster: true},
+		{Host: "blackhole-3", IsMaster: true},
+		{Host: "healthy", IsMaster: true},
+	}
+	svc := NewHealthService(&ClusterConfig{Refs: masters, masters: masters})
+	svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+		if dsn.Host == "healthy" {
+			return NewConnFromDB(healthyDB, dsn, readOnly), nil
+		}
+		time.Sleep(100 * time.Millisecond)
+		return nil, errors.New("unreachable")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if !svc.anyReachable(ctx, "") {
+		t.Fatal("a healthy master must be probed before earlier blackholes exhaust the shared deadline")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+		t.Fatal(err)
 	}
 }
 

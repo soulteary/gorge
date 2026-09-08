@@ -20,8 +20,8 @@
 
 - **健康**（`HealthService`）：逐台探测连接与复制状态，镜像 Phorge 的 `PhabricatorDatabaseRef::queryAll`——一次短连接、一次 ping、对 MySQL 再跑一次 `SHOW REPLICA STATUS`。一台连不上的节点照样出现在结果里，`connectionStatus` 为 `fail`、原因在 `connectionMessage` 里，因为「这台服务器挂了」正是健康报告存在的理由。
 - **schema 诊断**（`DiffService`）：三级 `INFORMATION_SCHEMA` 遍历（Server → Database → Table → Column）把每台服务器的实际 schema 与 Phorge 的预期比对，产出一棵 `SchemaNode` 树（`/schema-diff`）或把问题拍平成 `SchemaIssue` 列表（`/schema-issues`），外加 `/charset-info` 报告每台能不能用 utf8mb4。
-- **环境检查**（`SetupService`）：跑 Phorge 的 `PhabricatorDatabaseSetupCheck` 与 `PhabricatorMySQLSetupCheck` 检的那些项——版本、InnoDB、`{namespace}_meta_data` 库在不在、一组服务器变量——每一条是一个 `SetupIssue`，`isFatal` 与 Phorge 的判定对齐。
-- **迁移状态**（`MigrationService`）：读每台 master 的 `{namespace}_meta_data.patch_status` 报告 `bin/storage upgrade` 跑到哪了（`/migrations/status`）。只报 master：replica 的 patch_status 通过复制到达，不是它自己迁出来的。
+- **环境检查**（`SetupService`）：跑 Phorge 的 `PhabricatorDatabaseSetupCheck` 与 `PhabricatorMySQLSetupCheck` 检的那些项——每台节点的版本、InnoDB 和服务器变量，以及真正承载 `meta_data` 的分区中 `{namespace}_meta_data` 库在不在——每一条是一个 `SetupIssue`，`isFatal` 与 Phorge 的判定对齐。
+- **迁移状态**（`MigrationService`）：读承载 `meta_data` 的 master 上 `{namespace}_meta_data.patch_status`，报告 `bin/storage upgrade` 跑到哪了（`/migrations/status`）。replica 的 patch_status 通过复制到达，不是它自己迁出来的。
 
 **不负责**：**改动集群**。它不建库、不建表、不改 schema、不跑迁移——所有这些都是 Phorge 的 `bin/storage upgrade` 的事，本服务只观察。它也不做连接池以外的**缓存**：每次请求都现查，因为一份「五分钟前的健康报告」在这个域里几乎没有价值。它更不是 Phorge 数据的读写代理——它不碰业务表，只碰 `INFORMATION_SCHEMA`、`SHOW *`、`patch_status` 与 `hoststate` 这类元信息。
 
@@ -52,7 +52,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 | GET | `/api/db/schema-issues` | 需要 | 信封，`SchemaIssue[]`（拍平的问题） |
 | GET | `/api/db/setup-issues` | 需要 | 信封，`SetupIssue[]` |
 | GET | `/api/db/charset-info` | 需要 | 信封，`CharsetInfo[]`（每台一条） |
-| GET | `/api/db/migrations/status` | 需要 | 信封，`MigrationStatus[]`（每台 master 一条） |
+| GET | `/api/db/migrations/status` | 需要 | 信封，`MigrationStatus[]`（`meta_data` master 一条） |
 | GET | `/`、`/healthz`、`/readyz` | 不需要（平台层注册） | 裸 `{"status":"ok"}` |
 
 **路径按域命名而非按二进制命名**（理由同 render / file-storage）：`PhabricatorGorgeDBClient` 按字面调这七条，改路径要同步改 PHP。`:ref` 是 `host:port` 形式的 refKey，与 Phorge 自己的 `PhabricatorDatabaseRef` key 相同，所以两侧指的是同一台服务器。
@@ -81,13 +81,13 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 ### 3.4 迁移状态读 `patch_status`，另读一次 `hoststate` 并丢弃
 
-`MigrationService.checkRef` 连到每台 master 的 `{namespace}_meta_data` 库读 `SELECT patch FROM patch_status`。**建连或 Ping 失败时 `initialized` 留 `false`，这是如实报告而不是错误**：`{namespace}_meta_data` 库还不存在，正是 `bin/storage upgrade` 跑之前的状态，调用方读到「未初始化」就对了。但 Ping 已成功后，读取 `patch_status` 失败会按域错误显式返回（权限不足为 403、连接中断为 503），不能伪装成 `initialized:true` 且 patch 列表为空。
+`MigrationService.Status` 先按分区路由选出承载 `meta_data` 的 enabled master，`checkRef` 再连接它的 `{namespace}_meta_data` 库读 `SELECT patch FROM patch_status`；其它应用的专属 master 不应有这个库，也不会被误报成未初始化。**建连或 Ping 失败时 `initialized` 留 `false`，这是如实报告而不是错误**：`{namespace}_meta_data` 库还不存在，正是 `bin/storage upgrade` 跑之前的状态，调用方读到「未初始化」就对了。但 Ping 已成功后，读取 `patch_status` 失败会按域错误显式返回（权限不足为 403、连接中断为 503），不能伪装成 `initialized:true` 且 patch 列表为空。
 
 它还额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，**读出来就丢**——`hoststate` 是 Phorge 在多 master 之间同步 `cluster.databases` 状态用的表，这里读它只是保留独立服务预留的那个多 master 同步接口点，当前不消费。两张表名（`patch_status`、`hoststate`）与库名约定（`{namespace}_meta_data`）都是兼容契约，见第 5 节。
 
 ### 3.5 `/readyz` 只 ping，且 DSN 不带库名——这是刻意躲开首启死锁
 
-`/readyz` 的判据只有一条：至少一台配置的 master 能被 ping 通（`anyReachable`）。**它只 ping、不查表，而且探测用的 DSN 不指定任何库名。** 两件事都是刻意的，理由与 file-storage 第 3.5 节、webhook 完全同源：
+`/readyz` 的判据只有一条：至少一台配置的 master 能被 ping 通（`anyReachable`）。所有 enabled master 在同一个 readiness deadline 内并发探测，前面的黑洞节点不会耗尽期限、阻止后面的健康节点得到机会。**它只 ping、不查表，而且探测用的 DSN 不指定任何库名。** 两件事都是刻意的，理由与 file-storage 第 3.5 节、webhook 完全同源：
 
 `{namespace}_meta_data` 这个库由 Phorge 的 `bin/storage upgrade` 建，而那条命令跑在**排在本服务之后启动**的 Phorge 容器里。如果 readiness 去查这个库或这张表，就构成一个闭环——本服务等一个只有 Phorge 能建的库、Phorge 等本服务健康，两个容器一起停在启动阶段。而且，如 compat 第 8.7 节实测所示，**光「不查表」还不够**：go-sql-driver 在握手阶段就把 DSN 里的库名发过去，库不存在时 ping 会失败在连接上。所以本服务的探测 DSN **根本不带库名**，一个 ping 就能打通一台 Phorge 库还没建出来的服务器。
 

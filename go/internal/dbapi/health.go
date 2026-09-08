@@ -60,19 +60,42 @@ func (s *HealthService) QueryOne(ctx context.Context, refKey, password string) (
 // backs the readiness probe; replicas cannot make a master-dependent service
 // ready on their own.
 func (s *HealthService) anyReachable(ctx context.Context, password string) bool {
+	refs := make([]*DatabaseRef, 0, len(s.config.Masters()))
 	for _, ref := range s.config.Masters() {
-		if ref.Disabled {
-			continue
+		if !ref.Disabled {
+			refs = append(refs, ref)
 		}
-		dsn := s.buildDSN(ref, password)
-		conn, err := s.connFactory(dsn, true)
-		if err != nil {
-			continue
-		}
-		err = conn.Ping(ctx)
-		_ = conn.Close()
-		if err == nil {
-			return true
+	}
+	if len(refs) == 0 {
+		return false
+	}
+
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	reachable := make(chan bool, len(refs))
+	for _, ref := range refs {
+		go func() {
+			dsn := s.buildDSN(ref, password)
+			conn, err := s.connFactory(dsn, true)
+			if err != nil {
+				reachable <- false
+				return
+			}
+			ok := conn.Ping(probeCtx) == nil
+			_ = conn.Close()
+			reachable <- ok
+		}()
+	}
+
+	for range refs {
+		select {
+		case ok := <-reachable:
+			if ok {
+				return true
+			}
+		case <-probeCtx.Done():
+			return false
 		}
 	}
 	return false

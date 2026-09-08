@@ -234,23 +234,25 @@ paths:
   /api/db/migrations/status:
     get:
       tags: [db]
-      summary: How far migrations have run on each master
+      summary: How far migrations have run on the metadata master
       description: |
-        Reads each master's own `{namespace}_meta_data.patch_status` and reports
-        the applied patches. Only masters are reported: a replica receives the
-        same rows through replication. `initialized` false means the `meta_data`
-        database does not exist yet — the pre-`bin/storage upgrade` state, not an
-        error — so this endpoint answers 200 with `initialized: false` rather
-        than failing when Phorge has not been set up. Once that database is
-        reachable, a failure to read `patch_status` is returned as an explicit
-        access-denied or database-unreachable error instead of an empty ledger.
+        Selects the enabled master serving the `meta_data` application, reads
+        its `{namespace}_meta_data.patch_status`, and reports the applied patches.
+        Masters dedicated to other application partitions are not queried; a
+        replica receives the same rows through replication. `initialized` false
+        means the `meta_data` database does not exist yet — the pre-`bin/storage
+        upgrade` state, not an error — so this endpoint answers 200 with
+        `initialized: false` rather than failing when Phorge has not been set up.
+        Once that database is reachable, a failure to read `patch_status` is
+        returned as an explicit access-denied or database-unreachable error
+        instead of an empty ledger.
       operationId: migrationStatus
       security:
         - ServiceTokenHeader: []
         - ServiceTokenQuery: []
       responses:
         '200':
-          description: One migration status per master
+          description: Migration status for the master serving meta_data
           content:
             application/json:
               schema:

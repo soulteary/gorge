@@ -116,11 +116,12 @@ func (c *Config) singleNodeCluster() *ClusterConfig {
 }
 
 // GetMasterForApplication returns the master serving a Phorge application,
-// preferring one explicitly bound to the application and falling back to the
-// default-partition master. This is Phorge's application-partition routing,
-// preserved so a partitioned deployment routes the same way Phorge does.
+// preferring one explicitly bound to the application, then the default
+// partition, then the legacy unpartitioned form. This is Phorge's
+// application-partition routing, preserved so a partitioned deployment routes
+// the same way Phorge does.
 func (cc *ClusterConfig) GetMasterForApplication(app string) *DatabaseRef {
-	var appMaster, defaultMaster *DatabaseRef
+	var appMaster, defaultMaster, unpartitionedMaster *DatabaseRef
 	for _, m := range cc.masters {
 		if m.Disabled {
 			continue
@@ -132,11 +133,17 @@ func (cc *ClusterConfig) GetMasterForApplication(app string) *DatabaseRef {
 		if m.IsDefaultPartition && defaultMaster == nil {
 			defaultMaster = m
 		}
+		if !m.IsDefaultPartition && len(m.ApplicationMap) == 0 && unpartitionedMaster == nil {
+			unpartitionedMaster = m
+		}
 	}
 	if appMaster != nil {
 		return appMaster
 	}
-	return defaultMaster
+	if defaultMaster != nil {
+		return defaultMaster
+	}
+	return unpartitionedMaster
 }
 
 // GetReplicaForApplication returns a replica for the application, matching the

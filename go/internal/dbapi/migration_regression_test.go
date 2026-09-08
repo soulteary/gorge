@@ -43,3 +43,35 @@ func TestMigrationStatusPropagatesLedgerQueryFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrationStatusUsesOnlyTheMetadataMaster(t *testing.T) {
+	defaultMaster := &DatabaseRef{Host: "default", Port: 3306, IsMaster: true, IsDefaultPartition: true}
+	metadataMaster := &DatabaseRef{
+		Host: "metadata", Port: 3306, IsMaster: true,
+		ApplicationMap: map[string]bool{"meta_data": true},
+	}
+	applicationMaster := &DatabaseRef{
+		Host: "maniphest", Port: 3306, IsMaster: true,
+		ApplicationMap: map[string]bool{"maniphest": true},
+	}
+	masters := []*DatabaseRef{defaultMaster, applicationMaster, metadataMaster}
+	svc := NewMigrationService(&ClusterConfig{
+		Refs: masters, Namespace: "phorge", masters: masters,
+	}, "secret")
+	var connected []string
+	svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+		connected = append(connected, dsn.Host)
+		return nil, errors.New("not initialized")
+	})
+
+	statuses, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].RefKey != metadataMaster.RefKey() {
+		t.Fatalf("migration statuses = %+v, want only metadata master", statuses)
+	}
+	if len(connected) != 1 || connected[0] != "metadata" {
+		t.Fatalf("connected hosts = %v, want [metadata]", connected)
+	}
+}

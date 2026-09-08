@@ -227,6 +227,35 @@ func TestCheckRefMissingMetaDataDatabase(t *testing.T) {
 	}
 }
 
+func TestCheckRefSkipsMetaDataDatabaseOutsideItsPartition(t *testing.T) {
+	db, mock, _ := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectPing()
+	mock.ExpectQuery("SELECT VERSION").WillReturnRows(
+		sqlmock.NewRows([]string{"v"}).AddRow("8.0.33"))
+	mock.ExpectQuery("SHOW ENGINES").WillReturnRows(
+		sqlmock.NewRows([]string{"Engine", "Support", "c1", "c2", "c3", "c4"}).
+			AddRow("InnoDB", "YES", nil, nil, nil, nil))
+	// No SHOW DATABASES expectation: a maniphest-only partition does not host
+	// meta_data, while the server-wide variable checks still apply.
+	expectHealthyServerVariables(mock)
+	mock.ExpectClose()
+
+	ref := &DatabaseRef{
+		Host: "maniphest", Port: 3306, IsMaster: true,
+		ApplicationMap: map[string]bool{"maniphest": true},
+	}
+	cfg := &ClusterConfig{Refs: []*DatabaseRef{ref}, Namespace: "phorge", masters: []*DatabaseRef{ref}}
+	svc := &SetupService{config: cfg, connFactory: mockConnFactory(db)}
+	if issues := svc.checkRef(context.Background(), ref); len(issues) != 0 {
+		t.Fatalf("application partition produced setup issues: %+v", issues)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestCheckServerVariablesAllWarn: every server variable at an unhealthy value
 // produces its warning, none of them fatal.
 func TestCheckServerVariablesAllWarn(t *testing.T) {
