@@ -456,6 +456,29 @@ func TestServesApplicationExcludesDefaultWhenSpecificExists(t *testing.T) {
 	}
 }
 
+func TestServesApplicationMatchesReplicaFallbackRouting(t *testing.T) {
+	filesMaster := &DatabaseRef{
+		Host: "files-master", IsMaster: true,
+		ApplicationMap: map[string]bool{"files": true},
+	}
+	defaultReplica := &DatabaseRef{Host: "default-replica", IsDefaultPartition: true}
+	legacyReplica := &DatabaseRef{Host: "legacy-replica"}
+	cc := &ClusterConfig{
+		masters:  []*DatabaseRef{filesMaster},
+		replicas: []*DatabaseRef{defaultReplica, legacyReplica},
+	}
+
+	if got := cc.GetReplicaForApplication("files"); got != legacyReplica {
+		t.Fatalf("routed replica = %v, want legacy fallback", got)
+	}
+	if cc.ServesApplication(defaultReplica, "files") {
+		t.Fatal("default replica must not serve an explicit master partition")
+	}
+	if !cc.ServesApplication(legacyReplica, "files") {
+		t.Fatal("legacy fallback replica should serve the explicit master partition")
+	}
+}
+
 func TestGetMasterForApplicationNoMatch(t *testing.T) {
 	cc := &ClusterConfig{masters: []*DatabaseRef{
 		{Host: "m1", Disabled: true, IsDefaultPartition: true},
