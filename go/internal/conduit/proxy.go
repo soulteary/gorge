@@ -131,13 +131,13 @@ var hopByHopHeaders = map[string]bool{
 // dropping the hop-by-hop set. It reads fasthttp's request header map directly
 // because Fiber has no net/http request to hand over.
 func copyRequestHeaders(c fiber.Ctx, dst http.Header) {
-	c.Request().Header.VisitAll(func(key, value []byte) {
+	for key, value := range c.Request().Header.All() {
 		k := string(key)
 		if hopByHopHeaders[http.CanonicalHeaderKey(k)] {
-			return
+			continue
 		}
 		dst.Add(k, string(value))
-	})
+	}
 }
 
 // copyResponseHeaders copies the upstream response headers onto the Fiber

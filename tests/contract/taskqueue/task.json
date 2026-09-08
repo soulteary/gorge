@@ -1,0 +1,21 @@
+{
+  "name": "an active task is returned with Phorge's field names",
+  "description": "GET /api/queue/tasks/:id returns one active task. The seeded store enqueues tasks with deterministic ids starting at 1, so this reads task 1. What it pins is the field spelling every reader depends on: id, taskClass, dataID, failureCount, priority and dateCreated are Phorge's own column names on worker_activetask, read back by PhabricatorWorkerActiveTask. failureCount is present-and-zero rather than absent because a fresh task has failed zero times, which is a number Phorge's console shows. A missing task is 404 ERR_NOT_FOUND, covered by the go handler tests.",
+  "request": {
+    "method": "GET",
+    "path": "/api/queue/tasks/1",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.id", "data.taskClass", "data.dataID", "data.priority", "data.dateCreated"],
+    "jsonEquals": {
+      "data.id": 1,
+      "data.taskClass": "PhabricatorTestWorker",
+      "data.failureCount": 0
+    },
+    "jsonAbsent": ["error"]
+  }
+}

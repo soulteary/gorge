@@ -1052,6 +1052,83 @@ SELECT status, lastRequestResult, lastRequestEpoch, properties
 
 ---
 
+## 十、task queue 与 worker：任务字段名与租约语义
+
+**Go 侧**：`go/internal/taskqueue/`（`mysql_store.go` / `redis_store.go` 的 SQL 与键结构、`http.go` 的路由）、`go/internal/worker/`（`consumer.go` 的回报分岔、`handlers/` 的 Conduit 委派）、`go/internal/contracts/taskqueue.go`（全部字段名与常量）
+**PHP 侧**：`PhabricatorWorkerActiveTask`、`PhabricatorWorkerArchiveTask`、`PhabricatorWorker`、`PhabricatorWorkerLeaseQuery`、`PhabricatorTaskmasterDaemon`
+（参考实现见 `phorge-fork/src/infrastructure/daemon/workers/`）
+
+**这一节与 webhook 那节同源——队列在数据库里，PHP 与 Go 之间一次 HTTP 都不发**（除非 worker 配了 Conduit 委派，那是反方向的、Go 打 PHP）。PHP 侧照旧把任务写进 `{namespace}_worker.worker_activetask` / `worker_taskdata`，Go 侧租走、跑完、归档进 `worker_archivetask`。所以本节没有一条能靠「打一个接口看它答什么」来验证，全部只能通过**读那几张表**来验。整节都是**静默型**：破坏后不报错，只错到没人发现。
+
+| 组 | 约束 | 破坏后的表现 |
+|---|---|---|
+| 任务字段名 | 10.1 `worker_activetask` / `worker_archivetask` 的列名映射 | **PHP 侧读到空值或界面显示错乱。**这些 JSON 键直接映射列名，改错一个不报错，`bin/worker` 与 Web UI 照旧渲染，只是渲染出空或错的值 |
+| 抢占语义 | 10.2 `leaseOwner` + `leaseExpires` 与 `(yield)` 哨兵 | **任务被两个 worker 同时取走，或 yield 任务失联。**这是抢占机制的地基，和 webhook 的 `status` 同源，任何一层都不报错 |
+| 结果值域 | 10.3 归档 `result` 整数、优先级带数值 | **控制台读不出结果，或排队顺序错乱。**整数值与数值本身是契约，不只是名字 |
+| 部署耦合 | 10.4 必须替换 `phd`；Redis 后端的可见性 | **每个任务跑两遍，或 Phorge 界面看到空队列。**见 10.4 |
+
+### 10.1 任务字段名逐一映射 `worker_activetask` 的列
+
+`contracts.Task` 的每个 JSON 键就是列名，一个都不能改名：
+
+```
+id  taskClass  leaseOwner  leaseExpires  failureCount
+dataID  failureTime  priority  objectPHID  containerPHID
+dateCreated  dateModified  data
+```
+
+`data` 来自 `worker_taskdata`（`JOIN` 出来），`dataID` 是它的外键。归档表（`contracts.ArchivedTask`）在这些之上多三列：`result`、`duration`、`archivedEpoch`。可空列（`leaseOwner` / `leaseExpires` / `failureTime` / `objectPHID` / `containerPHID`）在 JSON 里带 `omitempty` 且用指针，是为了让「没有值」和「值为零」可区分——一个从没被租的任务没有 `leaseExpires`，不是「在 epoch 时刻被租」。
+
+> **改任一字段名 = PHP 侧那一列读到空。**且不报错：Lisk 按列名映射对象属性，缺一个键只是那个属性保持默认值。
+
+**`worker_activetask.id` 由 `lisk_counter` 计数器分配，不是 AUTO_INCREMENT。**`PhabricatorWorkerActiveTask::getConfiguration()` 声明 `CONFIG_IDS => IDS_COUNTER`，所以它的 `id` 列是 `int unsigned NOT NULL` 且**没有** AUTO_INCREMENT——Phorge 在应用层用 `LiskDAO::loadNextCounterValue()` 从共享的 `lisk_counter` 表（`counterName = 'worker_activetask'`）取下一个值再写入。这带来两条约束：
+
+- **enqueue 的 INSERT 必须显式写 `id`。**一条省略 `id`、指望 `LastInsertId()` 的 INSERT 会直接报 `Error 1364 Field 'id' doesn't have a default value`——这正是迁入时的真实故障。Go 侧 `mysql_store.go` 的 `Enqueue` 因此先在同一事务里跑一遍 Phorge 那条 `INSERT ... ON DUPLICATE KEY UPDATE counterValue = LAST_INSERT_ID(counterValue + 1)`（`nextCounterValue`），拿到 id 再显式写进 `worker_activetask`。
+- **必须用同一个计数器行，不能改成 AUTO_INCREMENT 或另一套序列。**`phd` 与 gorge-taskqueue 会各自入队（见 10.4），两条路径共用 `lisk_counter` 的 `worker_activetask` 行才不会分配出撞号的 id。把 Go 侧换成 AUTO_INCREMENT（哪怕先给列加上）会让两套序列独立增长，迟早撞号，且不报错。`worker_taskdata` 是另一回事：它用 Phorge 默认的 `IDS_AUTOINCREMENT`，所以它的 id 照常靠 `LastInsertId()` 拿，不走计数器。
+
+（`enqueue` 的请求体因此**不带** `id`：契约不变，id 由 store 分配、随响应的 `id` 返回给 PHP，`PhabricatorWorker::scheduleTask` 再把它设到 ephemeral task 上。见 `api/openapi/taskqueue.yaml` 的 enqueue 描述。）
+
+
+### 10.2 抢占靠 `leaseOwner` + `leaseExpires`，yield 靠 `(yield)` 哨兵
+
+这张表没有 `status` 列（那是 webhook 队列的事），任务的「谁持有、持到几时」全在 `leaseOwner`（可空）与 `leaseExpires`（可空）两列上：
+
+- **未租** = `leaseOwner IS NULL`。租约阶段一只取这些。
+- **租约过期** = `leaseExpires < now`。阶段二取这些（崩溃的 worker、到期重试）。
+- **临时失败退避** = 清 `leaseOwner`、把 `leaseExpires` 设为 `now + retryWait`：既不算未租、也不算过期，退避期内租不到。
+- **yield** = `leaseOwner = '(yield)'`（`contracts.YieldOwner` 哨兵）、`leaseExpires = now + duration`。`awaken` 精确按这个字符串识别 yield 任务。
+
+> **`(yield)` 这个字面值不能改。**改了 `awaken` 就认不出任何 yield 任务，它们会一直躺到租约过期才被当成「过期任务」重新租走——语义变了，且不报错。**租约时长 / 退避 / yield 窗口的语义也不能各自为政**：它们共用 `leaseExpires` 一列，任一处把「未来的过期」写成「过去」，那行就立刻能被另一个 worker 抢走，于是同一个任务跑两遍。
+
+### 10.3 归档 `result` 是整数，优先级带是固定数值
+
+- `result` ∈ {`0`=success, `1`=failure, `2`=cancelled}，对齐 `PhabricatorWorkerArchiveTask::RESULT_*`。**是整数不是字符串**——写成字符串 Phorge 控制台读不出结果。
+- 优先级带：`PriorityAlerts=1000`、`PriorityDefault=2000`、`PriorityCommit=2500`、`PriorityBulk=3000`、`PriorityIndex=3500`、`PriorityImport=4000`。租约按 `ORDER BY priority ASC, id ASC`，而 Phorge 侧按同一套数值入队，所以改数值就是改跨 PHP/Go 的排队顺序。缺省优先级是 `PriorityDefault`（2000）。
+
+### 10.4 部署耦合：必须替换 `phd`，Redis 后端读不到旧队列
+
+- **`gorge-taskqueue` + `gorge-worker` 必须替换 Phorge 的 `phd` taskmaster 守护进程，而不是与之并存。**队列在库里，`phd` 与 gorge-worker 谁都能租 `worker_activetask`——两边同时跑就是每个任务跑两遍，且不报错。上线本管线前先停掉 PHP 侧的 `phd`。与第九节 9.7、[`../../docs/findings.md`](../../docs/findings.md) 第 38 条同源（webhook 是同一类耦合）。
+- **选 Redis 后端时，队列不在 Phorge 的库里。**于是 Phorge 的 `bin/worker` 与 Web UI 的任务视图读到一个空队列——这不是 bug，是「把队列挪出主库」的代价。要保留 Phorge 自己的任务视图就用默认的 MySQL 后端。
+
+**验证本节**：入队一个任务后读表确认列名与值——
+
+```sql
+SELECT id, taskClass, leaseOwner, leaseExpires, failureCount, priority
+  FROM worker_activetask ORDER BY id DESC LIMIT 5;
+SELECT id, taskClass, result, duration FROM worker_archivetask ORDER BY id DESC LIMIT 5;
+```
+
+lease 一次确认 `leaseOwner` 被写成请求的 `X-Lease-Owner`、`leaseExpires` 是未来；yield 一次确认 `leaseOwner` 变成 `(yield)`；complete 一次确认行从 active 消失、出现在 archive 且 `result=0`。
+
+### 10.5 Conduit 委派：`worker.execute` 必须走表单编码，不能发 JSON
+
+gorge-worker 租到一个自己没有本地实现的 task class 时，经 conduit 网关（`GORGE_WORKER_CONDUIT_URL`）调 Phorge 的 `worker.execute` 把业务逻辑交回 PHP。这里有两条硬约束：
+
+- **请求必须是表单编码，不能是 `application/json`。**Phorge 的 `PhabricatorConduitAPIController` 会**显式拒绝** `Content-Type: application/json`（"Use form-encoded data to submit parameters to Conduit endpoints"），而它无法当作 Conduit 请求解析的 body 会被更外层的 HTTP 栈用一张 **HTML 页面**回应——这正是迁入时委派环节 `invalid character '<'` 的真实故障。Go 侧 `handlers/conduit.go` 因此照 Phorge 自家客户端（arcanist 的 `ConduitClient`、旧的 `PhabricatorGoConduitGatewayClient`）的线格式发：`POST /api/worker.execute`，`Content-Type: application/x-www-form-urlencoded`，body 带一个 `params` 字段（值是参数 map 的 JSON，token 塞在 `__conduit__.token`），外加 `output=json`；网关另用 `X-Service-Token` 头认证。
+- **`worker.execute` 是 phorge-fork 侧新增的 Conduit method**（`PhabricatorWorkerExecuteConduitAPIMethod`），必须存在于 `__phutil_library_map__.php` 里，否则 Phorge 会以 Conduit 的方法未知错误（JSON 信封）或——若请求格式又不对——HTML 回应。它 `shouldRequireAuthentication()=false` 且 `shouldAllowUnguardedWrites()=true`（网关已认证、无用户会话、无 CSRF 面），按 `taskClass`+`data` 用 `newv()` 造出真正的 worker 跑 `executeTask()`，把分类**回报**而非自己驱动队列：`success` / `yield`（带 `retry`）/ `permanent-failure` / `failure`（临时）。gorge-worker 据此翻译成 `complete` / `yield` / `fail(permanent)` / `fail(临时)`。改这个方法名或它的返回分类，会让委派回来的任务全部被当成临时失败反复重试。
+
+---
+
 ## 附：鉴权与响应信封
 
 五个 PHP 客户端（Render / Mailer / Search / FileStorage / Webhook，共同的请求构建与信封解析已抽到 `PhabricatorGorgeServiceClient` 基类）依赖以下两点，改动会直接打断 PHP 侧：
@@ -1097,6 +1174,8 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 
 **webhook 域一个都没加，而这是决定而不是遗漏。**它的两个端点都只做一件事——数行——所以唯一的失败是数据库没答话，平台的 `ERR_INTERNAL` 已经说完了；而真正需要被区分出来的那个状态（「服务活着但连不上队列」）由 `/readyz` 报告，还附带一句失败原因，一个新码在这上面改进不了任何东西。这个选择由 `tests/contract/webhook/unavailable/stats-database-unreachable.json` 从**反面**钉住：既然没有域码承载细节，message 就必须保持通用、body 不得泄漏 SQL、库名、主机或端口。**它与 diff 域「刻意没有域级错误码」不是同一个理由**——diff 是「没有可报告的失败模式」，webhook 是「失败模式只有一个，而平台码已经说完了」。判据是那个失败在调用方那里是否引出一个与平台码不同的动作。
 
+**taskqueue 与 worker 也都没加，同 webhook 的理由。**taskqueue 的失败要么是入参错（`ERR_BAD_REQUEST` 400、任务不存在 `ERR_NOT_FOUND` 404），要么是后端没答话（`ERR_INTERNAL` 500）；「服务活着但连不上队列」同样由 `/readyz` 报告。这个选择由 `tests/contract/taskqueue/unavailable/`（`stats.json`、`tasks.json`）从反面钉住：message 保持通用、body 不得泄漏 SQL、库名、主机、端口或「connection refused」。worker 的 `/api/worker/stats` 读进程内计数器，永不失败，连错误路径都没有。所以**域级错误码总数仍然是九个**。
+
 mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另外 mailer 域的后端失败一律落在 422 或 502，**不落 500**——那里的 500 只意味着服务自己出了问题。search 域的五个同理：全部 502，500 在那个域只意味着服务自己坏了。
 
 **但 search 那五个目前在 PHP 侧没有消费者。**`PhabricatorGorgeSearchClient` 没有覆盖 `newServiceErrorException()`（`PhabricatorGorgeMailerClient` 覆盖了，因为 6.2 那两个码必须分道），所以十一个码全部塌成同一个通用异常，码本身只作为文本活在异常消息里。这是当前**刻意保留**的行为，登记在 [`../../docs/findings.md`](../../docs/findings.md) 第 21 条——记录事实，不是提议改 Go 侧。五个码分开的价值在 `bin/search` 与运维读日志时兑现，不在 PHP 的异常分支上。
@@ -1109,10 +1188,10 @@ mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另�
 
 **健康探针不套信封**：`GET /`、`GET /healthz`、`GET /readyz` 返回裸 `{"status":"ok"}`。这是给容器探针和负载均衡用的，不要「顺手统一」成信封格式。
 
-本附录讲的是 `/api/**`，即 render、diff、mailer、search、file-storage 与 webhook 六个域——六者的鉴权口径完全一致，信封口径有一处**记录在案的例外**，另外传输上限各不相同：
+本附录讲的是 `/api/**`，即 render、diff、mailer、search、file-storage、webhook、taskqueue 与 worker 八个域——八者的鉴权口径完全一致，信封口径有一处**记录在案的例外**，另外传输上限各不相同：
 
-- **例外只有一个**：file-storage 的 `GET /api/file/blob` **成功**时答原始 `application/octet-stream` 字节而非信封，失败仍是信封。所以那一条路径上按状态码分支，别按 body 形状分支，理由与陷阱见第八节 8.6。除它之外，本附录对六个域一字不差地成立——包括 file-storage 自己的另外三条路径，以及它端口上任何由框架产生的响应（`TestUnknownPathKeepsTheEnvelope` 断言这一点，webhook 域有一份同名的）。
-- **`ERR_TOO_LARGE` 的来源**：render / diff 的传输层上限是 `2M` 并另有域级字节检查；mailer 是 `10M`（base64 让附件涨三分之一），没有域级字节检查，正文超限是静默截断而不是拒绝；search 用平台默认的 `2M`，也没有域级字节检查——一份文档多大是 Phorge 的事，而语料大到成问题时那是存储的配置问题，不是线上的；file-storage 是 **`16M`**（文件是裸请求体），它的「域级」检查是各存储引擎自己的 `MaxFileSize()`——只有在请求**指名了引擎**时才答 413，未指名而所有引擎都收不下时答的是 503 `ERR_NO_ENGINE`；webhook 用平台默认的 `2M` 而且**永远碰不到它**，因为它的两个端点都是 `GET`、没有请求体。
-- **webhook 只在这个附录的范围内占一半。**它的 `/api/webhook/**` 完全照本附录办事，但那两条路径的唯一消费者是一个 setup check——本域真正要紧的契约在它**发出去**的那份文档上，而那份东西既不鉴权、不套信封，也不由本仓库的任何一个端点承载。别把「这两个端点都符合附录」读成「这个域的兼容面已经覆盖了」，见第九节。
+- **例外只有一个**：file-storage 的 `GET /api/file/blob` **成功**时答原始 `application/octet-stream` 字节而非信封，失败仍是信封。所以那一条路径上按状态码分支，别按 body 形状分支，理由与陷阱见第八节 8.6。除它之外，本附录对八个域一字不差地成立——包括 file-storage 自己的另外三条路径，以及它端口上任何由框架产生的响应（`TestUnknownPathKeepsTheEnvelope` 断言这一点，webhook 与 taskqueue 域各有一份同名的）。
+- **`ERR_TOO_LARGE` 的来源**：render / diff 的传输层上限是 `2M` 并另有域级字节检查；mailer 是 `10M`（base64 让附件涨三分之一），没有域级字节检查，正文超限是静默截断而不是拒绝；search 用平台默认的 `2M`，也没有域级字节检查——一份文档多大是 Phorge 的事，而语料大到成问题时那是存储的配置问题，不是线上的；file-storage 是 **`16M`**（文件是裸请求体），它的「域级」检查是各存储引擎自己的 `MaxFileSize()`——只有在请求**指名了引擎**时才答 413，未指名而所有引擎都收不下时答的是 503 `ERR_NO_ENGINE`；webhook 用平台默认的 `2M` 而且**永远碰不到它**，因为它的两个端点都是 `GET`、没有请求体；taskqueue 用平台默认的 `2M`（入队的任务负载都远小于此），worker 只有一个 `GET` 状态端点、同样碰不到。
+- **webhook、taskqueue 与 worker 只在这个附录的范围内占一半。**它们的 `/api/**` 完全照本附录办事，但真正要紧的契约在别处：webhook 在它**发出去**的那份文档上（第九节），taskqueue 与 worker 在它们**读写的那几张 worker 表**上（第十节），那些东西都不由本仓库的任何一个端点承载。别把「这些端点都符合附录」读成「这几个域的兼容面已经覆盖了」。
 
 **notification 的两个端口不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。

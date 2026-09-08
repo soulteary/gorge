@@ -1,0 +1,22 @@
+{
+  "name": "lease takes tasks and returns them with their data",
+  "description": "POST /api/queue/lease is how a worker takes ownership of runnable tasks. The lease owner travels in the X-Lease-Owner header, not the body, because it identifies the caller; the body carries the limit and an optional taskClasses allowlist applied before ownership changes. The response is an array of tasks, each carrying its data payload — the one place data is returned, so a worker need not fetch it separately. Because the seeded queue contains the requested class, at least one task comes back; leaseOwner on it is the header value. An empty queue would answer data:[] instead.",
+  "request": {
+    "method": "POST",
+    "path": "/api/queue/lease",
+    "headers": {
+      "X-Service-Token": "contract-token",
+      "Content-Type": "application/json",
+      "X-Lease-Owner": "contract-worker"
+    },
+    "body": "{\"limit\":1,\"taskClasses\":[\"PhabricatorTestWorker\"]}"
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.0.id", "data.0.taskClass"],
+    "jsonEquals": {
+      "data.0.leaseOwner": "contract-worker"
+    },
+    "jsonAbsent": ["error"]
+  }
+}

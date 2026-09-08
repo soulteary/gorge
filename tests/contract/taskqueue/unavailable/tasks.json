@@ -1,0 +1,20 @@
+{
+  "name": "an unreachable backend is an opaque 500 on the task list",
+  "description": "The list endpoint fails the same way stats does when the backend is unreachable: a generic 500 ERR_INTERNAL that leaks nothing about the store. It has its own fixture because ListActive is a separate query from Stats, and a backend that answers one but not the other is a real state — so both are pinned to fail closed rather than leak.",
+  "request": {
+    "method": "GET",
+    "path": "/api/queue/tasks",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 500,
+    "jsonEquals": {
+      "error.code": "ERR_INTERNAL",
+      "error.message": "internal server error"
+    },
+    "jsonAbsent": ["data"],
+    "bodyNotContains": ["3306", "10.0.0.9", "SELECT", "connection refused", "worker database"]
+  }
+}

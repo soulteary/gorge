@@ -1,0 +1,857 @@
+openapi: 3.0.3
+
+info:
+  title: Gorge Task Queue API
+  description: |
+    HTTP contract for the `gorge-taskqueue` binary, which serves Phorge's daemon
+    work queue: it owns `{namespace}_worker.worker_activetask`, `worker_taskdata`
+    and `worker_archivetask`, enqueues tasks, leases them to workers, and
+    archives them when they finish. It is the service half of a two-binary
+    pipeline; the `gorge-worker` binary is its client, leasing over the
+    `/api/queue/**` routes below. The worker's own read-only status endpoint,
+    `GET /api/worker/stats`, is documented at the end of this file so both
+    binaries of the pipeline share one document.
+
+    Two backends satisfy the same contract: MySQL over Phorge's own tables (the
+    default) and Redis for deployments that keep the queue off the primary
+    database. A caller cannot tell which is in use, and must not depend on one.
+
+    Response shapes:
+
+    - `/api/queue/**` returns the `{data, error}` envelope, with exactly one of
+      the two keys populated. This holds for failures the service never reached
+      a handler for — an unknown path, a recovered panic — because `httpx`
+      replaces the framework's default error handler.
+    - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
+      `{"status": "ok"}` with no envelope, because container probes consume them
+      directly.
+
+    Error codes: this domain adds none of its own. A malformed request is
+    `ERR_BAD_REQUEST`, a missing task on `GET /api/queue/tasks/:id` is
+    `ERR_NOT_FOUND`, and a backend that does not answer is `ERR_INTERNAL` with a
+    generic message — the query, the host and the driver's error go to the log,
+    not the body. A caller that needs to tell "the service is broken" from "the
+    service cannot reach the backend" reads `/readyz`, which carries a reason.
+
+    Field names are Phorge's, spelled exactly as `PhabricatorWorkerActiveTask`
+    and `PhabricatorWorkerArchiveTask` spell them — `taskClass`, `leaseOwner`,
+    `leaseExpires`, `failureCount`, `dataID`, `failureTime`, `objectPHID`,
+    `containerPHID`. They are read and written by both the Go service and the
+    PHP client, so none may be renamed. The schemas below mirror
+    `go/internal/contracts/taskqueue.go`, the single source of truth shared by
+    the Go service, the PHP client, this document and the fixtures under
+    `tests/contract/taskqueue/`. The database columns and the coupling of
+    `status`/`leaseOwner`/`failureCount` are a separate, stricter contract
+    documented in `compat/phorge/README.md`.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8090
+    description: Local development
+
+tags:
+  - name: queue
+    description: Enqueue, lease and archive tasks
+  - name: worker
+    description: Read-only status of the worker consumer (served by gorge-worker)
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+
+  /api/queue/enqueue:
+    post:
+      tags: [queue]
+      summary: Enqueue a task
+      description: |
+        What Phorge's `PhabricatorWorker::scheduleTask` reaches over HTTP. The
+        body carries the task class and its serialised data; an omitted
+        `priority` defaults to `2000` (the default band), and an omitted
+        `delayUntil` means "runnable now". The response is the created task,
+        carrying the `id` the caller uses to complete or fail it.
+
+        The request never carries an `id`: `worker_activetask` uses Phorge's
+        `IDS_COUNTER` mechanism (its `id` column is `int unsigned NOT NULL`
+        with no AUTO_INCREMENT), so the service allocates the id from the same
+        `lisk_counter` row a native `phd` enqueue would, keeping both paths on
+        one id sequence. See compat/phorge/README.md section 10.1.
+      operationId: enqueue
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnqueueRequest'
+      responses:
+        '200':
+          description: The created task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/lease:
+    post:
+      tags: [queue]
+      summary: Lease runnable tasks
+      description: |
+        Takes ownership of up to `limit` runnable tasks and returns them with
+        their data payloads — the one place `data` is returned, so a worker need
+        not fetch it separately. The lease owner travels in the `X-Lease-Owner`
+        header, not the body, because it identifies the caller and is written
+        into `worker_activetask.leaseOwner`; a request without it is attributed
+        to the client IP.
+
+        `taskClasses`, when present, filters candidates before ownership is
+        acquired. Dedicated worker pools use it to avoid leasing, failing and
+        delaying tasks intended for another pool. An omitted or empty list
+        accepts every class.
+
+        Unleased tasks are preferred over ones whose lease expired, and both are
+        ordered by `priority` ascending then `id` ascending. An empty result is
+        `data: []`, never `null`.
+      operationId: lease
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - name: X-Lease-Owner
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Identity the leased tasks are attributed to.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaseRequest'
+      responses:
+        '200':
+          description: The leased tasks, each with its data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/complete:
+    post:
+      tags: [queue]
+      summary: Archive a task as succeeded
+      description: |
+        Moves a task to the archive with result `0` (success), recording its
+        runtime in microseconds. The response is the archived task.
+      operationId: complete
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteRequest'
+      responses:
+        '200':
+          description: The archived task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchivedTaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/fail:
+    post:
+      tags: [queue]
+      summary: Fail a task
+      description: |
+        A permanent failure archives the task with result `1`; a temporary one
+        returns it to the queue with its `failureCount` incremented and a retry
+        backoff applied. `retryWait` overrides the service default for the
+        temporary case. This is the two failures Phorge's worker layer
+        distinguishes: `PhabricatorWorkerPermanentFailureException` and a plain
+        return.
+      operationId: fail
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FailRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/StatusOK'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/yield:
+    post:
+      tags: [queue]
+      summary: Yield a task
+      description: |
+        Returns a task to the queue under the `(yield)` sentinel owner for at
+        least `duration` seconds, matching `PhabricatorWorkerYieldException`. The
+        service floors the window at 5 seconds.
+      operationId: yield
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/YieldRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/StatusOK'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/cancel:
+    post:
+      tags: [queue]
+      summary: Cancel a task
+      description: Archives a task as cancelled (result `2`). The response is the archived task.
+      operationId: cancel
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelRequest'
+      responses:
+        '200':
+          description: The archived task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchivedTaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/awaken:
+    post:
+      tags: [queue]
+      summary: Awaken yielded tasks
+      description: |
+        Pulls yielded tasks forward so they become leasable again, reporting how
+        many it moved. Only tasks under the yield sentinel, with no failures and
+        within the awaken window, are affected — matching
+        `PhabricatorWorker::awakenTaskIDs`.
+      operationId: awaken
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AwakenRequest'
+      responses:
+        '200':
+          description: The number of tasks awakened
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AwakenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/stats:
+    get:
+      tags: [queue]
+      summary: Report the queue's state
+      description: |
+        Four counts, each a live query over the worker tables rather than a
+        counter this process keeps, so they survive a restart and describe the
+        queue every worker shares. `activeCount` is all live tasks,
+        `leasedCount` those currently held, `archivedCount` those that have
+        finished, and `failedCount` those with at least one failure.
+      operationId: queueStats
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The queue's current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+              example:
+                data:
+                  activeCount: 3
+                  leasedCount: 1
+                  archivedCount: 2
+                  failedCount: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/tasks:
+    get:
+      tags: [queue]
+      summary: List active tasks
+      description: |
+        Active tasks ordered by `priority` then `id`, the order a worker leases
+        them in. `limit` (default 100) and `offset` page the result. The list
+        omits each task's `data` payload — that is only returned on lease. An
+        empty queue answers `data: []`.
+      operationId: listTasks
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: The active tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/queue/tasks/{id}:
+    get:
+      tags: [queue]
+      summary: Read one active task
+      description: |
+        One active task by id, with its data. A task that does not exist is
+        `404 ERR_NOT_FOUND` — it may already have been archived, which is an
+        expected answer, not a server error.
+      operationId: getTask
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/worker/stats:
+    get:
+      tags: [worker]
+      summary: Report the worker consumer's state
+      description: |
+        **Served by the `gorge-worker` binary on its own port (`:8170`), not by
+        `gorge-taskqueue`.** It is documented here because the worker is the
+        other half of this pipeline and has only this one route.
+
+        Unlike `GET /api/queue/stats`, these are in-process counters, so they
+        reset on restart and describe only this worker's lifetime: how many
+        tasks it has processed, how many it has failed, how many it is running
+        right now, and which task classes it handles. `supported` contains `*`
+        when a Conduit fallback is configured, so a setup check can tell
+        "delegates everything to PHP" from "handles a fixed set".
+      operationId: workerStats
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: The worker's current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsumerStatsResponse'
+              example:
+                data:
+                  processed: 42
+                  failed: 1
+                  active: 2
+                  supported: ["FeedPublisherHTTPWorker", "*"]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: Always succeeds while the process is serving. Never authenticated. Reports nothing about the backend; use `/readyz`.
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: |
+        Succeeds once the configured backend answers, bounded by a 5-second
+        timeout. For MySQL it pings the `{namespace}_worker` database; for Redis
+        it pings the server. It deliberately does not check that the worker
+        tables exist — they are created by Phorge's `bin/storage upgrade`, which
+        may run after this container starts. The `reason` field carries the
+        cause, the one place in this service where a failure's detail reaches a
+        response body.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+        '503':
+          description: The backend cannot be reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: unavailable
+                reason: 'ping database: dial tcp 10.0.0.9:3306: connect: connection refused'
+
+  /:
+    get:
+      tags: [health]
+      summary: Root liveness probe
+      description: Alias of `/healthz`, kept for probes configured against `/`.
+      operationId: root
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOK'
+
+components:
+
+  securitySchemes:
+    ServiceTokenHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: Preferred form, and what the PHP client and the worker use. An empty configured token disables the check.
+    ServiceTokenQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: Fallback for callers that cannot set headers. Checked only when `X-Service-Token` is absent.
+
+  schemas:
+
+    Task:
+      type: object
+      required: [id, taskClass, failureCount, dataID, priority, dateCreated, dateModified]
+      properties:
+        id:
+          type: integer
+          format: int64
+        taskClass:
+          type: string
+          example: PhabricatorTestWorker
+        leaseOwner:
+          type: string
+          description: Absent on a never-leased task; `(yield)` on a yielded one.
+        leaseExpires:
+          type: integer
+          format: int64
+          nullable: true
+        failureCount:
+          type: integer
+        dataID:
+          type: integer
+          format: int64
+        failureTime:
+          type: integer
+          format: int64
+          nullable: true
+        priority:
+          type: integer
+          example: 2000
+        objectPHID:
+          type: string
+        containerPHID:
+          type: string
+        dateCreated:
+          type: integer
+          format: int64
+        dateModified:
+          type: integer
+          format: int64
+        data:
+          type: string
+          description: The serialised payload. Returned on lease and single-task read; omitted from the list.
+
+    ArchivedTask:
+      allOf:
+        - $ref: '#/components/schemas/Task'
+        - type: object
+          required: [result, duration]
+          properties:
+            result:
+              type: integer
+              description: '0 = success, 1 = failure, 2 = cancelled.'
+              enum: [0, 1, 2]
+            duration:
+              type: integer
+              format: int64
+              description: Runtime in microseconds.
+            archivedEpoch:
+              type: integer
+              format: int64
+              nullable: true
+
+    QueueStats:
+      type: object
+      required: [activeCount, leasedCount, archivedCount, failedCount]
+      properties:
+        activeCount:
+          type: integer
+          format: int64
+        leasedCount:
+          type: integer
+          format: int64
+        archivedCount:
+          type: integer
+          format: int64
+        failedCount:
+          type: integer
+          format: int64
+
+    ConsumerStats:
+      type: object
+      required: [processed, failed, active, supported]
+      properties:
+        processed:
+          type: integer
+          format: int64
+        failed:
+          type: integer
+          format: int64
+        active:
+          type: integer
+          format: int32
+        supported:
+          type: array
+          items:
+            type: string
+          description: Registered task classes, with `*` when a Conduit fallback is set.
+
+    EnqueueRequest:
+      type: object
+      required: [taskClass, data]
+      properties:
+        taskClass:
+          type: string
+        data:
+          type: string
+        priority:
+          type: integer
+        objectPHID:
+          type: string
+        containerPHID:
+          type: string
+        delayUntil:
+          type: integer
+          format: int64
+
+    LeaseRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          default: 1
+        taskClasses:
+          type: array
+          items:
+            type: string
+          description: Optional allowlist applied before tasks are leased; omitted or empty means every class.
+
+    CompleteRequest:
+      type: object
+      required: [taskID]
+      properties:
+        taskID:
+          type: integer
+          format: int64
+        duration:
+          type: integer
+          format: int64
+
+    FailRequest:
+      type: object
+      required: [taskID]
+      properties:
+        taskID:
+          type: integer
+          format: int64
+        permanent:
+          type: boolean
+        retryWait:
+          type: integer
+        message:
+          type: string
+
+    YieldRequest:
+      type: object
+      required: [taskID]
+      properties:
+        taskID:
+          type: integer
+          format: int64
+        duration:
+          type: integer
+
+    CancelRequest:
+      type: object
+      required: [taskID]
+      properties:
+        taskID:
+          type: integer
+          format: int64
+
+    AwakenRequest:
+      type: object
+      required: [taskIDs]
+      properties:
+        taskIDs:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    TaskResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Task'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    TaskListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ArchivedTaskResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ArchivedTask'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    StatsResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/QueueStats'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    ConsumerStatsResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ConsumerStats'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    AwakenResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            awakened:
+              type: integer
+              format: int64
+        error:
+          $ref: '#/components/schemas/Error'
+
+    StatusResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            status:
+              type: string
+              example: ok
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        data:
+          nullable: true
+        error:
+          $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - ERR_BAD_REQUEST
+            - ERR_UNAUTHORIZED
+            - ERR_NOT_FOUND
+            - ERR_METHOD_NOT_ALLOWED
+            - ERR_INTERNAL
+        message:
+          type: string
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        reason:
+          type: string
+
+  responses:
+
+    HealthOK:
+      description: Serving
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthStatus'
+          example:
+            status: ok
+
+    StatusOK:
+      description: The operation succeeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StatusResponse'
+          example:
+            data:
+              status: ok
+
+    BadRequest:
+      description: Malformed request body or parameter
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_BAD_REQUEST
+              message: taskClass is required
+
+    Unauthorized:
+      description: Missing or invalid service token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_UNAUTHORIZED
+              message: missing or invalid service token
+
+    NotFound:
+      description: No such task, or no route matched
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_NOT_FOUND
+              message: task not found
+
+    InternalError:
+      description: |
+        The backend did not answer. `ERR_INTERNAL` always carries the same
+        generic message; the query, the host and the driver's error go to the
+        log. A caller that needs to tell "broken" from "cannot reach the
+        backend" reads `/readyz`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: ERR_INTERNAL
+              message: internal server error

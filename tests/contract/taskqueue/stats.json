@@ -1,0 +1,19 @@
+{
+  "name": "the queue's state is reported as four counts",
+  "description": "GET /api/queue/stats is the queue's window for a Phorge setup check and an operator. The four fields are live counts over the worker tables (or their Redis equivalent), not counters this service keeps, so they survive a restart and describe the queue every worker shares. archivedCount is pinned exactly because completing a task is not something a fixture does, so it stays at the seeded value; the other three are asserted present because enqueue and lease fixtures in this directory move them. Field names are Phorge's and are read by PhabricatorWorker's own console, so none may be renamed.",
+  "request": {
+    "method": "GET",
+    "path": "/api/queue/stats",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.activeCount", "data.leasedCount", "data.failedCount"],
+    "jsonEquals": {
+      "data.archivedCount": 2
+    },
+    "jsonAbsent": ["error"]
+  }
+}

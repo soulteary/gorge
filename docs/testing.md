@@ -31,6 +31,8 @@
 | `file-storage/` | `gorge-file-storage` | `go/internal/filestorage/contract_test.go` |
 | `webhook/` | `gorge-webhook` | `go/internal/webhook/contract_test.go` |
 | `webhook/unavailable/` | 同上，但服务配的是一个必然失败的 store | 同一个文件里的第二个 `Run` |
+| `taskqueue/` | `gorge-taskqueue` | `go/internal/taskqueue/contract_test.go` |
+| `taskqueue/unavailable/` | 同上，但服务配的是一个必然失败的 store | 同一个文件里的第二个 `Run` |
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
 
@@ -41,6 +43,8 @@
 但 webhook 在这一层还有一件与前六个域都不同的事，读它的固件之前必须知道：**这批固件描述的是这个域较小的那一半。**`gorge-webhook` 真正在做的是排空一个队列并向第三方 POST，而那件事**没有任何请求能启动**——固件的形式是「一个请求加它的期望应答」，所以它只能描述本服务**答**的东西，描述不了本服务**发**的东西。而后者恰恰是这个域最硬的契约（投出去那份文档是逐字节钉住的，签名对它算），它由 `go/internal/webhook/dispatcher_test.go` 守着，那里可以把时钟按住并读出确切的字节。**别因为固件目录只有 5 份就以为这个域的契约面小。**
 
 webhook 的 runner 还有一条别的域都没有的前提：它必须**注入一个 store 而不是连 MySQL**，并且 seed 一份确切的状态（2 个 hook 其中 1 个禁用，queued / sent / failed = 3 / 2 / 1）。**那四个数字刻意互不相等**——只要有两个相等，`stats.json` 就能被一个答错字段的实现通过，而最容易混的那一对（`activeWebhooks` 与 `hooks.total`）正是那一个禁用 hook 分开的。这也是 `go/internal/webhook/store.go` 把 store 抽成 interface 的原因，而不是抽出来之后顺便能这么测：file-storage 能把固件指向一个本地目录、mailer 能指向一个 `test` 适配器，本域没有对应物，因为**两个端点都读库**。逐条对应与 seed 的完整要求见 [`../tests/contract/webhook/README.md`](../tests/contract/webhook/README.md)。
+
+**taskqueue 与 webhook 结构上完全同形**：一个 `unavailable/` 目录、runner 注入内存 `Store`（`memstore_test.go`）而不连 MySQL/Redis、seed 一份确定状态（3 个活跃任务、2 个归档任务）。它比 webhook 多一层要小心的东西：**固件里有会改状态的写操作**（`enqueue.json`、`lease.json`），而 `stats.json` 又要断言计数，所以固件按字母序执行时写操作会先跑。处理方式是让 `stats.json` 只精确断言不受写操作影响的 `archivedCount`（没有固件 complete 任务，所以归档数稳定在 2），其余三个计数只用 `jsonHas` 断言存在——这样固件对执行顺序稳健。这也是 taskqueue 一个域三份 store 实现（MySQL / Redis / 内存）的收益兑现处：三者满足同一个接口，contract 与 handler 测都注入最轻的那份。
 
 这些 runner 都只是三行 wrapper，真正的重放逻辑在 `go/internal/contracttest/`。它是 diff 迁入时从 render 的固件测试里抽出来的，抽出的理由不是省代码，而是**断言词汇必须在两个域之间保持一致**——各写一份 runner，两个域很快会开始用不同的方式描述自己的契约。它是普通包而非 `_test.go`，因为要被两个域的测试 import。
 
@@ -102,13 +106,15 @@ Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoute
 
 **webhook 域 5 份**：主目录 4 份（`stats` 的四个计数、`hooks` 数的是**每一个** hook 而不只是启用的、未授权、查询参数认证），`unavailable/` 1 份（数据库不可达时答 500 `ERR_INTERNAL`，且 body 里不出现库名、主机、端口或 SQL）。最后那一份是本域**没有域级错误码**这个决定的反面守卫：既然没有码承载细节，message 就必须保持通用。
 
+**taskqueue 域 8 份**：主目录 6 份（`enqueue` 入队并回显 id 与默认优先级、`lease` 用 `X-Lease-Owner` 头租走任务并回显 owner、`stats` 的四个计数、`tasks` 活跃任务列表、`tasks/:id` 单任务带 Phorge 列名、未授权），`unavailable/` 2 份（`stats` 与 `tasks` 在后端不可达时答 500 `ERR_INTERNAL`，且 body 不出现库名、主机、端口、SQL 或 `connection refused`）。worker 域**没有固件**：它唯一的端点读进程内计数器、永不失败，一个「请求加期望应答」的固件对它无可断言，那条路径由 `go/internal/worker/http_test.go` 覆盖。
+
 `index-cjk-document.json` 值得说一句它**验不到**什么：它断言一份中文文档写得进去、答 200 并回显 PHID，这是真的；但固件跑的是内存 `test` 后端，那个后端做子串匹配、不过分析器，所以**它对 `cjk` 子字段一无所知**。中文检索真正能不能工作只有 `tests/e2e/search.sh` 的第 11、12 条对着真 Elasticsearch 才验得到（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条末尾）。别把这份固件当成 CJK 的覆盖。
 
 这批固件让共享 runner 长了两处：`lookupJSONPath` 现在会**先把整段路径当字面量键查一次**再按 `.` 切分，否则 `clients.active` 这类键寻址不到（那些点是键名的一部分，不是嵌套）；`check` 现在对「只断言状态码与原始字节」的固件跳过 JSON 解码，否则 client 口那句纯文本 501 会在解码那一步就失败。两处都是共享词汇的扩展而非 notification 专用分支。
 
 file-storage 又让它长了第三处，形状相同：`expect.headerEquals` 断言响应头，头名按 canonical 形式匹配。逼出它的是那个非信封的读路径——`Content-Type` 正是 PHP 客户端用来分辨「一份文件」与「一个信封」的依据，而在此之前固件没有任何办法断言它。
 
-**webhook 一处都没让它长**，这本身值得记一句：它的两个端点答的都是最普通的信封加几个整数，共享词汇原样够用。所以「一个新域会不会给固件 runner 加东西」取决于它的**应答形状**有多特别，而不取决于这个域本身有多特别——而按后者算，webhook 是七个里最特别的一个。
+**webhook 一处都没让它长**，这本身值得记一句：它的两个端点答的都是最普通的信封加几个整数，共享词汇原样够用。**taskqueue 同样一处都没让它长**——它十条路由答的要么是信封包着 `Task` / 计数、要么是 `{"status":"ok"}`，共享词汇照旧够用。所以「一个新域会不会给固件 runner 加东西」取决于它的**应答形状**有多特别，而不取决于这个域本身有多特别——而按后者算，webhook 与 taskqueue 都在最特别的那几个里，却都没给 runner 添一行。
 
 diff 域**刻意没有**超限固件：两道尺寸护栏都随部署可配，一份断言 413 的固件会随被测服务的启动参数时过时不过，而这正是契约固件不能有的性质。那些路径在 `go/internal/diff/http_test.go` 里覆盖，那里可以设限。
 
@@ -140,7 +146,7 @@ prose diff 落在两者之间：它的输出没有外部基准，所以固件钉
 
 ## 4. e2e 冒烟
 
-七份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
+八份脚本，都对着**已经在跑**的实例执行，自己不启动也不清理任何东西：
 
 ```bash
 BASE_URL=http://127.0.0.1:8140 TOKEN=dev bash tests/e2e/render.sh
@@ -151,8 +157,9 @@ BASE_URL=http://127.0.0.1:8110 TOKEN=dev bash tests/e2e/mailer.sh
 BASE_URL=http://127.0.0.1:8120 TOKEN=dev bash tests/e2e/search.sh   # ⚠ 会销毁索引
 BASE_URL=http://127.0.0.1:8100 TOKEN=dev bash tests/e2e/file-storage.sh
 BASE_URL=http://127.0.0.1:8160 TOKEN=dev bash tests/e2e/webhook.sh
+BASE_URL=http://127.0.0.1:8090 TOKEN=dev bash tests/e2e/taskqueue.sh
 # 或
-TOKEN=dev-token make e2e     # 七份都跑
+TOKEN=dev-token make e2e     # 八份都跑
 ```
 
 render 与 diff 共用一个端口，所以那两份是「两个脚本打同一个 `BASE_URL`」，不是两套部署。notification 是另一个进程，而且**要两个变量**：`ADMIN_URL` 与 `CLIENT_URL` 不可互换，同一个请求在两个端口上的正确答案不一样，这正是它第 4、5 条场景要验证的东西。它也没有 `TOKEN`——那个域按设计不鉴权。
@@ -180,9 +187,11 @@ render 与 diff 共用一个端口，所以那两份是「两个脚本打同一�
 
 即便如此它仍有三条别处拿不到的断言：**`activeWebhooks` 永不大于 `hooks.total`**（第 7 条，两次独立查询、两张不同的表，一个把某个 COUNT 写在错误表上的实现在忙碌队列上会产出一组看起来很合理的数字）、**`/api/webhook/hooks` 的响应里不出现 hook 的 URI 或 HMAC key**（第 8 条，那个 key 就是「一次投递可信」的全部依据）、以及 **POST / PUT / DELETE 都不许答 200**（第 10 条，队列的内容归 Phorge，一个能推行进去的端点是给这张表开第二个入口）。它对被测实例的前提比其余六份都硬：**必须有一个可达的 `{namespace}_herald` 库**，没有可退回的本地后端——两个端点都在数行。空队列、零 hook 都没问题，每一条断言都是关于形状与不变量的，不关于具体数字。
 
-render、diff、mailer、search、file-storage 与 webhook 六份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+`taskqueue.sh` 十五条场景，而它与 webhook 那份最大的不同是**它能跑通本域的主要工作**：队列可写（`enqueue`），所以脚本能入一个任务、把它租回来、complete 掉，再读计数往前走——`archivedCount` 至少 +1（用「单调增长」而非精确算术断言，因为可能有并发 worker 在归档）。这也是它会留痕的原因：那个测试任务落在归档表里，这是对的——队列是一份日志。它用的 task class 是 Phorge 自己的 `PhabricatorTestWorker`，免得游荡的 worker 把它当真活干。前提与 webhook 同样硬：**必须有一个可达的后端（`{namespace}_worker` 库或 Redis）**，没有本地回退——每个端点都碰存储；`/readyz` 不通时脚本直接退出，因为后面每条都会失败。**worker（`gorge-worker`，`/api/worker/stats`）不在这八份里**：它的唯一端点读进程内计数器，一个 e2e 脚本对它无非再验一次探针与鉴权，而那已被 `go/internal/worker/http_test.go` 覆盖。
 
-它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。六个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）**但 `cmd/gorge-webhook` 是这句话第一次不完全成立的地方**：那个 `main()` 里的一半是「起投递 goroutine、收到信号后先排空再关连接池」这段编排，而 e2e 脚本只打 HTTP 端口，看不见它。
+render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
+
+它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。八个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）**但 `cmd/gorge-webhook` 与 `cmd/gorge-worker` 是这句话第一次不完全成立的地方**：那两个 `main()` 里的一半是「起后台 goroutine（webhook 投递 / worker 消费）、收到信号后先排空再关连接池」这段编排，而 e2e 脚本只打 HTTP 端口，看不见它。
 
 `diff.sh` 还有一个单元测试拿不到的作用：`\ No newline at end of file` 这个标记里含反斜杠，是整个 payload 里唯一会被 JSON 转义错误悄悄改坏的部分，而它只有过一趟真实的 HTTP 编解码才验证得到。
 
@@ -217,6 +226,8 @@ render、diff、mailer、search、file-storage 与 webhook 六份都在 `TOKEN` 
 | `cmd/gorge-search` | 0.0% |
 | `cmd/gorge-file-storage` | 0.0% |
 | `cmd/gorge-webhook` | 0.0% |
+| `cmd/gorge-taskqueue` | 0.0% |
+| `cmd/gorge-worker` | 0.0% |
 | **总计** | **74.9%** |
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
@@ -249,7 +260,7 @@ search 那次拉低总数的两个包：
 - Meilisearch：`exclude` 用 `id` 过滤，而 `id` 没被声明为 filterable，每个带 `exclude` 的查询 400。两条相关测试一条只看渲染出的字符串、一条拿同一个函数当实际值与期望值比对——**同一份误解的两侧**（[`findings.md`](findings.md) 第 17 条）。
 - Elasticsearch：mapping 按文档类型分 key，这在 ES 6 起就被拒绝，ES 7 上 `POST /api/search/init` 直接 `mapper_parsing_exception`。假集群对什么请求都答 200，所以它验不到（[`findings.md`](findings.md) 第 46 条）。同时查出 `exclude` 用的 `not` 查询在 ES 5.0 就已移除——**它在本后端支持的每个版本上都从未真的排除过任何东西**，且完全没有测试覆盖。
 
-所以第 4 节那七份 e2e 脚本不是「单元测试的补充」，在这两个后端上它们是**唯一**能问出问题的地方。`deploy/compose/demo/` 存在的理由正是这个：它把生产编排刻意留给使用者自建的后端一起拉起来，让 `search.sh` 那 18 条能真的对着 ES 7.17 与 Meilisearch 各跑一遍。
+所以第 4 节那八份 e2e 脚本不是「单元测试的补充」，在这两个后端上它们是**唯一**能问出问题的地方。`deploy/compose/demo/` 存在的理由正是这个：它把生产编排刻意留给使用者自建的后端一起拉起来，让 `search.sh` 那 18 条能真的对着 ES 7.17 与 Meilisearch 各跑一遍。
 
 生成报告：
 
