@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -307,6 +308,40 @@ func TestLoadActualSchemaAcceptsNullableViewMetadata(t *testing.T) {
 	view := tree.Children[0].Children[0]
 	if view.Table != "active_config" || view.Engine != "" || view.Collation != "" {
 		t.Fatalf("nullable view metadata was not preserved: %+v", view)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+		t.Fatal(err)
+	}
+}
+
+func TestCollectIssuesSanitizesDatabaseErrors(t *testing.T) {
+	if got := safeSchemaIssue(errors.New("SELECT leaked_table")); got != genericMessage(kindInternal) {
+		t.Fatalf("plain error sanitized as %q", got)
+	}
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").WillReturnError(
+		&mysql.MySQLError{Number: 1142, Message: "SELECT command denied on phorge_config.secret_table"})
+	mock.ExpectClose()
+
+	ref := &DatabaseRef{Host: "db1", Port: 3306}
+	svc := NewDiffService(&ClusterConfig{Refs: []*DatabaseRef{ref}, Namespace: "phorge"}, "secret")
+	svc.SetConnFactory(mockConnFactory(db))
+	issues, gotErr := svc.CollectIssues(context.Background())
+	if gotErr != nil {
+		t.Fatal(gotErr)
+	}
+	if len(issues) != 1 || issues[0].Issue != genericMessage(kindAccessDenied) {
+		t.Fatalf("sanitized issues = %+v", issues)
+	}
+	for _, secret := range []string{"SELECT", "phorge_config", "secret_table", "1142"} {
+		if strings.Contains(issues[0].Issue, secret) {
+			t.Fatalf("schema issue leaked %q: %+v", secret, issues[0])
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
 		t.Fatal(err)

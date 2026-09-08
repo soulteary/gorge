@@ -181,7 +181,7 @@ func (s *DiffService) CollectIssues(ctx context.Context) ([]contracts.SchemaIssu
 		if err != nil {
 			issues = append(issues, contracts.SchemaIssue{
 				RefKey: ref.RefKey(),
-				Issue:  err.Error(),
+				Issue:  safeSchemaIssue(err),
 				Status: "fail",
 			})
 			continue
@@ -189,6 +189,14 @@ func (s *DiffService) CollectIssues(ctx context.Context) ([]contracts.SchemaIssu
 		flattenIssues(tree, &issues)
 	}
 	return issues, nil
+}
+
+func safeSchemaIssue(err error) string {
+	var dbErr *DBError
+	if errors.As(err, &dbErr) {
+		return genericMessage(dbErr.Kind)
+	}
+	return genericMessage(kindInternal)
 }
 
 func flattenIssues(node *contracts.SchemaNode, out *[]contracts.SchemaIssue) {
