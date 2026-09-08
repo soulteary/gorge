@@ -368,7 +368,7 @@ throw new Exception(
 
 响应体也照抄：逐字节 `HTTP/501 Use Websockets\n`，末尾那个换行也在内（Aphlict 的 `AphlictClientServer.js:78` 原文）。PHP 目前不读这个 body，`tests/contract/notification/client/` 的固件按原文断言它，因为它是「这个端口还在讲 Aphlict 的话」唯一可见的证据，而将来客户端 JS 去读它的成本是零。
 
-**这条与平台层正面冲突，所以平台层为它长了一个字段。** `health.Register()` 本来无条件注册 `e.GET("/", Live())` 返回 200；`httpx.Config.SkipRootProbe` 为 true 时跳过这一条，把根路径让给域包。**全仓库只有 notification 的 client 端口设它**，理由写在 `health.go` 的注释里。摘掉这个字段、或者「为了一致性」把根探针加回这个端口，Phorge 会报 `Got HTTP 200, but expected HTTP 501`——这一条至少会报错，因为它走的是 `testClient()` 而不是 `postMessage()`。
+**这条与平台层正面冲突，所以平台层为它长了一个字段。** `health.Register()` 本来无条件注册 `app.Get("/", Live())` 返回 200；`httpx.Config.SkipRootProbe` 为 true 时跳过这一条，把根路径让给域包。**全仓库只有 notification 的 client 端口设它**，理由写在 `health.go` 的注释里。摘掉这个字段、或者「为了一致性」把根探针加回这个端口，Phorge 会报 `Got HTTP 200, but expected HTTP 501`——这一条至少会报错，因为它走的是 `testClient()` 而不是 `postMessage()`。
 
 `/healthz` 与 `/readyz` 照样注册，所以容器探针不受影响。豁免只挑根路径，不是整包跳过。
 
@@ -399,7 +399,7 @@ $clients = pht(
 
 还有一处细节：`history.age` 在 history 为空时必须是 `null` 而不是 0，所以 `contracts.AphlictStatus.HistoryAge` 是指针。PHP 只在 `idx($details, 'history.size')` 为真时才读它，所以这一条当前无害；保留它是为了不必将来再考古一次 Aphlict 的行为（`AphlictAdminServer.js:139` 也是 `var history_age = null;`）。
 
-### 5.4 admin handler 不能用 Echo 的 binder
+### 5.4 admin handler 必须按原始 JSON 解码
 
 **这一条是实现阶段才发现的，也正是这份文件存在的理由。**
 
@@ -416,16 +416,16 @@ $this->newFuture($server_uri, $payload)
 
 而这个请求到达时带的 `Content-Type` 是 curl 给字符串 body 贴的默认值 **`application/x-www-form-urlencoded`**（`HTTPSFuture` 在 arcanist 里、不在本仓库，所以这一条是从实际请求上观察到的，不是从代码读出来的）。
 
-Echo 的 `c.Bind()` 按 `Content-Type` 分派，而它对这个头**不报错**：`DefaultBinder.BindBody` 的 `case MIMEApplicationForm` 分支照字面意思去做表单解析（`bind.go` 第 105-112 行），而 `hub.Message` 是 `map[string]any`，正好落在 `bindData` 支持的那几种 map 目标里（第 169-190 行）。所以 admin 的 `POST /` 必须自己解 body：
+框架 binder 会按 `Content-Type` 分派；对这个头，它会照字面做表单解析，而 `hub.Message` 又是 `map[string]any`。所以 admin 的 `POST /` 必须无视标签，直接把原始字节按 JSON 解码：
 
 ```go
 var msg hub.Message
-if err := json.NewDecoder(c.Request().Body).Decode(&msg); err != nil {
+if err := json.Unmarshal(c.Body(), &msg); err != nil {
 	return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
 }
 ```
 
-**用 `c.Bind()` 的后果比「被拒绝」更糟：请求成功。**实测（Echo v4.15.4）把 `{"type":"notification"}` 贴上这个头交给 `c.Bind`，表单解析把整段 JSON 当成一个没有 `=` 的键，得到
+**用 `c.Bind()` 的后果比「被拒绝」更糟：请求可能成功。** 把 `{"type":"notification"}` 贴上这个头交给 Content-Type 驱动的 binder，表单解析会把整段 JSON 当成一个没有 `=` 的键，得到
 
 ```
 map[string]any{"{\"type\":\"notification\"}": ""}
@@ -437,7 +437,7 @@ map[string]any{"{\"type\":\"notification\"}": ""}
 
 这是本文件所有约束里最彻底的一条：其余几条至少在某处留下一个错误状态码，这一条什么都不留。
 
-**415 确实存在，但不在这条路上。** `BindBody` 的 `default:` 分支返回 `ErrUnsupportedMediaType`，命中它的是 Echo **不认识**的 mediatype——包括**空** `Content-Type`（第 82-84 行按 `;` 切完之后 mediatype 为空串）。Phorge 从不发空头，所以真实流量永远走不到 415。别照着 415 去找这个问题。
+**415 不是这条路的判据。** `application/x-www-form-urlencoded` 是 binder 认识的类型，真实流量可能被按错误格式成功解析。别用「没有 415」证明 body 没坏；必须检查消息字段确实按 JSON 进入 hub。
 
 守它的断言有三处。`c.Bind()` 破坏这条约束有**两条**路——payload 里带非法百分号转义的，在进 handler 之前就被拒成 400；不带的，答 200 而把 body 揉成垃圾键——下面这两处各只挡住其中一条（两条都挡的第三处见 5.5 末尾）。把它们各自守住多少记清楚很要紧，因为记强了比不记更坏：
 
@@ -1240,7 +1240,7 @@ curl -s -H 'X-Service-Token: dev-token' http://127.0.0.1:8080/api/db/setup-issue
 
 ## 附：鉴权与响应信封
 
-六个 PHP 客户端（Render / Mailer / Search / FileStorage / Webhook / DB，共同的请求构建与信封解析已抽到 `PhabricatorGorgeServiceClient` 基类）依赖以下两点，改动会直接打断 PHP 侧：
+使用共享信封的 PHP 客户端（Render / Mailer / Search / FileStorage / Webhook / DB，共同的请求构建与信封解析已抽到 `PhabricatorGorgeServiceClient` 基类）依赖以下两点，改动会直接打断 PHP 侧：
 
 （Webhook 那个是六个里的异类，值得知道：其余五个都是它们所代表的那份能力的**唯一**入口，而 webhook 的投递走数据库、与这个类无关——它上面最要紧的成员因此不是任何一个请求方法，而是 `isDeliveryDelegated()` 这个谓词。见 9.7。db-api 是六个里最规矩的一个，它的七条路由全走这个基类，没有 webhook 那样的旁路。）
 
@@ -1248,7 +1248,7 @@ curl -s -H 'X-Service-Token: dev-token' http://127.0.0.1:8080/api/db/setup-issue
 
 **响应信封**：`/api/**` 返回 `{data, error}`，`data` 与 `error` 恰有一个非空。PHP 客户端先检查 `$envelope['error']`，非空则抛异常（异常消息里带 `error.code`），否则返回 `$envelope['data']`。
 
-这条对没进到 handler 就失败的请求同样成立。`go/internal/platform/httpx/errors.go` 用 `e.HTTPErrorHandler` 顶掉了 Echo 的默认错误处理器，所以路由不匹配、请求体超过传输上限、handler panic 被 `Recover` 兜住这几种情况，PHP 客户端拿到的仍是信封，而不是 Echo 默认的 `{"message": "..."}`——后者会让客户端既读不到 `error` 也读不到 `data`，退化成一句语焉不详的解析失败。**别把这个处理器摘掉，也别在 `httpx.New()` 之外另建 Echo 实例。**
+这条对没进到 handler 就失败的请求同样成立。`go/internal/platform/httpx/errors.go` 通过 `fiber.Config.ErrorHandler` 替换框架默认处理器，所以路由不匹配、请求体超过传输上限、handler panic 被 Recover 兜住这几种情况，PHP 客户端拿到的仍是信封，而不是 Fiber 默认的纯文本响应——后者会让客户端既读不到 `error` 也读不到 `data`，退化成一句语焉不详的解析失败。**别把这个处理器摘掉，也别绕开 `httpx.New()` 另建 Fiber app。**
 
 唯一不带信封的错误响应是 `HEAD` 请求：协议不允许带响应体，只有状态码。PHP 客户端只发 POST/GET，不受影响。
 
@@ -1281,7 +1281,7 @@ diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一
 
 **db-api 的三个也没落进平台码，理由与 mailer 那两个同源——调用方需要区分。**`ERR_DB_UNREACHABLE`(503) / `ERR_READONLY`(409) / `ERR_DB_ACCESS_DENIED`(403) 分别对应「数据库 down 或还没起来」「写打在一个已降级只读的连接上」「库用户权限不足」，PHP 侧据不同的码走不同动作（等编排、改发 master、GRANT），塌成一个码就分不开了，见第十一节 11.3。其中 `ERR_READONLY` 当前是一条**定义了但七条只读路由都到不了**的码——它随 Router 的只读降级逻辑一起保留，不是遗漏。
 
-域级错误码**因此是十二个**，都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)，search 域的 `ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED`（均 502），file-storage 域的 `ERR_NO_ENGINE`(503)，以及 db-api 域的 `ERR_DB_UNREACHABLE`(503) / `ERR_READONLY`(409) / `ERR_DB_ACCESS_DENIED`(403)。全局错误处理器不会覆盖它们——`httpx.Fail` 一写响应就 committed，处理器见到 `Committed` 就不再落笔。
+域级错误码都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)，search 域的 `ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED`（均 502），file-storage 域的 `ERR_NO_ENGINE`(503)，以及 db-api 域的 `ERR_DB_UNREACHABLE`(503) / `ERR_READONLY`(409) / `ERR_DB_ACCESS_DENIED`(403)。全局错误处理器不会覆盖它们——`httpx.Fail` 写响应前会在 Fiber `Locals` 标记已应答，处理器见到标记就不再落笔。
 
 **webhook 域一个都没加，而这是决定而不是遗漏。**它的两个端点都只做一件事——数行——所以唯一的失败是数据库没答话，平台的 `ERR_INTERNAL` 已经说完了；而真正需要被区分出来的那个状态（「服务活着但连不上队列」）由 `/readyz` 报告，还附带一句失败原因，一个新码在这上面改进不了任何东西。这个选择由 `tests/contract/webhook/unavailable/stats-database-unreachable.json` 从**反面**钉住：既然没有域码承载细节，message 就必须保持通用、body 不得泄漏 SQL、库名、主机或端口。**它与 diff 域「刻意没有域级错误码」不是同一个理由**——diff 是「没有可报告的失败模式」，webhook 是「失败模式只有一个，而平台码已经说完了」。判据是那个失败在调用方那里是否引出一个与平台码不同的动作。
 

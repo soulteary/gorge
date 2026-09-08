@@ -105,7 +105,7 @@ TOKEN=dev-token make e2e
 { "error": { "code": "ERR_TOO_LARGE", "message": "source exceeds maximum allowed size" } }
 ```
 
-这条对「没进到 handler 就失败」的请求同样成立：路径不存在、请求体超过传输上限、handler panic 被兜住，都由 `platform/httpx` 的全局错误处理器（`go/internal/platform/httpx/errors.go`）转成信封，而不是漏出 Echo 默认的 `{"message": "..."}`。唯一的例外是 `HEAD` 请求——协议不允许带响应体，只能靠状态码表达失败。
+这条对「没进到 handler 就失败」的请求同样成立：路径不存在、请求体超过传输上限、handler panic 被兜住，都由 `platform/httpx` 的全局错误处理器（`go/internal/platform/httpx/errors.go`）转成信封，而不是漏出 Fiber 默认的纯文本错误响应。唯一的例外是 `HEAD` 请求——协议不允许带响应体，只能靠状态码表达失败。
 
 平台错误码：
 

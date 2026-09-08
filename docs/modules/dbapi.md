@@ -10,7 +10,7 @@
 | 契约 | [`api/openapi/dbapi.yaml`](../../api/openapi/dbapi.yaml) |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第十一节 ← **改动前必读** |
 
-**这是最新迁入、也是此前最复杂的一个域**（合并当前 `main` 后，它给仓库带来第十个二进制、第十一个域——render 与 diff 共用 `gorge-render`，所以域数一直比二进制数多一），它与已迁入的其余域的两处根本不一致在迁入时被消除了，而这正是本域最该先讲清楚的一件事。原独立服务用 `labstack/echo/v4` 加自定义的 `APIResponse{data,error,cursor}` 信封、**snake_case** 字段（`ref_key`/`is_fatal`）与自己那套 HTTP 状态码映射；迁入后 HTTP 层重写成 Fiber v3 + `internal/platform/httpx`，字段统一 **camelCase** 并沉淀进 `internal/contracts`，错误码收敛到平台六码加三个域级码。域逻辑本身——应用分区路由、只读降级、savepoint 命名、MySQL 错误码映射、版本比较、三级 `INFORMATION_SCHEMA` 查询——原样保留。
+独立服务迁入单仓库时，两处与既有域的根本不一致被消除了，而这正是本域最该先讲清楚的一件事。原独立服务用 `labstack/echo/v4` 加自定义的 `APIResponse{data,error,cursor}` 信封、**snake_case** 字段（`ref_key`/`is_fatal`）与自己那套 HTTP 状态码映射；迁入后 HTTP 层重写成 Fiber v3 + `internal/platform/httpx`，字段统一 **camelCase** 并沉淀进 `internal/contracts`，错误码收敛到平台六码加三个域级码。域逻辑本身——应用分区路由、只读降级、savepoint 命名、MySQL 错误码映射、版本比较、三级 `INFORMATION_SCHEMA` 查询——原样保留。
 
 它在「有外部依赖」这一类里与 webhook / taskqueue 同源：数据库不是它写穿的一个后端，而是它的工作本身——所有七条路由都是对着 MySQL 现查。但它也有两处与那两个后台域不同：**它没有后台循环**（七条路由全部由入站请求驱动，像 file-storage 那样「有人来问、答一句」），而且**它只读**——它从不改 Phorge 的库、不建表、不需要 DDL 权限。
 

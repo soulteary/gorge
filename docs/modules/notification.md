@@ -4,7 +4,7 @@
 
 **这是第一个自己占一个二进制、并且自己占两个端口的域**，所以承载关系要比 render/diff 那两行讲得细一点。
 
-> **这份文档同时是本域的技术报告**，所以它比 [`render.md`](render.md) 与 [`diff.md`](diff.md) 长出一倍多。前六节仍然是 [`../README.md`](../README.md) 规定的那个骨架，第 7 节之后是骨架之外的东西：迁入改了什么、怎么排查、四层测试各守住什么。本域迁入前是一个独立仓库，那份仓库里的 `TECHNICAL_REPORT.md` 描述的是迁入**之前**的布局（`internal/config/`、`internal/hub/`、`cmd/server/main.go`、裸 `net/http` + `ServeMux`），那些路径现在一个都不存在——它作为历史材料留着，**不要拿它当依据**，同类问题记在 [`../findings.md`](../findings.md) 第 6 条。本文的每处路径、端口、行数与代码片段都是从当前代码重新取的。
+> **这份文档同时是本域的技术报告**，所以它比 [`render.md`](render.md) 与 [`diff.md`](diff.md) 长出一倍多。前六节仍然是 [`../README.md`](../README.md) 规定的那个骨架，第 7 节之后是骨架之外的东西：迁入改了什么、怎么排查、四层测试各守住什么。本域迁入前是一个独立仓库，那份仓库里的 `TECHNICAL_REPORT.md` 描述的是迁入**之前**的布局（`internal/config/`、`internal/hub/`、`cmd/server/main.go`、裸 `net/http` + `ServeMux`），那些路径现在一个都不存在——它只可作为历史材料，**不要拿它当当前实现依据**。本文与当前仓库代码才是维护入口。
 >
 > 三处内容**不在**这份文档里，因为它们由别的文件持有，抄过来只会漂移：与 Phorge 之间的兼容约束以 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第五节为准；已知缺口与改进建议在 [`../findings.md`](../findings.md) 的 notification 一节；平台层设施的实现在 [`../platform.md`](../platform.md)，构建与发布在 [`../delivery.md`](../delivery.md)。
 
@@ -13,10 +13,10 @@
 | 二进制 | `gorge-notification`（**不是** `gorge-render`） |
 | 端口 | client `:22280`（WebSocket，**必须浏览器可达**）+ admin `:22281`（HTTP，只给 PHP） |
 | 包 | `go/internal/notification/`、`go/internal/notification/hub/`、`go/internal/notification/peer/` |
-| 入口 | `go/cmd/gorge-notification/main.go`（71 行） |
+| 入口 | `go/cmd/gorge-notification/main.go` |
 | 契约 | [`api/openapi/notification.yaml`](../../api/openapi/notification.yaml)、[`go/internal/contracts/notification.go`](../../go/internal/contracts/notification.go) |
-| 依赖 | `gorilla/websocket` v1.5.3 + `labstack/echo/v4` v4.15.4，无其他 |
-| 固件 | `tests/contract/notification/admin/`（7 份）+ `client/`（4 份），**分两个目录因为它们是两个端口** |
+| 依赖 | Fiber v3 + `gofiber/contrib/v3/websocket`（底层 `fasthttp/websocket`）；版本以 [`go/go.mod`](../../go/go.mod) 为准 |
+| 固件 | `tests/contract/notification/admin/` + `client/`，**分两个目录因为它们是两个端口** |
 | e2e | `tests/e2e/notification.sh`（5 条场景，用 `ADMIN_URL` + `CLIENT_URL` 两个变量，不是 `BASE_URL`） |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第五节 ← **改动前必读** |
 
@@ -99,19 +99,19 @@ foreach ($servers as $server) {
 
 ## 2. 路由与依赖
 
-两组路由分别注册在两个 Echo 实例上，互不可见。
+两组路由分别注册在两个 Fiber app 上，互不可见。
 
 ```go
 // client 口
-func RegisterClientRoutes(e *echo.Echo, deps *ClientDeps) {
-	e.GET("/", serveClient(deps))
-	e.GET("/*", serveClient(deps))
+func RegisterClientRoutes(app fiber.Router, deps *ClientDeps) {
+	app.Get("/", serveClient(deps))
+	app.Get("/*", serveClient(deps))
 }
 
 // admin 口
-func RegisterAdminRoutes(e *echo.Echo, deps *AdminDeps) {
-	e.POST("/", postMessage(deps))
-	e.GET("/status/", serverStatus(deps))
+func RegisterAdminRoutes(app fiber.Router, deps *AdminDeps) {
+	app.Post("/", postMessage(deps))
+	app.Get("/status/", serverStatus(deps))
 }
 ```
 
@@ -123,12 +123,12 @@ func RegisterAdminRoutes(e *echo.Echo, deps *AdminDeps) {
 | admin | GET | `/status/` | `loadServerStatus()`，集群面板与 `PhabricatorAphlictSetupCheck` | 无 |
 | admin | GET | `/`、`/healthz`、`/readyz` | 容器探针（平台层注册） | 无 |
 
-**没有路由组，这是本域与 render/diff 的一处结构差异。** 那两个域的 `/api/**` 挂在带 `auth.Token` 的分组下，而分组为了鉴权匹配了所有方法，于是方法用错返回 404 而不是 405（见 [`compat/phorge/README.md`](../../compat/phorge/README.md) 附录）。本域两个端口都是裸路由，所以 Echo 的 405 真的能返回出来——`PUT /`、`POST /status/`、`POST /healthz` 都是 405，连 client 口的 `POST /` 也是 405 而不是 501。这一点在第 6 节还会用到。
+**没有路由组，这是本域与 render/diff 的一处结构差异。** 那两个域的 `/api/**` 挂在带 `auth.Token` 的分组下，本域两个端口则是裸路由。错误状态由 Fiber 的路由器与平台错误处理器统一映射；具体状态属于契约，由 handler / contract 测试锁住，不应从框架名称推导。
 
 ### 2.1 三处路由细节都是有理由的
 
-- **client 口的 `GET /` 不是平台层那个探针。** `httpx.Config.SkipRootProbe` 为 true 时 `health.Register` 跳过 `e.GET("/", Live())`，把根路径让给域包。这是平台层为本域新增的第二项设施（[`../platform.md`](../platform.md) 第 3.1 节），存在的唯一理由是兼容约束二（第 5.2 节）。
-- **`GET /*` 不会吃掉 `/healthz`。** Echo 的静态路由优先级高于通配符，所以两个容器探针在通配符下面照样应答。`TestClientProbesOutrankTheWildcard` 钉住了这条假设——它是本端口 `HEALTHCHECK` 能工作的前提，而通配符若真吃掉了探针，表现是容器反复重启，不是 404。
+- **client 口的 `GET /` 不是平台层那个探针。** `httpx.Config.SkipRootProbe` 为 true 时 `health.Register` 跳过 `app.Get("/", Live())`，把根路径让给域包。这是平台层为本域新增的第二项设施（[`../platform.md`](../platform.md) 第 3.1 节），存在的唯一理由是兼容约束二（第 5.2 节）。
+- **`GET /*` 不会吃掉 `/healthz`。** Fiber 的静态路由优先于通配符，所以两个容器探针在通配符下面照样应答。`TestClientProbesOutrankTheWildcard` 钉住了这条假设——它是本端口 `HEALTHCHECK` 能工作的前提，而通配符若真吃掉了探针，表现是容器反复重启，不是 404。
 - **`/status/` 的尾斜杠属于契约。** PHP 侧写死 `getURI('/status/')`，`/status` 返回 404。`TestStatusWithoutTrailingSlashIsNotFound` 明写了这一点，免得有人为「整齐」把它改成无斜杠版。
 
 ### 2.2 Deps 与那一份共享的 hub
@@ -159,7 +159,7 @@ httpx.RunAll(servers...)
 
 拒掉的第一种写法是**每个端口各起一个 goroutine 跑 `Server.Run()`**。那样每个端口各注册一次信号处理，得到几个互不知情的关闭流程；更糟的是绑不上端口的那一个静静退出，进程还活着、另一个端口的健康探针还绿。`RunAll` 共用一个 `signal.NotifyContext`，并且**任一 listener 出错就拖着整组停**——只有 client 口活着的通知服务会接住浏览器连接然后永远没有东西可以告诉它们。理由与实现都在 [`../platform.md`](../platform.md) 第 1.4 节。
 
-拒掉的第二种写法是**在一个 Echo 上挂两组路由再起两个 listener**。两个端口的 `GET /` 语义相反（admin 是 200 探针、client 必须是 501），同一个路由表表达不了这件事。两个 Echo 实例是这条约束的直接结果，也是契约固件必须分两个目录的原因。
+拒掉的第二种写法是**在一个 Fiber app 上挂两组路由再起两个 listener**。两个端口的 `GET /` 语义相反（admin 是 200 探针、client 必须是 501），同一个路由表表达不了这件事。两个 app 是这条约束的直接结果，也是契约固件必须分两个目录的原因。
 
 ## 3. 核心实现
 
@@ -169,7 +169,7 @@ httpx.RunAll(servers...)
 自己解 body → 查/盖 fingerprint → Publish 进 hub → 并发中继给 peer → 裸 receipt
 ```
 
-**第一步刻意不用 `c.Bind()`。** Phorge 用 `HTTPSFuture` 发这个 POST，payload 是 `phutil_json_encode()` 出来的裸 JSON，但 curl 给它贴的是默认的 `application/x-www-form-urlencoded`。Echo 的 binder 按 Content-Type 分派，而它对这个头**不报错**：`DefaultBinder.BindBody` 的 `case MIMEApplicationForm` 分支照字面意思去做表单解析，把 body 交给 `c.FormParams()`，而 `hub.Message` 是 `map[string]any`，正好落在 `bindData` 支持的 map 目标里。于是有两种结局，都不是「被拒绝」这么干净：
+**第一步刻意不用 `c.Bind()`。** Phorge 用 `HTTPSFuture` 发这个 POST，payload 是 `phutil_json_encode()` 出来的裸 JSON，但 curl 给它贴的是默认的 `application/x-www-form-urlencoded`。Fiber 的 binder 会按 Content-Type 把这段字节当表单，而不是当 JSON。于是有两种结局，都不是「被拒绝」这么干净：
 
 | 消息里含什么 | `c.Bind()` 的结局 |
 |---|---|
@@ -178,7 +178,7 @@ httpx.RunAll(servers...)
 
 第二行才是真正的失败模式。它**不产生任何错误**：PHP 侧的 `postMessage()` 成功返回，`messages.in` 照常增长，集群面板全绿，日志里连一条 4xx 都没有，只有消息内容被静默揉碎。
 
-**415 确实存在，但不在这条路上。** `BindBody` 是按 mediatype 做 `switch` 的，`default:` 分支返回 `ErrUnsupportedMediaType`；命中它的是 Echo **不认识**的 mediatype——`text/plain` 这类，以及**空** `Content-Type`（按 `;` 切完之后 mediatype 是空串）。`application/x-www-form-urlencoded` 恰好是它认识的那几个之一，所以 Phorge 的真实流量永远走不到 415。**别照着 415 找这个问题**，那会让人以为「不报 415 就说明没坏」。
+**415 不是这条兼容约束的判据。** `application/x-www-form-urlencoded` 是 binder 认识的类型，所以真实流量可能被按错误格式成功解析。当前 handler 直接对 `c.Body()` 调 `json.Unmarshal`，让 JSON 语义独立于 Content-Type；测试必须检查进入 hub 的字段，而不能只看 200。
 
 这一条是迁入过程中真踩到的，完整推理在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第 5.4 节。**挡住它的是那个带 `100%` 的 payload，不是「断言了 200」这件事**——把这几处断言各自守住多少讲清楚很要紧，因为把它们记强了比不记更坏，见第 9.3 节。
 
@@ -191,25 +191,23 @@ httpx.RunAll(servers...)
 ### 3.2 admin `GET /status/`：一行 handler，两处不能动
 
 ```go
-return c.JSON(http.StatusOK, deps.Hub.Status(instanceOf(c)))
+return c.Status(http.StatusOK).JSON(deps.Hub.Status(instanceOf(c)))
 ```
 
 `Hub.Status()` 直接返回 `*contracts.AphlictStatus`，handler 不做任何加工。两处约束：**键里的点是字面量**（PHP 用 `idx($details, 'clients.active')` 读），以及**不套信封**。都在第 5.3 节。
 
 `instanceOf(c)` 读 `?instance=`，空则 `default`。这个查询参数是 `getURI()` 在 `cluster.instance` 有值时统一追加的，所以 admin 与 client 两侧都会带上它；client 侧另外还把实例编进路径（第 3.5 节），于是那一侧的实例名在同一个 URL 里出现两次。本域按 Aphlict 的做法**只读路径那一份**。
 
-### 3.3 client 口的升级链：501 在前，`Committed` 在后
+### 3.3 client 口的升级链：先判 501，再交给 upgrader
 
 ```
 非 Upgrade 请求 ──► 501 + "HTTP/501 Use Websockets\n"      ← 兼容约束二，逐字节
-Upgrade 请求 ──► upgrader.Upgrade ──► Committed = true ──► 入 hub ──► readLoop
+Upgrade 请求 ──► contrib websocket upgrader ──► 入 hub ──► readLoop
 ```
 
-**`c.Response().Committed = true` 不是可以省的一行。** gorilla 把 101 握手直接写在被 hijack 的连接上，`echo.Response` 从头到尾不知道有响应发出去过，仍然认为自己是干净的。读循环里任何一处 panic 被 `Recover` 中间件兜住之后，全局 `errorHandler` 会看到一个「还没写过」的响应，于是往一条已经属于 WebSocket 的连接上序列化一份 JSON 错误信封。置位之后处理器见到 `Committed` 就不再落笔（机制见 [`../platform.md`](../platform.md) 第 1.2 节）。`Status` 一并置成 101，纯粹是给访问日志看的。`TestUpgradedResponseIsMarkedCommitted` 用一个中间件在 handler 返回后读这两个字段。
+`websocket.New` 只在 `websocket.IsWebSocketUpgrade(c)` 成立后调用。干净升级由 contrib handler 接管连接，读循环结束后返回 `nil`；握手被拒时返回 `*fiber.Error`，交给平台错误处理器。`TestUpgradedResponseIsNotEnvelopedByTheErrorHandler` 锁住成功升级后不会再追加 JSON 信封。
 
-`Upgrade` 失败时只 `slog.Warn` 然后返回 nil：gorilla 已经自己应答过了，再返回错误只会让 errorHandler 往一条已经写过的连接上追加第二份响应。
-
-`upgrader.CheckOrigin` 无条件返回 true。**这不是放松了 Aphlict 的姿态，而是复现它**：本端口按设计就在另一个 host:port 上，浏览器带来的 Origin 是 Phorge 的源，永远不等于本服务自己的源，gorilla 的默认同源检查会拒掉每一条真实连接。这里既不读 cookie 也不读任何凭据，所以同源检查挡不住任何本来挡得住的东西。
+配置使用 `AllowEmptyOrigin: true`，并且不设置 Origin 白名单。**这不是放松了 Aphlict 的姿态，而是复现它**：本端口按设计就在另一个 host:port 上，浏览器带来的 Origin 是 Phorge 的源，永远不等于本服务自己的源。这里既不读 cookie 也不读任何凭据，所以同源检查挡不住任何本来挡得住的东西。
 
 ### 3.4 线协议：四条命令，三种沉默
 
@@ -261,7 +259,7 @@ type Listener struct {
 }
 ```
 
-`writeMu` 必须与 `mu` 分开：gorilla 的连接只允许一个 writer，而本域真的有两个写入方——`Publish` 的扇出，与客户端自己那条读循环发出的回复（pong、重放）。如果复用 `mu`，一次卡住的网络写会同时挡住 `IsSubscribedToAny`，于是整条扇出流水线停在一个慢客户端上。
+`writeMu` 必须与 `mu` 分开：底层 WebSocket 连接只允许一个 writer，而本域真的有两个写入方——`Publish` 的扇出，与客户端自己那条读循环发出的回复（pong、重放）。如果复用 `mu`，一次卡住的网络写会同时挡住 `IsSubscribedToAny`，于是整条扇出流水线停在一个慢客户端上。
 
 `subscriptions` 用 `map[string]struct{}` 而不是切片：订阅匹配在每条消息的每个 listener 上都要做一次，O(1) 查找加短路返回，而典型场景是「消息带少量 PHID、listener 只订了自己那一个」。
 
@@ -297,7 +295,7 @@ Hub.mu            → instances map 与 history
 
 `nextID`、`messagesIn`、`messagesOut` 走 `atomic`，热路径上完全无锁。
 
-**每条连接一个 goroutine，不是两个。** 读由 handler 自己那条 goroutine 做（`readLoop` 就是 handler 的主体），写由 `Publish` 的调用方直接做——也就是处理 admin POST 的那条 goroutine。gorilla 支持这种「一读一写」的形态，所以不必为每条连接再起一条写 goroutine，几千并发连接时这是一半的 goroutine 与对应的栈内存。代价是 `writeMu` 必须存在（第 3.7 节），以及一个慢客户端会占住 admin 请求的一小段时间——这是 `snapshot()` 之外还要靠「写失败当场摘除」兜底的原因。
+**每条连接一个 goroutine，不是两个。** 读由 handler 自己那条 goroutine 做（`readLoop` 就是 handler 的主体），写由 `Publish` 的调用方直接做——也就是处理 admin POST 的那条 goroutine。底层连接支持这种「一读一写」的形态，所以不必为每条连接再起一条写 goroutine，几千并发连接时这是一半的 goroutine 与对应的栈内存。代价是 `writeMu` 必须存在（第 3.7 节），以及一个慢客户端会占住 admin 请求的一小段时间——这是 `snapshot()` 之外还要靠「写失败当场摘除」兜底的原因。
 
 ## 4. 配置
 
@@ -384,7 +382,7 @@ admin 与 client 两类必须都在，缺任一类启动即失败；顺带拒掉
 
 **错误路径仍然走信封，这不是不一致**：PHP 用 `resolvex()`，非 2xx 直接抛异常且从不解析响应体。反过来也成立——**别指望用响应体给 PHP 侧传递失败原因**，那个字段没有读者。
 
-### 5.4 admin handler 不能用 Echo 的 binder
+### 5.4 admin handler 必须按原始 JSON 解码
 
 Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `application/x-www-form-urlencoded`。`c.Bind()` 对它**不报错**，而是照字面做表单解析，把整段 JSON 揉成一个垃圾键，然后照常答 200。**这是本节四条里唯一一条破坏之后连错误状态码都不产生的**，机制与 415 为什么不在这条路上见第 3.1 节。
 
@@ -419,7 +417,7 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 | | 迁入前 | 现在 |
 |---|---|---|
 | 包布局 | `internal/config/`、`internal/hub/`、`internal/peer/`、`cmd/server/` | `internal/notification/{admin,client,config}.go` + `hub/` + `peer/`、`cmd/gorge-notification/` |
-| HTTP | `net/http` + `http.ServeMux`，路径靠 `r.URL.Path` 手工分派 | Echo v4 路由，`httpx.New` 统一引导（中间件栈、错误处理器、探针） |
+| HTTP | `net/http` + `http.ServeMux`，路径靠 `r.URL.Path` 手工分派 | Fiber v3 路由，`httpx.New` 统一引导（中间件栈、错误处理器、探针） |
 | 启动 | 每个 spec 一个 goroutine 跑 `http.Serve`，`sync.WaitGroup` 等 | 每个 spec 一个 `httpx.Server`，`httpx.RunAll` 统一跑与关（第 2.3 节） |
 | 探针 | handler 里手写 `/healthz` | `health.Register` 注册 `/healthz` `/readyz`（client 口另设 `SkipRootProbe`） |
 | 错误响应 | `http.Error(w, "bad request", 400)` 裸文本 | `{data,error}` 信封 + 平台码，**成功响应刻意豁免**（第 5.3 节） |
@@ -429,7 +427,7 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 | Aphlict 的 `ssl.*`/`logs`/`pidfile` | 解析进结构体但不用 | 根本不解析（第 4.5 节） |
 | 日志 | `log.Printf` | `log/slog`，与进程其余日志汇合 |
 | `Listener.instance` | 有这个字段 | 去掉了，实例名只由 Hub 与调用方持有（第 3.7 节） |
-| 501 的位置 | handler 第一行 `websocket.IsWebSocketUpgrade` 判断 | 同样，但多了 `Committed = true` 那一行（第 3.3 节） |
+| 501 的位置 | handler 第一行 `websocket.IsWebSocketUpgrade` 判断 | 同样；通过后交给 contrib upgrader（第 3.3 节） |
 | 契约与测试 | 四组 `_test.go` | 加上 11 份跨语言契约固件、一份 e2e 脚本、一份 OpenAPI |
 
 **没变的是设计判断本身**：一个 hub 接住两个端口、fingerprint 网格防环、history 双上限、每连接一条 goroutine、`writeMu` 与 `mu` 分开、`CheckOrigin` 放行。这些在旧报告里的推理仍然成立，本文第 3 节是把它们对着当前代码重新讲了一遍。
@@ -461,20 +459,13 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 
 固件为什么分两个目录、每份各钉住什么，见 [`tests/contract/notification/README.md`](../../tests/contract/notification/README.md)。这批固件让共享 runner 长了两处（整段路径先当字面量键查一次；只断言状态码与原始字节的固件跳过 JSON 解码），细节在 [`../testing.md`](../testing.md) 第 2.3 节。
 
-WebSocket 测试的两处手法值得抄：`syncCommands` 发一次 ping 并等 pong，用「命令按序处理」这个事实把 `subscribe` 已生效这件事变成确定的，而不是拿 sleep 去赛跑；`expectFirstMessage` 把「不该收到的那条」先发出去，于是过滤失效时读到的是错的那条——比等一个超时来证明「没收到」既更强也更稳，况且 gorilla 的连接在读超时之后就不可用了，测试也没法接着往下走。
+WebSocket 测试的两处手法值得抄：`syncCommands` 发一次 ping 并等 pong，用「命令按序处理」这个事实把 `subscribe` 已生效这件事变成确定的，而不是拿 sleep 去赛跑；`expectFirstMessage` 把「不该收到的那条」先发出去，于是过滤失效时读到的是错的那条——比等一个超时来证明「没收到」既更强也更稳，况且底层连接在读超时之后就不可用了，测试也没法接着往下走。
 
 ### 9.2 覆盖率
 
-| 包 | 覆盖率 |
-|---|---|
-| `internal/notification` | 97.1% |
-| `internal/notification/hub` | 83.7% |
-| `internal/notification/peer` | 96.2% |
-| `cmd/gorge-notification` | 0.0%（由 e2e 在集成层面兜） |
+覆盖率与代码行数不在模块文档里维护快照；当前结果用 `make cover` 生成，原因见 [`../testing.md`](../testing.md) 第 5 节。
 
-生产代码 1071 行、测试代码 1521 行（约 1.42 倍，含 `cmd/gorge-notification`）。这些数字是快照，按 [`../README.md`](../README.md) 顶部那个基线读。
-
-`hub` 那个数字有一部分是**度量假象**：`Listener` 的 `WriteJSON`/`ReadMessage`/`Close` 等方法要一条真 WebSocket 才调得到，而这些连接建在 `internal/notification` 的测试里，`go test` 默认只把一个包自己的测试计入该包覆盖率。用 `-coverpkg` 合并度量时这几个方法都是 100%。覆盖率的真实缺口有三处，都登记在 [`../findings.md`](../findings.md) 第 9 条。
+`hub` 的包内结果有一部分是**度量假象**：`Listener` 的 `WriteJSON`/`ReadMessage`/`Close` 等方法要一条真 WebSocket 才调得到，而这些连接建在 `internal/notification` 的测试里，`go test` 默认只把一个包自己的测试计入该包覆盖率。观察整条调用链时应使用 `-coverpkg`。覆盖率的真实缺口登记在 [`../findings.md`](../findings.md) 第 9 条。
 
 ### 9.3 三处断言的 teeth 在哪，别改坏
 

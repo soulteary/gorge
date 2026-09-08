@@ -8,7 +8,7 @@
 | 端口 | `:8100` |
 | 包 | `go/internal/filestorage/` |
 | 契约 | [`api/openapi/file-storage.yaml`](../../api/openapi/file-storage.yaml) |
-| 固件 | `tests/contract/file-storage/`（14 份） |
+| 固件 | `tests/contract/file-storage/` |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第八节 ← **改动前必读** |
 
 ## 1. 职责边界
@@ -24,14 +24,14 @@
 ## 2. 路由与依赖
 
 ```go
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/file")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/file")
 	g.Use(auth.Token(deps.Token))
 
-	g.POST("/blob", writeBlob(deps))
-	g.GET("/blob", readBlob(deps))
-	g.DELETE("/blob", deleteBlob(deps))
-	g.GET("/engines", listEngines(deps))
+	g.Post("/blob", writeBlob(deps))
+	g.Get("/blob", readBlob(deps))
+	g.Delete("/blob", deleteBlob(deps))
+	g.Get("/engines", listEngines(deps))
 }
 ```
 
@@ -138,7 +138,7 @@ type StorageEngine interface {
 
 ### 3.4 读答原始字节，删除幂等
 
-**成功的 `GET /api/file/blob` 是全仓库 `/api/**` 里唯一不套 `{data, error}` 信封的成功响应**：`c.Stream(200, "application/octet-stream", rc)`。失败仍然是信封。所以客户端的判据只能是**状态码**：200 就把 body 当文件，其余就交给信封解析器。**不能拿「body 是不是空的」当判据**——0 字节文件是一个合法的 200 加空 body。平台层为此**没有**改任何代码，理由见 [`../platform.md`](../platform.md) 第 1.1 节。
+**成功的 `GET /api/file/blob` 是全仓库 `/api/**` 里唯一不套 `{data, error}` 信封的成功响应**：handler 设置 `Content-Type: application/octet-stream` 后调用 `c.SendStream(rc, size)`。失败仍然是信封。所以客户端的判据只能是**状态码**：200 就把 body 当文件，其余就交给信封解析器。**不能拿「body 是不是空的」当判据**——0 字节文件是一个合法的 200 加空 body。平台层为此**没有**改任何代码，理由见 [`../platform.md`](../platform.md) 第 1.1 节。
 
 引擎知道长度时会带上 `Content-Length`（`size >= 0`），这是客户端区分「完整文件」与「被截断的文件」的唯一依据；引擎不知道长度时（`ReadFile` 返回 `-1`）就干脆不带，让响应走 chunked——**猜一个长度比不给更坏**。`TestReadBlobAnswersRawBytes`、`TestReadBlobAnswersAnEmptyFile` 与 `TestReadBlobOmitsContentLengthWhenTheSizeIsUnknown` 分别压这三种情形。
 

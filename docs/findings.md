@@ -1,6 +1,6 @@
 # 偏差与改进建议
 
-代码与文档比对时发现的实际问题。按模块分节，新模块迁入后在下面新开一节，不要混进别的模块。基线 `da522f9`。
+代码与文档比对时发现的实际问题。按模块分节，新模块迁入后在下面新开一节，不要混进别的模块。内容跟随当前 `main`；已修项按下面的规则删除。
 
 修掉一条就把它从这里删掉，别标记成「已完成」留着——这个文件的价值在于短。**编号是稳定的 ID，不重排**：别处按号引用它们，所以删掉一条会留下一个空号（#16 已修，就是这么来的），新增一条一律接在最大号之后，即使它归到中间某一节。
 
@@ -69,7 +69,7 @@ Chroma 的 lexer 注册表在进程生命周期内不变，这个列表（数百
 cfg, err := render.Load()          // 这里面有 config.Base
 diffCfg := diff.LoadFromEnv()      // 这里只有 MaxBytes
 
-diff.RegisterRoutes(srv.Echo(), &diff.Deps{
+diff.RegisterRoutes(srv.App(), &diff.Deps{
 	Token:    cfg.ServiceToken,    // 从 render 的配置里借
 	MaxBytes: diffCfg.MaxBytes,
 })
@@ -96,21 +96,6 @@ diff.RegisterRoutes(srv.Echo(), &diff.Deps{
 ---
 
 ## 文档
-
-### 6. 存在两份过期的技术报告
-
-**影响**：中。会把下一个人引到不存在的路径上。
-
-`go/internal/render/highlight/TECHNICAL_REPORT.md` 与仓库外的 `gorge-highlight/TECHNICAL_REPORT.md` 描述的是**单仓库改造之前**的布局（`internal/config/`、`internal/httpapi/`、`cmd/server/main.go`），这些路径现在都不存在；文中的依赖版本（Chroma v2.14.0、Echo v4.12.0）与运行时基础镜像（alpine 3.20）也已过期。
-
-更要紧的是 `highlight.go` 的包注释仍指向它：
-
-```go
-// Package highlight renders source code to Pygments-compatible HTML using
-// Chroma. See TECHNICAL_REPORT.md in this directory for the design rationale
-```
-
-**建议**：删除 `go/internal/render/highlight/TECHNICAL_REPORT.md`，把包注释改指 `docs/modules/render.md` 与 `compat/phorge/README.md`。
 
 ### 7. 兼容测试没有反向指回 `compat/`
 

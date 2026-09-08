@@ -8,7 +8,7 @@
 | 端口 | `:8160` |
 | 包 | `go/internal/webhook/` |
 | 契约 | [`api/openapi/webhook.yaml`](../../api/openapi/webhook.yaml) |
-| 固件 | `tests/contract/webhook/`（5 份，其中 `unavailable/` 1 份） |
+| 固件 | `tests/contract/webhook/`（含 `unavailable/`） |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第九节 ← **改动前必读** |
 
 **这是仓库里第一个「工作不由入站请求驱动」的域**，而这件事改变的东西比它听起来多。前六个域的形状都是「有人来问、答一句」，所以「服务在正常工作」与「服务答得出请求」是同一件事；本域不是——它的两个 HTTP 端点都只是**报数**，没有任何一条路径能启动一次投递。于是每一层的分辨能力都要重新评估一遍：契约固件覆盖的是这个域较小的那一半（见 [`../../tests/contract/webhook/README.md`](../../tests/contract/webhook/README.md)），e2e 脚本压根碰不到投递，而真正的字节级契约只有单元测试守得住。第 3 节那几条也是同一个理由才值得写下来：它们描述的是一个没有调用方能观察到的循环。
@@ -28,12 +28,12 @@
 ## 2. 路由与依赖
 
 ```go
-func RegisterRoutes(e *echo.Echo, deps *Deps) {
-	g := e.Group("/api/webhook")
+func RegisterRoutes(app fiber.Router, deps *Deps) {
+	g := app.Group("/api/webhook")
 	g.Use(auth.Token(deps.Token))
 
-	g.GET("/stats", stats(deps))
-	g.GET("/hooks", listHooks(deps))
+	g.Get("/stats", stats(deps))
+	g.Get("/hooks", listHooks(deps))
 }
 ```
 

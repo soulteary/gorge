@@ -280,7 +280,7 @@ paths:
       description: |
         Always succeeds while the process is serving. Registered on both ports,
         including the client port, where it survives the WebSocket wildcard
-        because Echo ranks static routes above it.
+        because Fiber ranks static routes above it.
 
         The container healthcheck is configured against the admin port.
       operationId: healthz

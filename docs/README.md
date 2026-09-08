@@ -2,9 +2,9 @@
 
 按模块组织。跨模块的地基（分层、平台层、测试、交付）各一份，**每个业务模块一份独立文档**，后续模块迁入时只新增文件，不改动既有文档。
 
-基线：`da522f9`，Go 1.27 / Chroma v2.27.0 / Echo v4.15.4 / gorilla-websocket v1.5.3。
+文档描述当前 `main`。依赖版本以 [`go/go.mod`](../go/go.mod) 为准，镜像版本以 [`go/Dockerfile`](../go/Dockerfile) 为准；不要在说明文字里复制一份容易失效的版本清单。
 
-文中的覆盖率与行数都是**快照**，按上面这个基线读，不要当成会被 CI 守住的数字。
+文中的覆盖率与行数若未明确标注生成日期，只用于解释测试边界，不作为当前数值的权威来源。精确结果以 `make cover` 或 Release / 手动触发的 Go Test Report artifact 为准。
 
 ## 目录
 
@@ -48,11 +48,11 @@ webhook 是「有外部依赖」这一类的第四个成员，但它在另一个
 
 taskqueue 与 worker 是**第一对拆成两个二进制的域**，而「为什么是两个而不是一个」正是它们值得单说的地方——它和 render+diff 合并那段恰好相反。render 与 diff 合并，是因为两者都是无外部依赖的纯计算、拆进程换不来隔离收益；taskqueue 与 worker 不合并，是因为 **worker 是 taskqueue 的 HTTP 客户端，不是它的同进程协程**：worker 通过 `TASK_QUEUE_URL` 拨 taskqueue 的 `/api/queue/**` 租约，两者可以各自独立伸缩（一个 taskqueue 前面挂若干 worker，或给某个重类开专用 worker），把它们塞进一个进程要么把这层 HTTP 契约变成进程内调用、要么逼 worker 直接调 `Store` 而绕过契约，两条路都把「可独立部署」这个既有事实弄没了。所以 `cmd/` 下是两个入口、compose 里是两个 service。taskqueue 本身是 webhook 之后「有外部依赖 + 后台性质」这一类的又一个成员，几乎照搬 webhook 的骨架：contracts 单一真源、`db.go` 自持连接池且不在启动时 ping、`/readyz` 判据为能连 `{namespace}_worker` 库、必须替换 Phorge 自己的 `phd` taskmaster 而不能并存（两边同时取 `worker_activetask` 会把每个任务跑两遍，与 webhook 第 38 条同源）。它给平台层新增的东西依然是零，但比 webhook 多带了一件仓库里此前没有的：**同一个 `Store` 接口的第二个生产实现**——除 MySQL 外还有一个 Redis 后端（用有序集合与哈希、多步操作走 Lua 脚本保原子），给想把队列挪出主库的部署用；两者满足同一个接口，所以 handler 与契约固件照旧注入内存实现来测。worker 则是本类里第一个**没有 `db.go`**的后台域：它不碰任何数据库，唯一的外部依赖是 taskqueue 服务，所以它的 `/readyz` 退化为 `/healthz`（连不上 taskqueue 只是租不到任务、会一直重试，那是 taskqueue 的就绪问题，不该让编排层重启 worker），healthcheck 也因此打 `/healthz`。字段名（`taskClass`/`leaseOwner`/`dataID`/`failureCount`/`status`）与 Phorge 的 `PhabricatorWorkerActiveTask` 严格对齐，破坏后的表现见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 新增的那一节。
 
-db-api 是「有外部依赖」这一类的第六个成员，也是此前最复杂的一个，但它值得单说的地方在于它同时是好几个「第一」的反面。它像 file-storage 那样是**只读**的、并且**由入站请求驱动**（七条路由全是「有人来问、答一句」，没有 webhook / taskqueue 那样的后台循环），所以它不带 webhook 第 38 条那种「必须替换不能并存」的问题——它不碰业务表、不建库、不跑迁移，只对着 MySQL 现查 `INFORMATION_SCHEMA` / `SHOW *` / `patch_status`。它给平台层新增的东西同样是零。真正值得在读它模块文档之前就知道的是两点。第一，**迁入抹掉了它与仓库既有域的两处根本不一致**：原独立服务用 Echo + 自己的 `APIResponse` 信封、snake_case 字段与自定义状态码，迁入后重写成 Fiber + `httpx`、字段统一 camelCase 沉进 `internal/contracts`、错误码收敛到平台六码加三个域级码，而域逻辑（应用分区路由、只读降级、MySQL 错误码映射、三级 `INFORMATION_SCHEMA` 遍历）原样保留。第二，**它的 `/readyz` 躲首启死锁的手法比 file-storage / webhook 更进一步**：不仅只 ping 不查表，探测 DSN 还刻意不带库名——因为 go-sql-driver 在握手阶段就发库名，一个还没被 `bin/storage upgrade` 建出来的 `{namespace}_meta_data` 会让带库名的 ping 直接失败在连接上，登记在 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 8.7 节。它保留了一条**定义了但七条只读路由都到不了**的错误码 `ERR_READONLY`：它随 Phorge 的只读降级逻辑一起搬来，语义与理由见 [`modules/dbapi.md`](modules/dbapi.md) 第 1、6 节。
+db-api 是「有外部依赖」这一类里较复杂的成员，但它值得单说的地方在于它同时是好几个「第一」的反面。它像 file-storage 那样是**只读**的、并且**由入站请求驱动**（七条路由全是「有人来问、答一句」，没有 webhook / taskqueue 那样的后台循环），所以它不带 webhook 第 38 条那种「必须替换不能并存」的问题——它不碰业务表、不建库、不跑迁移，只对着 MySQL 现查 `INFORMATION_SCHEMA` / `SHOW *` / `patch_status`。它给平台层新增的东西同样是零。真正值得在读它模块文档之前就知道的是两点。第一，**迁入抹掉了它与仓库既有域的两处根本不一致**：原独立服务用 Echo + 自己的 `APIResponse` 信封、snake_case 字段与自定义状态码，迁入后重写成 Fiber + `httpx`、字段统一 camelCase 沉进 `internal/contracts`、错误码收敛到平台六码加三个域级码，而域逻辑（应用分区路由、只读降级、MySQL 错误码映射、三级 `INFORMATION_SCHEMA` 遍历）原样保留。第二，**它的 `/readyz` 躲首启死锁的手法比 file-storage / webhook 更进一步**：不仅只 ping 不查表，探测 DSN 还刻意不带库名——因为 go-sql-driver 在握手阶段就发库名，一个还没被 `bin/storage upgrade` 建出来的 `{namespace}_meta_data` 会让带库名的 ping 直接失败在连接上，登记在 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 8.7 节。它保留了一条**定义了但七条只读路由都到不了**的错误码 `ERR_READONLY`：它随 Phorge 的只读降级逻辑一起搬来，语义与理由见 [`modules/dbapi.md`](modules/dbapi.md) 第 1、6 节。
 
-conduit 是第八个域，而它在一个所有前七个域都共享的维度上是第一个反例：**它的消费方是其它 Go 服务而非 Phorge PHP。**前七个域都在 Phorge 前面被 Phorge 调用，conduit 挡在 Phorge 前面、被别的 Go 服务调用。它是一个 Conduit API 的反向代理网关，替换的既不是子进程、也不是运行时依赖、也不是外部存储/投递通道，而是一种**调用拓扑**——把「各 Go 服务直连 Phorge `/api/*`」的多对一直连改成「多对一经网关」，在网关层统一鉴权、按 IP 限流与请求审计。它无持久状态（限流表在内存、每实例独立），所以 healthcheck 打 `/healthz` 而非 `/readyz`，并**刻意不**把上游可达性纳入就绪判据——那报告的是 Phorge 的健康而非网关自己的。它的兼容边界形状也是独一份的：错误信封是 Conduit 专用的 `{result,error_code,error_info}`（不是其它域的 `{data,error}`）、成功路径必须纯透传，理由见 [`modules/conduit.md`](modules/conduit.md) 第 5 节。它同样**没有**给平台层新增任何设施。
+conduit 在消费方这个维度上是反例：**它的消费方是其它 Go 服务而非 Phorge PHP。**其余面向 Phorge 的服务在 Phorge 后面被 PHP 调用，conduit 则挡在 Phorge 前面、被别的 Go 服务调用。它是一个 Conduit API 的反向代理网关，替换的既不是子进程、也不是运行时依赖、也不是外部存储/投递通道，而是一种**调用拓扑**——把「各 Go 服务直连 Phorge `/api/*`」的多对一直连改成「多对一经网关」，在网关层统一鉴权、按 IP 限流与请求审计。它无持久状态（限流表在内存、每实例独立），所以 healthcheck 打 `/healthz` 而非 `/readyz`，并**刻意不**把上游可达性纳入就绪判据——那报告的是 Phorge 的健康而非网关自己的。它的兼容边界形状也是独一份的：错误信封是 Conduit 专用的 `{result,error_code,error_info}`（不是其它域的 `{data,error}`）、成功路径必须纯透传，理由见 [`modules/conduit.md`](modules/conduit.md) 第 5 节。它同样**没有**给平台层新增任何设施。
 
-**[`modules/notification.md`](modules/notification.md) 明显长于其余模块文档，这是刻意的**：本域迁入前带着一份独立的技术报告，那份报告写的是迁入前的包布局、现在每条路径都不存在了，所以它没有被搬进来，而是由模块文档同时充当本域的技术报告。它的前六节仍然是下面那个骨架，第 7 节之后（迁入前后的差异、排查、四层测试各守什么）是骨架之外的补充。**不要照着它把其余几份也扩写**——过期技术报告的问题登记在 [`findings.md`](findings.md) 第 6 条，解决方式是删掉过期报告并改指模块文档，不是加长。
+**[`modules/notification.md`](modules/notification.md) 明显长于其余模块文档，这是刻意的**：本域迁入前带着一份独立的技术报告，那份报告写的是迁入前的包布局、现在每条路径都不存在了，所以它没有被搬进来，而是由模块文档同时充当本域的技术报告。它的前六节仍然是下面那个骨架，第 7 节之后（迁入前后的差异、排查、四层测试各守什么）是骨架之外的补充。**不要照着它把其余几份也扩写**；仓库内只保留描述当前实现的模块文档，历史报告不作为实现依据。
 
 ## 阅读顺序
 
@@ -81,16 +81,7 @@ conduit 是第八个域，而它在一个所有前七个域都共享的维度上
 3. 若该模块引入了新的跨模块设施（比如平台层新增一个包），补 [`platform.md`](platform.md)；
 4. 该模块自己的偏差与待办，在 [`findings.md`](findings.md) 里新开一节，不要混进别的模块。
 
-**另外，下面这几处跨模块文档带着会过期的计数，每次迁入都要重数一遍**——它们在前几次迁入里连着漏了几回，所以单列出来：
-
-| 位置 | 会过期的东西 |
-|---|---|
-| [`architecture.md`](architecture.md) 第 1 节 | 二进制数、域数、生产/测试代码行数、契约固件数、e2e 脚本数 |
-| [`architecture.md`](architecture.md) 第 2、3.1、3.2 节 | 仓库结构树、`forbiddenPrefixes` 列表、`internal/contracts` 的行数 |
-| [`testing.md`](testing.md) 第 4、5 节 | 各包覆盖率与固件数 |
-| [`../compat/phorge/README.md`](../compat/phorge/README.md) 附录 | 域级错误码总数、「本附录讲哪几个域」那句 |
-
-行数与固件数**用 `find` / `wc` 数，不要估**。根 [`../README.md`](../README.md) 与 [`delivery.md`](delivery.md) 曾经也在这张表里，现在已经改成不点名数量的写法，所以不必再随迁入维护。
+`make docs-check` 会验证 `go/cmd/` 的每个二进制都在模块表中、`tests/contract/` 的每个域都在契约索引中，并阻止已经退役的 HTTP API 写法重新混进当前文档。新增入口或固件目录时先更新索引；行数、覆盖率与依赖版本引用各自的单一事实来源，不在手写说明里复制快照。
 
 模块文档骨架：
 

@@ -1,0 +1,51 @@
+name: Documentation Consistency
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'README.md'
+      - 'Makefile'
+      - 'docs/**'
+      - 'compat/**'
+      - 'api/openapi/**'
+      - 'tests/contract/**'
+      - 'tests/e2e/**'
+      - 'go/cmd/**'
+      - 'go/internal/doccheck/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'README.md'
+      - 'Makefile'
+      - 'docs/**'
+      - 'compat/**'
+      - 'api/openapi/**'
+      - 'tests/contract/**'
+      - 'tests/e2e/**'
+      - 'go/cmd/**'
+      - 'go/internal/doccheck/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check documentation indexes and APIs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go environment
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Check documentation consistency
+        working-directory: go
+        run: go test ./internal/doccheck

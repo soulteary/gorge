@@ -14,7 +14,7 @@ type Listener struct {
 	conn          *websocket.Conn
 	subscriptions map[string]struct{}
 	mu            sync.RWMutex
-	// writeMu serialises writes. A gorilla connection permits only one writer
+	// writeMu serialises writes. The WebSocket connection permits only one writer
 	// at a time, and two are in play here: the fan-out from a published message
 	// and the replies the client's own read loop sends.
 	writeMu sync.Mutex

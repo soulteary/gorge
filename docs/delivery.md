@@ -9,7 +9,7 @@
 ```bash
 docker build -t gorge-render go/
 docker build -t gorge-search --build-arg SERVICE=gorge-search --build-arg PORT=8120 go/
-docker build -t gorge-conduit --build-arg SERVICE=gorge-conduit go/   # 将来的二进制
+docker build -t gorge-conduit --build-arg SERVICE=gorge-conduit go/
 ```
 
 仓库产出若干个二进制，当前有哪些、各占什么端口见 [`README.md`](README.md) 的模块表（**这里刻意不重复那个数字**，它在前几次迁入里过期过好几轮）。`SERVICE` 这个参数是给**新增二进制**用的，不是给新增域用的：域并入既有进程时不碰这里，见 [`architecture.md`](architecture.md) 第 4.2 节。
@@ -18,8 +18,8 @@ docker build -t gorge-conduit --build-arg SERVICE=gorge-conduit go/   # 将来�
 
 多阶段构建：
 
-- **构建阶段** `golang:1.27-alpine3.22`。先 `COPY go.mod go.sum` 再 `go mod download`，然后才 `COPY .`，让依赖层在源码变动时仍能命中缓存。编译参数 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`：静态链接、抹掉构建路径、去符号表。
-- **运行阶段** `alpine:3.22`。只带二进制与 CA 证书，以 uid 10001 的非 root 用户 `gorge` 运行。healthcheck 用的 wget 由 busybox 自带，不额外装包。
+- **构建阶段** `golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION}`。默认值与可用镜像标签直接看 [`go/Dockerfile`](../go/Dockerfile) 顶部的 `ARG`；builder 与 runtime 的 Alpine 版本刻意独立。先 `COPY go.mod go.sum` 再 `go mod download`，然后才 `COPY .`，让依赖层在源码变动时仍能命中缓存。编译参数 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`：静态链接、抹掉构建路径、去符号表。
+- **运行阶段** `alpine:${ALPINE_VERSION}`。只带二进制与 CA 证书，以 uid 10001 的非 root 用户 `gorge` 运行。healthcheck 用的 wget 由 busybox 自带，不额外装包。
 
 两处针对 Docker 语义的处理，都在注释里写了原因：
 

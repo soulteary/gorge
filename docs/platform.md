@@ -2,27 +2,27 @@
 
 `go/internal/platform/` 下的四个包，被所有模块共用，且不允许反向依赖任何业务域（约束与强制手段见 [`architecture.md`](architecture.md) 第 3 节）。
 
-| 包 | 行数 | 职责 |
-|---|---|---|
-| `httpx` | 311 | HTTP 引导、中间件栈、多监听器、`{data,error}` 信封与全局错误处理器 |
-| `auth` | 41 | 共享密钥中间件 |
-| `health` | 59 | 容器探针端点 |
-| `config` | 80 | 环境变量与 JSON 文件配置读取 |
+| 包 | 职责 |
+|---|---|
+| `httpx` | HTTP 引导、中间件栈、多监听器、`{data,error}` 信封与全局错误处理器 |
+| `auth` | 共享密钥中间件 |
+| `health` | 容器探针端点 |
+| `config` | 环境变量与 JSON 文件配置读取 |
 
 ## 1. httpx：统一的 HTTP 引导
 
-`httpx.New(Config)` 返回一个预装好中间件栈与健康探针的 Echo 实例，域包只负责在 `srv.Echo()` 上注册自己的路由。中间件顺序：
+`httpx.New(Config)` 返回一个包装 Fiber app 的 `*httpx.Server`，域包只负责在 `srv.App()` 上注册自己的路由。请求进入域路由前经过：
 
 ```
-RequestID → RequestLogger(slog) → Recover(slog) → BodyLimit(2M) → [域路由]
+Fiber BodyLimit → RequestID → RequestLogger(slog) → Recover(slog) → [域路由]
 ```
 
 四点设计细节：
 
 - **RequestID 复用入站值**。请求头带了 `X-Request-Id` 就透传，没带才生成。一次请求跨越 Phorge 与 Go 服务时保持同一个 id，日志才能串起来。
-- **日志走 `log/slog`**。Echo 的 Recover 中间件默认用自己的 logger 打堆栈，这里通过 `LogErrorFunc` 改道到 slog，与进程其余日志汇合。响应体里永远只有一句通用文案，所以这条日志是 panic 现场的**唯一**记录。
-- **`LogErrorFunc` 返回 err 而非吞掉**。返回错误才会让 `HTTPErrorHandler` 继续接手，把 panic 转成 500 信封；吞掉的话客户端会拿到一个空响应。
-- **优雅关闭**。`Run()` 用 `signal.NotifyContext` 监听 SIGINT/SIGTERM，收到后调 `echo.Shutdown` 等待在途请求，`http.ErrServerClosed` 被归一化成 nil。它现在只是 `return RunAll(s)` 的一层壳，见第 1.4 节。
+- **日志走 `log/slog`**。Fiber Recover 的 `StackTraceHandler` 把 panic、request id 与堆栈写进 slog，与进程其余日志汇合；Recover 随后把错误交给全局 `ErrorHandler` 转成 500 信封。响应体里只有通用文案，所以日志是 panic 现场的**唯一**记录。
+- **BodyLimit 在 handler 之前生效**。`fiber.Config.BodyLimit` 由 `Config.BodyLimit` 解析得到，超限错误仍经全局错误处理器变成 `ERR_TOO_LARGE`，不会漏出框架默认文本。
+- **优雅关闭**。`Run()` 只是 `return RunAll(s)` 的一层壳。`RunAll` 先为整组 server 预绑定 listener，再交给 `app.Listener`；SIGINT/SIGTERM 或任一 listener 退出后，使用 `ShutdownWithTimeout` 并发排空所有 app，见第 1.4 节。
 
 `Config.BodyLimit` 为空时取默认的 `2M`，`ShutdownTimeout` 非正时取默认的 10 秒。`Ready` 为 nil 表示服务没有外部依赖。`SkipRootProbe` 把 `GET /` 让给域包，全仓库只有一个端口设它，见第 3 节。
 
@@ -54,20 +54,20 @@ type Response struct {
 
 ### 1.2 全局错误处理器：信封的兜底
 
-`httpx` 用 `e.HTTPErrorHandler = errorHandler` 顶掉了 Echo 的默认处理器。这是整个平台层最关键的一处代码：没有它，「没进到 handler 就失败」的请求——路径不存在、请求体超过传输上限、handler panic——会漏出 Echo 默认的 `{"message": "..."}`，而 PHP 客户端既读不到 `error` 也读不到 `data`，只能退化成一句语焉不详的解析失败。
+`httpx` 在 `fiber.Config{ErrorHandler: errorHandler}` 中替换 Fiber 的默认错误处理器。这是整个平台层最关键的一处代码：没有它，「没进到 handler 就失败」的请求——路径不存在、请求体超过传输上限、handler panic——会漏出 Fiber 默认的纯文本错误响应，而 PHP 客户端既读不到 `error` 也读不到 `data`，只能退化成一句语焉不详的解析失败。
 
-**别把这个处理器摘掉，也别在 `httpx.New()` 之外另建 Echo 实例。**
+**别把这个处理器摘掉，也别绕开 `httpx.New()` 另建 Fiber app。**
 
 `classify()` 的分支设计有三处值得说明：
 
-1. **非 `*echo.HTTPError` 一律 500 + 通用文案**。recover 兜住的 panic 和 handler 直接返回的裸 error 都落在这里，两者都没有自带状态码，也都不适合描述给调用方。
+1. **非 `*fiber.Error` 一律 500 + 通用文案**。recover 兜住的 panic 和 handler 直接返回的裸 error 都落在这里，两者都没有自带状态码，也都不适合描述给调用方。
 2. **未映射的 4xx 收敛成 `ERR_BAD_REQUEST`**，而不是每个状态码铸一个码。错误码是客户端 switch 的枚举，为本服务从不返回的状态码增加枚举项，只会让 PHP 侧写死用不上的分支。
 3. **5xx 的 message 恒为 `internal server error`**。panic 值、堆栈、内部错误串只进 slog（`PANIC_RECOVERED` / `REQUEST_FAILED`），不进响应体。**排查 500 要看服务日志，不要指望响应体。**
 
 两个特例：
 
-- **`Committed` 检查**。handler 已经用 `httpx.Fail` 应答过的响应不会被改写。这是域级错误码不会退化成 `ERR_INTERNAL` 的原因，也避免了往响应体里追加第二个 JSON 文档。`render/http_test.go` 的 `TestHighlightFailedSurvivesTheErrorHandler` 用「先 Fail 再抛错」的形状把它钉住，并断言解码后 `decoder.More()` 为假。
-- **HEAD 请求走 `NoContent`**。协议不允许 HEAD 响应带 body，只能用状态码表达失败。这是信封承诺唯一的例外。
+- **已应答检查**。Fiber 没有 `Response().Committed`，所以 `httpx.OK` / `Fail` 会在 `Locals` 记录已应答；全局处理器看到标记就不再改写。这是域级错误码不会退化成 `ERR_INTERNAL` 的原因，也避免了往响应体里追加第二个 JSON 文档。`render/http_test.go` 的 `TestHighlightFailedSurvivesTheErrorHandler` 用「先 Fail 再抛错」的形状把它钉住，并断言解码后 `decoder.More()` 为假。
+- **HEAD 请求只写状态码**。协议不允许 HEAD 响应带 body，处理器用 `SendStatus` 表达失败。这是信封承诺唯一的例外。
 
 ### 1.3 状态码到错误码的映射是双向对齐的
 
@@ -75,7 +75,7 @@ type Response struct {
 var statusCodes = map[int]string{ ... http.StatusRequestEntityTooLarge: CodeTooLarge ... }
 ```
 
-同一个状态码，不论由 Echo 还是由 handler 产生，都报同一个码。413 是实际会发生的那一例：域级限额与传输层限额是两道独立的检查，客户端不应该需要区分是哪一道挡下的。细节见 [`modules/render.md`](modules/render.md) 第 3.2 节。
+同一个状态码，不论由 Fiber 还是由 handler 产生，都报同一个码。413 是实际会发生的那一例：域级限额与传输层限额是两道独立的检查，客户端不应该需要区分是哪一道挡下的。细节见 [`modules/render.md`](modules/render.md) 第 3.2 节。
 
 ### 1.4 `RunAll`：一个进程多个监听器
 
@@ -111,13 +111,13 @@ if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expec
 
 `GET /`、`/healthz`、`/readyz` 返回裸 `{"status":"ok"}`。`health.go` 把理由写在了代码注释里：这些端点被 Docker HEALTHCHECK、Kubernetes 探针和负载均衡直接消费，它们的配置是按这个扁平形状写的，「为了一致性」包上信封会静默打断所有部署里的所有探针。**不要顺手统一。**
 
-`ReadyFunc` 为 nil 表示服务没有外部依赖，起来即就绪——render 域正是这种情况，`main.go` 里显式传 `Ready: nil` 并配了注释。有依赖的模块（将来的 conduit、search）在依赖不可用时应返回 503，让编排把实例摘出轮转而不是杀掉。
+`ReadyFunc` 为 nil 表示服务没有外部依赖，起来即就绪——render 域正是这种情况，`main.go` 里显式传 `Ready: nil` 并配了注释。有依赖的模块在依赖不可用时返回 503，让编排把实例摘出轮转而不是杀掉；各域的具体就绪判据写在自己的模块文档里。
 
 `httpx/errors_test.go` 的 `TestProbesStayBareUnderTheErrorHandler` 与 e2e 脚本第 1 条场景都在断言探针响应里**不出现** `"data"`。
 
 ### 3.1 `skipRoot`：唯一一条豁免，只为一个端口存在
 
-`Register(e, ready, skipRoot)` 的第三个参数为 true 时**只**注册 `/healthz` 与 `/readyz`，把 `GET /` 让给域包（由 `httpx.Config.SkipRootProbe` 透传）。
+`Register(app, ready, skipRoot)` 的第三个参数为 true 时**只**注册 `/healthz` 与 `/readyz`，把 `GET /` 让给域包（由 `httpx.Config.SkipRootProbe` 透传）。
 
 它存在的理由只有一条，`health.go` 的注释里也写着：Phorge 用一个纯 HTTP 的 `GET /` 去探 notification 的 client 端口，并且**把 501 当作健康信号**，拿到本包本来会返回的 200 反而判定服务器坏了（`PhabricatorNotificationServerRef::testClient()`）。
 
@@ -144,13 +144,6 @@ ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR", "LISTEN_ADDR"),
 
 ## 5. 覆盖率
 
-| 包 | 覆盖率 |
-|---|---|
-| `platform/auth` | 100.0% |
-| `platform/config` | 100.0% |
-| `platform/health` | 100.0% |
-| `platform/httpx` | 97.1% |
+覆盖率是运行结果，不在模块说明里复制一份会随提交失效的数字。当前精确值用 `make cover` 生成；Release 或手动触发的 [Go Test Report workflow](../.github/workflows/test-report.yml) 也会保存报告 artifact。
 
-`httpx` 从 74.1% 升到 97.1%，是 `RunAll` 那批测试带来的：原先「要起真进程才测得到」的信号循环与 `Shutdown` 路径，现在用 `:0` 端口起真 listener 加真 `SIGTERM` 覆盖了，`RunAll` 与 `shutdownAll` 都是 100%。
-
-剩下的三处缺口都不值得补，写在这里免得下一个人去追：`OK()` 只被域包调用（本包自己的测试用不到它，域测试的计数不进本包）；错误响应写失败那条 `slog.Error` 要一个已经断掉的连接；`classify()` 里 `httpErr.Message` 不是字符串的兜底分支，Echo 自己从不构造这种错误。
+平台层的测试重点是行为边界：`RunAll` 用 `:0` 端口起真实 listener 并覆盖信号关闭；错误处理测试锁住信封、HEAD 与已应答分支；auth、health、config 分别覆盖鉴权、探针形状与配置回退。哪些边界无法由包内覆盖率准确表达，见 [`testing.md`](testing.md) 第 5 节。

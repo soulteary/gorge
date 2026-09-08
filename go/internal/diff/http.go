@@ -86,12 +86,11 @@ func proseDiff(deps *Deps) fiber.Handler {
 }
 
 // Both helpers below report `answered` separately from `err`, and callers must
-// branch on `answered` rather than on the error. httpx.Fail writes the
-// response and then returns nil, which is what Echo wants from a handler that
-// has dealt with the request itself — but it means a nil error out of a helper
-// cannot distinguish "carry on" from "already replied". Reading it as the
-// former appends a second JSON document to a response that was finished, which
-// no test of the status code alone will notice.
+// branch on `answered` rather than on the error. httpx.Fail writes the response
+// and normally returns nil, so a nil error out of a helper cannot distinguish
+// "carry on" from "already replied". Reading it as the former appends a second
+// JSON document to a response that was finished, which no test of the status
+// code alone will notice.
 //
 // render/http.go has the same three checks inline in its handler, where
 // `return httpx.Fail(...)` ends things by itself and the question never comes
@@ -101,12 +100,10 @@ func proseDiff(deps *Deps) fiber.Handler {
 // bind decodes the request body, keeping a transport-level rejection distinct
 // from a malformed one.
 //
-// A body over the platform limit surfaces here as Echo's 413 whenever the
-// client streams without a Content-Length, since the middleware cannot compare
-// against a length it was never told. Handing those back to the platform error
-// handler is what keeps them reported as ERR_TOO_LARGE instead of being
-// flattened into ERR_BAD_REQUEST, which callers branch on. Malformed JSON is a
-// genuine 400 and is answered here.
+// A body over the platform limit can surface here as Fiber's 413. Handing that
+// back to the platform error handler keeps it reported as ERR_TOO_LARGE instead
+// of flattening it into ERR_BAD_REQUEST, which callers branch on. Malformed
+// JSON is a genuine 400 and is answered here.
 func bind(c fiber.Ctx, req any) (answered bool, err error) {
 	bindErr := c.Bind().Body(req)
 	if bindErr == nil {
