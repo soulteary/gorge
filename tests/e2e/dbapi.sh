@@ -215,12 +215,11 @@ done
 
 # --- 7. schema-issues / setup-issues / migrations ---------------------------
 #
-# These three fold a connection failure into an in-band record rather than a
-# 5xx: schema-issues and setup-issues answer a 200 array (empty when healthy,
-# a "fail"/"db.connection" record when not), and migrations/status answers a
-# 200 array of masters with initialized false when the meta_data database is
-# absent. So all three are a 200 with a data array on any install.
-for path in /api/db/schema-issues /api/db/setup-issues /api/db/migrations/status; do
+# schema-issues and setup-issues fold connection failures into in-band records,
+# so both always answer a 200 array. migrations/status also answers 200 with
+# initialized false when meta_data does not exist, but after a successful Ping
+# a ledger permission or connection failure is an explicit 403/503.
+for path in /api/db/schema-issues /api/db/setup-issues; do
   request GET "$path" "$TOKEN"
   if [ "$RESP_STATUS" = '200' ] && [[ "$RESP_BODY" == *'"data"'* ]]; then
     if no_leak "GET ${path}"; then
@@ -230,6 +229,23 @@ for path in /api/db/schema-issues /api/db/setup-issues /api/db/migrations/status
     fail "GET ${path}" "status=${RESP_STATUS} body=${RESP_BODY}"
   fi
 done
+
+path=/api/db/migrations/status
+request GET "$path" "$TOKEN"
+if [ "$RESP_STATUS" = '200' ] && [[ "$RESP_BODY" == *'"data"'* ]]; then
+  if no_leak "GET ${path}"; then
+    pass "GET ${path} answers a 200 data array"
+  fi
+elif { [ "$RESP_STATUS" = '403' ] && [[ "$RESP_BODY" == *'ERR_DB_ACCESS_DENIED'* ]]; } ||
+     { [ "$RESP_STATUS" = '503' ] && [[ "$RESP_BODY" == *'ERR_DB_UNREACHABLE'* ]]; }; then
+  if [[ "$RESP_BODY" == *'"data"'* ]]; then
+    fail "GET ${path}" "an error response must carry no data: ${RESP_BODY}"
+  elif no_leak "GET ${path}"; then
+    pass "GET ${path} reports its post-Ping ledger failure without leaking details"
+  fi
+else
+  fail "GET ${path}" "status=${RESP_STATUS} body=${RESP_BODY}"
+fi
 
 # --- 8. one server by its ref key -------------------------------------------
 #

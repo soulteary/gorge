@@ -61,10 +61,11 @@ func (s *DiffService) LoadActualSchema(ctx context.Context, ref *DatabaseRef) (*
 func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *DatabaseRef) (*contracts.SchemaNode, error) {
 	server := &contracts.SchemaNode{RefKey: ref.RefKey(), Status: "ok"}
 
-	prefix := s.config.Namespace + "_%"
+	prefix := s.config.Namespace + "_"
 	rows, err := conn.QueryContext(ctx,
 		"SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME "+
-			"FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME LIKE ?", prefix)
+			"FROM INFORMATION_SCHEMA.SCHEMATA "+
+			"WHERE LEFT(SCHEMA_NAME, CHAR_LENGTH(?)) = ?", prefix, prefix)
 	if err != nil {
 		return nil, classifyMySQLError(err)
 	}
@@ -79,9 +80,12 @@ func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *Dat
 	for rows.Next() {
 		var name, charset, collation string
 		if err := rows.Scan(&name, &charset, &collation); err != nil {
-			continue
+			return nil, classifyMySQLError(err)
 		}
 		databases = append(databases, databaseInfo{name: name, charset: charset, collation: collation})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyMySQLError(err)
 	}
 
 	for _, database := range databases {
@@ -123,9 +127,12 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 	for rows.Next() {
 		var tableName, collation, engine string
 		if err := rows.Scan(&tableName, &collation, &engine); err != nil {
-			continue
+			return nil, classifyMySQLError(err)
 		}
 		tables = append(tables, tableInfo{name: tableName, collation: collation, engine: engine})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyMySQLError(err)
 	}
 
 	for _, table := range tables {
@@ -145,7 +152,8 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 				var colName, colType, nullable string
 				var charset, colCollation sql.NullString
 				if err := colRows.Scan(&colName, &colType, &nullable, &charset, &colCollation); err != nil {
-					continue
+					_ = colRows.Close()
+					return nil, classifyMySQLError(err)
 				}
 				isNullable := nullable == "YES"
 				tableNode.Children = append(tableNode.Children, &contracts.SchemaNode{
@@ -153,6 +161,10 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 					CharacterSet: charset.String, Collation: colCollation.String,
 					ColumnType: colType, Nullable: &isNullable, Status: "ok",
 				})
+			}
+			if err := colRows.Err(); err != nil {
+				_ = colRows.Close()
+				return nil, classifyMySQLError(err)
 			}
 			_ = colRows.Close()
 		}

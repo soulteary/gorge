@@ -201,9 +201,9 @@ func isReplicaStatusSyntaxError(err error) bool {
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1064
 }
 
-// analyzeReplicaLag extracts Seconds_Behind_Master by column name — the column
-// set of SHOW REPLICA STATUS varies by MySQL version, so a positional index
-// would break — and flags a slow or stopped replica.
+// analyzeReplicaLag extracts the lag column by name. MySQL 8.0.26 renamed it
+// from Seconds_Behind_Master to Seconds_Behind_Source, and the column set also
+// varies by release, so a positional index would break.
 func (s *HealthService) analyzeReplicaLag(rows *sql.Rows, columns []string, ref *DatabaseRef) {
 	vals := make([]any, len(columns))
 	ptrs := make([]any, len(columns))
@@ -214,7 +214,7 @@ func (s *HealthService) analyzeReplicaLag(rows *sql.Rows, columns []string, ref 
 
 	sbmIdx := -1
 	for i, col := range columns {
-		if col == "Seconds_Behind_Master" {
+		if col == "Seconds_Behind_Source" || col == "Seconds_Behind_Master" {
 			sbmIdx = i
 			break
 		}
