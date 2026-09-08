@@ -222,3 +222,61 @@ func TestLoadActualSchemaDetectsRowIterationFailuresAtEveryLevel(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadActualSchemaPropagatesNestedQueryFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		seed     func(sqlmock.Sqlmock)
+		wantKind errorKind
+	}{
+		{
+			name: "table access denied",
+			seed: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").WillReturnRows(
+					sqlmock.NewRows([]string{"SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME"}).
+						AddRow("phorge_config", "utf8mb4", "utf8mb4_bin"))
+				mock.ExpectQuery("INFORMATION_SCHEMA.TABLES").WillReturnError(
+					&mysql.MySQLError{Number: 1142, Message: "denied"})
+			},
+			wantKind: kindAccessDenied,
+		},
+		{
+			name: "column connection lost",
+			seed: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").WillReturnRows(
+					sqlmock.NewRows([]string{"SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME"}).
+						AddRow("phorge_config", "utf8mb4", "utf8mb4_bin"))
+				mock.ExpectQuery("INFORMATION_SCHEMA.TABLES").WillReturnRows(
+					sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}).
+						AddRow("config_entry", "utf8mb4_bin", "InnoDB"))
+				mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").WillReturnError(
+					errors.New("connection reset"))
+			},
+			wantKind: kindUnreachable,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			test.seed(mock)
+			mock.ExpectClose()
+
+			ref := &DatabaseRef{Host: "db1", Port: 3306}
+			svc := NewDiffService(&ClusterConfig{Refs: []*DatabaseRef{ref}, Namespace: "phorge"}, "secret")
+			svc.SetConnFactory(mockConnFactory(db))
+			_, gotErr := svc.LoadActualSchema(context.Background(), ref)
+			var dbErr *DBError
+			if !errors.As(gotErr, &dbErr) || dbErr.Kind != test.wantKind {
+				t.Fatalf("error = %v, want kind %d", gotErr, test.wantKind)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+				t.Fatal(err)
+			}
+		})
+	}
+}

@@ -78,6 +78,13 @@ func TestDSNStringDifferentPort(t *testing.T) {
 	}
 }
 
+func TestDSNStringBracketsIPv6Literal(t *testing.T) {
+	s := (DSN{Host: "2001:db8::1", Port: 3306, User: "root"}).String()
+	if !strings.Contains(s, "tcp([2001:db8::1]:3306)") {
+		t.Errorf("expected a bracketed IPv6 address, got %q", s)
+	}
+}
+
 func TestNewConnFromDB(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

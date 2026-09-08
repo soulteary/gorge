@@ -148,3 +148,33 @@ func TestReplicationProbeAcceptsModernLagColumn(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReplicationProbeReportsResultStreamFailure(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(
+		sqlmock.NewRows([]string{"Seconds_Behind_Source"}).
+			AddRow([]byte("7")).RowError(0, errors.New("connection reset")))
+	mock.ExpectClose()
+
+	ref := &DatabaseRef{Host: "db1", Port: 3306}
+	svc := NewHealthService(&ClusterConfig{Refs: []*DatabaseRef{ref}})
+	svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+		return NewConnFromDB(db, dsn, readOnly), nil
+	})
+
+	got, gotErr := svc.QueryOne(context.Background(), ref.RefKey(), "secret")
+	if gotErr != nil {
+		t.Fatal(gotErr)
+	}
+	if got.ConnectionStatus != string(StatusFail) || got.ReplicaStatus != "" {
+		t.Fatalf("interrupted replication probe result = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
+		t.Fatal(err)
+	}
+}

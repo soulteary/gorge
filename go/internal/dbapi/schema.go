@@ -91,16 +91,10 @@ func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *Dat
 	for _, database := range databases {
 		dbNode, err := s.loadDatabaseSchema(ctx, conn, ref.RefKey(), database.name)
 		if err != nil {
-			dbNode = &contracts.SchemaNode{
-				RefKey:   ref.RefKey(),
-				Database: database.name,
-				Status:   "fail",
-				Issues:   []string{err.Error()},
-			}
-		} else {
-			dbNode.CharacterSet = database.charset
-			dbNode.Collation = database.collation
+			return nil, err
 		}
+		dbNode.CharacterSet = database.charset
+		dbNode.Collation = database.collation
 		server.Children = append(server.Children, dbNode)
 	}
 
@@ -145,29 +139,27 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 				"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
 			dbName, table.name)
 		if err != nil {
-			tableNode.Status = "fail"
-			tableNode.Issues = []string{classifyMySQLError(err).Error()}
-		} else {
-			for colRows.Next() {
-				var colName, colType, nullable string
-				var charset, colCollation sql.NullString
-				if err := colRows.Scan(&colName, &colType, &nullable, &charset, &colCollation); err != nil {
-					_ = colRows.Close()
-					return nil, classifyMySQLError(err)
-				}
-				isNullable := nullable == "YES"
-				tableNode.Children = append(tableNode.Children, &contracts.SchemaNode{
-					RefKey: refKey, Database: dbName, Table: table.name, Column: colName,
-					CharacterSet: charset.String, Collation: colCollation.String,
-					ColumnType: colType, Nullable: &isNullable, Status: "ok",
-				})
-			}
-			if err := colRows.Err(); err != nil {
+			return nil, classifyMySQLError(err)
+		}
+		for colRows.Next() {
+			var colName, colType, nullable string
+			var charset, colCollation sql.NullString
+			if err := colRows.Scan(&colName, &colType, &nullable, &charset, &colCollation); err != nil {
 				_ = colRows.Close()
 				return nil, classifyMySQLError(err)
 			}
-			_ = colRows.Close()
+			isNullable := nullable == "YES"
+			tableNode.Children = append(tableNode.Children, &contracts.SchemaNode{
+				RefKey: refKey, Database: dbName, Table: table.name, Column: colName,
+				CharacterSet: charset.String, Collation: colCollation.String,
+				ColumnType: colType, Nullable: &isNullable, Status: "ok",
+			})
 		}
+		if err := colRows.Err(); err != nil {
+			_ = colRows.Close()
+			return nil, classifyMySQLError(err)
+		}
+		_ = colRows.Close()
 		dbNode.Children = append(dbNode.Children, tableNode)
 	}
 

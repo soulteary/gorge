@@ -3,8 +3,9 @@ package dbapi
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"net"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -43,7 +44,7 @@ func (d DSN) String() string {
 	cfg.User = d.User
 	cfg.Passwd = d.Password
 	cfg.Net = "tcp"
-	cfg.Addr = fmt.Sprintf("%s:%d", d.Host, d.Port)
+	cfg.Addr = net.JoinHostPort(d.Host, strconv.Itoa(d.Port))
 	cfg.DBName = d.Database
 	cfg.Timeout = time.Duration(d.ConnTimeoutSec) * time.Second
 	cfg.ReadTimeout = time.Duration(d.QueryTimeoutSec) * time.Second

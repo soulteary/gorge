@@ -114,6 +114,9 @@ func resetProbeState(ref *DatabaseRef) {
 }
 
 func recordConnectionFailure(ref *DatabaseRef, err error, start time.Time) {
+	ref.ReplicaStatus = ""
+	ref.ReplicaMessage = ""
+	ref.ReplicaDelay = nil
 	if isAuthFailure(err) {
 		ref.ConnectionStatus = StatusAuth
 	} else {
@@ -165,8 +168,18 @@ func (s *HealthService) probeReplication(ctx context.Context, conn *Conn, ref *D
 	ref.ConnectionStatus = StatusOkay
 	ref.ConnectionLatency = time.Since(start).Seconds()
 
-	columns, _ := rows.Columns()
+	columns, err := rows.Columns()
+	if err != nil {
+		recordConnectionFailure(ref, err, start)
+		return
+	}
 	isReplica := rows.Next() && len(columns) > 0
+	if !isReplica {
+		if err := rows.Err(); err != nil {
+			recordConnectionFailure(ref, err, start)
+			return
+		}
+	}
 
 	switch {
 	case ref.IsMaster && isReplica:
@@ -180,7 +193,9 @@ func (s *HealthService) probeReplication(ctx context.Context, conn *Conn, ref *D
 	}
 
 	if isReplica {
-		s.analyzeReplicaLag(rows, columns, ref)
+		if err := s.analyzeReplicaLag(rows, columns, ref); err != nil {
+			recordConnectionFailure(ref, err, start)
+		}
 	}
 }
 
@@ -204,13 +219,15 @@ func isReplicaStatusSyntaxError(err error) bool {
 // analyzeReplicaLag extracts the lag column by name. MySQL 8.0.26 renamed it
 // from Seconds_Behind_Master to Seconds_Behind_Source, and the column set also
 // varies by release, so a positional index would break.
-func (s *HealthService) analyzeReplicaLag(rows *sql.Rows, columns []string, ref *DatabaseRef) {
+func (s *HealthService) analyzeReplicaLag(rows *sql.Rows, columns []string, ref *DatabaseRef) error {
 	vals := make([]any, len(columns))
 	ptrs := make([]any, len(columns))
 	for i := range vals {
 		ptrs[i] = &vals[i]
 	}
-	_ = rows.Scan(ptrs...)
+	if err := rows.Scan(ptrs...); err != nil {
+		return err
+	}
 
 	sbmIdx := -1
 	for i, col := range columns {
@@ -233,6 +250,7 @@ func (s *HealthService) analyzeReplicaLag(rows *sql.Rows, columns []string, ref 
 	} else {
 		ref.ReplicaStatus = ReplicationNotReplicating
 	}
+	return nil
 }
 
 // isAccessDeniedMsg and isAuthMsg classify a SHOW REPLICA STATUS error by its

@@ -77,7 +77,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 `probeRef` 用一个 2 秒超时、**不重试**的短连接探一台节点——健康检查要报「此刻」的状态，而不是等一个重试循环跑完。连接或 ping 失败即 `connectionStatus = fail`、原因进 `connectionMessage`。连得上就优先跑 `SHOW REPLICA STATUS` 探复制；MySQL 8.0.0–8.0.21 对这个新拼法返回 1064 时，回落到兼容的 `SHOW SLAVE STATUS`。
 
-这里有一处判据值得单记，它也是 `connectionStatus` 有 `replication-client` 这个取值的理由：**「探测用户没有权限跑 `SHOW REPLICA STATUS`」不是一次失败，是一个独立状态**。节点答了话、只是这个用户看不到复制信息——这是一个去授权（GRANT）能解决的问题，不是一台要修的服务器。所以它被分类成 `replication-client` 而不是 `fail`。同理 `1045` 一族被分成 `auth`。复制延迟从结果里**按列名**取：MySQL 8.0.26+ 的 `Seconds_Behind_Source` 或旧版的 `Seconds_Behind_Master`（结果列会随版本变，按位置取会错位），`>30` 秒标为 `replica-slow`。
+这里有一处判据值得单记，它也是 `connectionStatus` 有 `replication-client` 这个取值的理由：**「探测用户没有权限跑 `SHOW REPLICA STATUS`」不是一次失败，是一个独立状态**。节点答了话、只是这个用户看不到复制信息——这是一个去授权（GRANT）能解决的问题，不是一台要修的服务器。所以它被分类成 `replication-client` 而不是 `fail`。同理 `1045` 一族被分成 `auth`。复制延迟从结果里**按列名**取：MySQL 8.0.26+ 的 `Seconds_Behind_Source` 或旧版的 `Seconds_Behind_Master`（结果列会随版本变，按位置取会错位），`>30` 秒标为 `replica-slow`；结果集在 `Columns` / `Next` / `Scan` 阶段中断则整次探测标为 `fail`，不会把不完整结果写成 `okay`。
 
 ### 3.4 迁移状态读 `patch_status`，另读一次 `hoststate` 并丢弃
 

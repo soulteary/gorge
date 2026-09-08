@@ -37,7 +37,7 @@
 | `dbapi/` | `gorge-db-api` | `go/internal/dbapi/contract_test.go` |
 | `dbapi/unavailable/` | 同上，但服务对着一个连不上的库 | 同一个文件里的第二个 `Run` |
 
-**db-api 域的固件与 e2e 已落地。** db-api 的 Go 服务迁入的同时，契约固件与 e2e 脚本也一并补齐：`go/internal/dbapi/contract_test.go` 按 webhook / taskqueue 的形状写好，指向 `tests/contract/dbapi/`（七条只读路由 + 401 + 查询参数认证，共 10 份 JSON）与 `tests/contract/dbapi/unavailable/`（3 份：库连不上时 message 保持通用、body 不泄漏 SQL/库名/主机/端口）。`go test ./...` 现已整套变绿，`internal/dbapi` 覆盖率 81.3%。下面第 2.3 节的固件总数与第 4 节的 e2e 脚本数均已把 db-api 计入。
+**db-api 域的固件与 e2e 已落地。** db-api 的 Go 服务迁入的同时，契约固件与 e2e 脚本也一并补齐：`go/internal/dbapi/contract_test.go` 按 webhook / taskqueue 的形状写好，指向 `tests/contract/dbapi/`（七条只读路由 + 401 + 查询参数认证，共 10 份 JSON）与 `tests/contract/dbapi/unavailable/`（3 份：库连不上时 message 保持通用、body 不泄漏 SQL/库名/主机/端口）。`go test ./...` 现已整套变绿，`internal/dbapi` 覆盖率 81.4%。下面第 2.3 节的固件总数与第 4 节的 e2e 脚本数均已把 db-api 计入。
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
 
@@ -233,7 +233,7 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 | `taskqueue` | 13.4% |
 | `worker` | 78.7% |
 | `worker/handlers` | 56.8% |
-| `dbapi` | 81.3% |
+| `dbapi` | 81.4% |
 | `contracttest` | 19.0%（见下） |
 | `cmd/gorge-render` | 0.0% |
 | `cmd/gorge-notification` | 0.0% |
@@ -247,7 +247,7 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 | `cmd/gorge-db-api` | 3.0% |
 | **总计** | **71.1%** |
 
-上表是基线快照。**db-api 迁入后已把它计入**：`internal/dbapi` 一次干净的 `go test ./...` 覆盖率为 **81.3%**（整套现已全绿，`tests/contract/dbapi/` 与 `tests/contract/dbapi/unavailable/` 固件均已落地）；`cmd/gorge-db-api` 只有密码选择辅助函数被单测覆盖，其余入口逻辑与另外九个 `cmd` 同理由 e2e 在集成层兜（`tests/e2e/dbapi.sh` 已落地）。
+上表是基线快照。**db-api 迁入后已把它计入**：`internal/dbapi` 一次干净的 `go test ./...` 覆盖率为 **81.4%**（整套现已全绿，`tests/contract/dbapi/` 与 `tests/contract/dbapi/unavailable/` 固件均已落地）；`cmd/gorge-db-api` 只有密码选择辅助函数被单测覆盖，其余入口逻辑与另外九个 `cmd` 同理由 e2e 在集成层兜（`tests/e2e/dbapi.sh` 已落地）。
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 

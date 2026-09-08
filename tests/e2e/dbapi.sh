@@ -192,21 +192,22 @@ fi
 # --- 6. schema endpoints keep the envelope ----------------------------------
 #
 # schema-diff and charset-info must open a connection. When a master is
-# reachable they answer 200 with data; when it is not they answer this domain's
-# ERR_DB_UNREACHABLE at 503 with a generic message. Either way the body stays
-# in the envelope and leaks nothing internal — that is what is asserted here,
-# not the status, which depends on whether the cluster is up.
+# reachable and permitted they answer 200 with data; connection and permission
+# failures answer this domain's generic 503/403 errors. Either way the body
+# stays in the envelope and leaks nothing internal — that is what is asserted
+# here, not the status, which depends on the cluster and grants.
 for path in /api/db/schema-diff /api/db/charset-info; do
   request GET "$path" "$TOKEN"
   if [ "$RESP_STATUS" = '200' ] && [[ "$RESP_BODY" == *'"data"'* ]]; then
     if no_leak "GET ${path}"; then
       pass "GET ${path} answers 200 with data and no leak"
     fi
-  elif [ "$RESP_STATUS" = '503' ] && [[ "$RESP_BODY" == *'ERR_DB_UNREACHABLE'* ]]; then
+  elif { [ "$RESP_STATUS" = '403' ] && [[ "$RESP_BODY" == *'ERR_DB_ACCESS_DENIED'* ]]; } ||
+       { [ "$RESP_STATUS" = '503' ] && [[ "$RESP_BODY" == *'ERR_DB_UNREACHABLE'* ]]; }; then
     if [[ "$RESP_BODY" == *'"data"'* ]]; then
       fail "GET ${path}" "an error response must carry no data: ${RESP_BODY}"
     elif no_leak "GET ${path}"; then
-      pass "GET ${path} answers 503 ERR_DB_UNREACHABLE, generic and no leak"
+      pass "GET ${path} answers a generic database error with no leak"
     fi
   else
     fail "GET ${path}" "status=${RESP_STATUS} body=${RESP_BODY}"
