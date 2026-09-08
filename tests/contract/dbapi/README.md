@@ -13,7 +13,7 @@ names these fixtures assert on *are* the wire contract.
 
 | Fixture | Pins |
 |---|---|
-| `servers.json` | `GET /api/db/servers` returns one `ServerRef` per configured node, each carrying static topology (`refKey`, `host`, `port`, `isMaster`, `isDefaultPartition`) and a live probe result (`connectionStatus`, `replicaStatus`). It never fails on a dead node, so the array is the whole answer. |
+| `servers.json` | `GET /api/db/servers` returns one `ServerRef` per configured node, each carrying static topology (`refKey`, `host`, `port`, `isMaster`, `isDefaultPartition`) and a live probe result (`connectionStatus`, `replicationStatus`). It never fails on a dead node, so the array is the whole answer. |
 | `server-health.json` | `GET /api/db/servers/{ref}/health` probes the one node whose key matches, addressed by the `refKey` (`host:port`) `servers` hands out, and returns a single object rather than an array. |
 | `server-health-unknown.json` | A `refKey` that matches no configured node is a `404 ERR_NOT_FOUND`, not a database failure — the caller is addressing a server that does not exist. |
 | `schema-diff.json` | `GET /api/db/schema-diff` returns a `Server → Database → Table → Column` tree per node, the input Phorge's schema comparison expects. |

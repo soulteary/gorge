@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 // ConduitClient calls Phorge Conduit API methods. It is how the delegate
@@ -22,9 +21,13 @@ type ConduitClient struct {
 
 func NewConduitClient(baseURL, token string) *ConduitClient {
 	return &ConduitClient{
-		baseURL:    baseURL,
-		token:      token,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL: baseURL,
+		token:   token,
+		// A delegated Phorge worker may legitimately run for the full queue
+		// lease (two hours by default). The task context supplied by Consumer
+		// carries that lease deadline, so an unrelated fixed client timeout
+		// would only create a false transient failure while PHP kept running.
+		httpClient: &http.Client{},
 	}
 }
 

@@ -26,7 +26,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	deps := dbapi.NewDeps(cluster, cfg.MySQLPass, cfg.ServiceToken)
+	deps := buildDeps(cfg, cluster)
 
 	srv := httpx.New(httpx.Config{
 		ListenAddr: cfg.ListenAddr,
@@ -49,4 +49,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "gorge-db-api: %v\n", runErr)
 		os.Exit(1)
 	}
+}
+
+func buildDeps(cfg *dbapi.Config, cluster *dbapi.ClusterConfig) *dbapi.Deps {
+	return dbapi.NewDeps(cluster, cluster.MySQLPass, cfg.ServiceToken)
 }

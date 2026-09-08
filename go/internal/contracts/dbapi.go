@@ -46,13 +46,14 @@ type ServerRef struct {
 	ConnectionLatency float64 `json:"connectionLatencySec"`
 	ConnectionMessage string  `json:"connectionMessage,omitempty"`
 
-	// ReplicaStatus is one of okay, master-replica, replica-none,
+	// ReplicaStatus is exposed as replicationStatus and is one of okay,
+	// master-replica, replica-none,
 	// replica-slow, not-replicating, and is empty for a node whose connection
 	// failed. ReplicaDelay is Seconds_Behind_Master, nil when the node is not
 	// replicating or the value is NULL.
-	ReplicaStatus  string `json:"replicaStatus,omitempty"`
+	ReplicaStatus  string `json:"replicationStatus,omitempty"`
 	ReplicaMessage string `json:"replicaMessage,omitempty"`
-	ReplicaDelay   *int   `json:"replicaDelaySec,omitempty"`
+	ReplicaDelay   *int   `json:"secondsBehindMaster,omitempty"`
 }
 
 // SchemaNode is one level of the schema tree GET /api/db/schema-diff returns,
@@ -66,10 +67,12 @@ type ServerRef struct {
 // flattened into SchemaIssue records.
 type SchemaNode struct {
 	RefKey   string        `json:"refKey"`
-	Database string        `json:"database,omitempty"`
-	Table    string        `json:"table,omitempty"`
-	Column   string        `json:"column,omitempty"`
+	Database string        `json:"databaseName,omitempty"`
+	Table    string        `json:"tableName,omitempty"`
+	Column   string        `json:"columnName,omitempty"`
 	Key      string        `json:"key,omitempty"`
+	Expected string        `json:"expected,omitempty"`
+	Actual   string        `json:"actual,omitempty"`
 	Issues   []string      `json:"issues,omitempty"`
 	Status   string        `json:"status"`
 	Children []*SchemaNode `json:"children,omitempty"`
@@ -81,10 +84,12 @@ type SchemaNode struct {
 // without the tree.
 type SchemaIssue struct {
 	RefKey   string `json:"refKey"`
-	Database string `json:"database"`
-	Table    string `json:"table,omitempty"`
-	Column   string `json:"column,omitempty"`
-	Key      string `json:"key,omitempty"`
+	Database string `json:"databaseName"`
+	Table    string `json:"tableName,omitempty"`
+	Column   string `json:"columnName,omitempty"`
+	Key      string `json:"issueKey,omitempty"`
+	Expected string `json:"expected,omitempty"`
+	Actual   string `json:"actual,omitempty"`
 	Issue    string `json:"issue"`
 	Status   string `json:"status"`
 }
@@ -99,7 +104,7 @@ type SchemaIssue struct {
 // …), Name is its short title, Message the detail. RefKey names the server the
 // issue was found on, empty for a cluster-wide issue.
 type SetupIssue struct {
-	Key     string `json:"key"`
+	Key     string `json:"issueKey"`
 	Name    string `json:"name"`
 	Summary string `json:"summary,omitempty"`
 	Message string `json:"message"`

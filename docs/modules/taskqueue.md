@@ -71,7 +71,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 | GET | `/api/queue/tasks/:id` | 需要 | 信封，单个 `Task`（含 `data`）；不存在为 404、非数字 id 为 400 |
 | GET | `/`、`/healthz`、`/readyz` | 不需要（平台层注册） | 裸 `{"status":"ok"}` |
 
-**lease owner 走 `X-Lease-Owner` 头而不是 body**：它标识调用方（哪个 worker），不是这次请求。缺头时回落到 `IP:gorge-taskqueue`，够区分不同 worker 的租约。这个值直接写进 `worker_activetask.leaseOwner`，是 Phorge 的列、会被它的守护进程控制台读回，所以是契约的一部分。
+**lease owner 走 `X-Lease-Owner` 头而不是 body**：它标识调用方（哪个 worker），不是这次请求。缺头时回落到 `IP:gorge-taskqueue`，够区分不同 worker 的租约。这个值直接写进 `worker_activetask.leaseOwner`，是 Phorge 的列、会被它的守护进程控制台读回，所以是契约的一部分。body 还可带 `taskClasses` 白名单；筛选发生在取得租约之前，避免专用 worker 先占用、再失败并延迟另一个池的任务。
 
 `Deps` 只有 `Store` 与 `Token`。**`Store` 是 interface，这是契约固件能存在的前提**：两个后端（MySQL/Redis）之外，固件与 handler 单测注入的是第三份手写内存实现（`memstore_test.go`），照 webhook 的做法。
 
@@ -104,12 +104,14 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 ```sql
 -- 阶段一：从未被租过的任务，按优先级、id 排序（新任务优先）
 SELECT id FROM worker_activetask
- WHERE leaseOwner IS NULL
+ WHERE leaseOwner IS NULL AND leaseExpires IS NULL
+   [AND taskClass IN (...)]
  ORDER BY priority ASC, id ASC LIMIT ?
 -- 阶段二：租约已过期的任务（崩溃的 worker / 到期重试），补足名额
 SELECT id FROM worker_activetask
  WHERE leaseExpires < ?
- ORDER BY leaseExpires ASC LIMIT ?
+   [AND taskClass IN (...)]
+ ORDER BY priority ASC, id ASC LIMIT ?
 ```
 
 抢到之后把 `leaseOwner` 与 `leaseExpires`（= now + `LeaseDuration`）写上，再 `JOIN worker_taskdata` 把负载一起捞出来返回。**排序是 `priority ASC, id ASC`**：优先级数字越小越急（`PriorityAlerts=1000` < `PriorityDefault=2000` < … < `PriorityImport=4000`），同优先级下先进先出。
@@ -150,11 +152,11 @@ SELECT id FROM worker_activetask
 
 ### 3.6 worker：租约循环与 Conduit 委派
 
-`Consumer.Run` 是 worker 的全部工作：按 `PollIntervalMs` 轮询 `lease`（一次要 `LeaseLimit` 个），对每个任务按 `taskClass` 从 `Registry` 找 handler 跑，然后回报——成功 `complete`、`PermanentError` 走 `fail(permanent=true)`、`YieldError` 走 `yield`、其余错误走 `fail(permanent=false)`。队列空了就进入 `IdleTimeoutSec` 之后的退避。`TaskClassFilter` 非空时只租白名单里的类。
+`Consumer.Run` 是 worker 的全部工作：按 `PollIntervalMs` 轮询 `lease`（一次要 `LeaseLimit` 个），对每个任务按 `taskClass` 从 `Registry` 找 handler 跑，然后回报——成功 `complete`、`PermanentError` 走 `fail(permanent=true)`、`YieldError` 走 `yield`、其余错误走 `fail(permanent=false)`。结果回写失败会在任务租约上下文内重试，只有 taskqueue 确认写入后才更新进程计数，避免一次短暂队列故障被误记成已完成。队列空了就进入 `IdleTimeoutSec` 之后的退避。`TaskClassFilter` 非空时通过 lease 请求的 `taskClasses` 在取得租约前筛选；没有 Conduit fallback 时，即使未显式配置过滤器，也只请求 Registry 真正支持的类。
 
-**handler 的注册在 `handlers.RegisterAll`**：本地实现覆盖几个类（feed HTTP 等），但**关键设计是 Conduit fallback**——配了 `GORGE_WORKER_CONDUIT_URL` 就装一个兜底 handler，把任何未本地实现的 task class 通过 Conduit 的 `worker.execute` 委派回 Phorge 的 PHP。这让 worker 不必重写 Phorge 的每一个 worker 就能跑一个装置的全部任务类。没配 Conduit 时，未实现的类直接失败。`supported` 里的 `*` 就是「配了 fallback」的信号。
+**handler 的注册在 `handlers.RegisterAll`**：本地实现目前覆盖 `FeedPublisherHTTPWorker`，并且无论是否配置 Conduit 都优先使用原生 handler；配了 `GORGE_WORKER_CONDUIT_URL` 才装一个兜底 handler，把任何未本地实现的 task class 通过 Conduit 的 `worker.execute` 委派回 Phorge 的 PHP。这让 worker 不必重写 Phorge 的每一个 worker 就能跑一个装置的全部任务类。没配 Conduit 时，未实现的类不会被这个 worker 租走。`supported` 里的 `*` 就是「配了 fallback」的信号。
 
-**Conduit 委派必须用表单编码，不能发 JSON。**Phorge 的 `PhabricatorConduitAPIController` 明确拒绝 `Content-Type: application/json`（"Use form-encoded data to submit parameters to Conduit endpoints"），一个它无法当作 Conduit 请求解析的 body 会被更外层的 HTTP 栈用一张 HTML 页面回应——这正是委派环节 `invalid character '<'` 的来源。所以 `handlers/conduit.go` 的 `ConduitClient.Call` 走 Phorge 自家客户端（arcanist 的 `ConduitClient`、旧 `PhabricatorGoConduitGatewayClient`）的线格式：`POST /api/<method>`，`Content-Type: application/x-www-form-urlencoded`，body 里带一个 `params` 字段（值是参数 map 的 JSON），API token 塞在 `__conduit__.token` 里，再加 `output=json` 强制 JSON 信封；网关另外用 `X-Service-Token` 头认证。收到非 JSON body 时不再抛裸的解码错误，而是截一段可诊断的片段。
+**Conduit 委派必须用表单编码，不能发 JSON。**Phorge 的 `PhabricatorConduitAPIController` 明确拒绝 `Content-Type: application/json`（"Use form-encoded data to submit parameters to Conduit endpoints"），一个它无法当作 Conduit 请求解析的 body 会被更外层的 HTTP 栈用一张 HTML 页面回应——这正是委派环节 `invalid character '<'` 的来源。所以 `handlers/conduit.go` 的 `ConduitClient.Call` 走 Phorge 自家客户端（arcanist 的 `ConduitClient`、旧 `PhabricatorGoConduitGatewayClient`）的线格式：`POST /api/<method>`，`Content-Type: application/x-www-form-urlencoded`，body 里带一个 `params` 字段（值是参数 map 的 JSON），API token 塞在 `__conduit__.token` 里，再加 `output=json` 强制 JSON 信封；网关另外用 `X-Service-Token` 头认证。收到非 JSON body 时不再抛裸的解码错误，而是截一段可诊断的片段。Conduit 客户端本身不设与任务无关的固定 30 秒上限；Consumer 以 taskqueue 返回的 `leaseExpires` 作为执行上下文截止时间，允许合法的长任务使用完整租约窗口。
 
 **`worker.execute` 是 phorge-fork 侧新增的 Conduit method**（`PhabricatorWorkerExecuteConduitAPIMethod`，`shouldRequireAuthentication()=false` 且 `shouldAllowUnguardedWrites()=true`，因为它是经网关认证的机器间内部调用、无用户会话、无 CSRF 面）。它按 `taskClass`+`data` 用 `newv()` 造出真正的 `PhabricatorWorker` 并跑 `executeTask()`，把 `PhabricatorWorkerActiveTask::executeTask` 的分类**回报**而非自己驱动队列（队列归 gorge-worker 管）：正常返回 `success`，`PhabricatorWorkerYieldException`→`yield`（带 `retry`），`PhabricatorWorkerPermanentFailureException`→`permanent-failure`，其余异常→`failure`（临时、可重试）。委派 handler 据此把结果翻译回 worker 的错误词汇（`nil`/`YieldError`/`PermanentError`/普通 error），从而正确 `complete`/`yield`/`fail`。
 
@@ -195,7 +197,7 @@ worker 的 `/readyz` 是 `nil`（`httpx.Config{Ready: nil}`）：它没有自持
 | `GORGE_WORKER_POLL_INTERVAL_MS` | `POLL_INTERVAL_MS` | `1000` | 有活时的轮询间隔 |
 | `GORGE_WORKER_MAX_WORKERS` | `MAX_WORKERS` | `4` | 并发跑多少 |
 | `GORGE_WORKER_IDLE_TIMEOUT_SEC` | `IDLE_TIMEOUT_SEC` | `180` | 队列空后按此频率再等多久才退避 |
-| `GORGE_WORKER_CONDUIT_URL` | `CONDUIT_URL` | 空 | 见 3.6，空 = 只跑本地实现的类、其余失败 |
+| `GORGE_WORKER_CONDUIT_URL` | `CONDUIT_URL` | 空 | 见 3.6，空 = 只租并运行本地实现的类 |
 | `GORGE_WORKER_CONDUIT_TOKEN` | `CONDUIT_TOKEN` | 空 | Conduit token |
 | `GORGE_WORKER_TASK_CLASS_FILTER` | `TASK_CLASS_FILTER` | 空 | 逗号分隔的类白名单，空 = 全部支持的类 |
 

@@ -400,6 +400,17 @@ func TestGetReplicaForApplication(t *testing.T) {
 	if r := skipsDisabled.GetReplicaForApplication("config"); r == nil || r.Host != "r2" {
 		t.Errorf("expected r2 (skipping disabled), got %v", r)
 	}
+
+	partitioned := &ClusterConfig{
+		masters: []*DatabaseRef{{Host: "files-master", ApplicationMap: map[string]bool{"files": true}}},
+		replicas: []*DatabaseRef{
+			{Host: "default-replica", IsDefaultPartition: true},
+			{Host: "files-replica", ApplicationMap: map[string]bool{"files": true}},
+		},
+	}
+	if r := partitioned.GetReplicaForApplication("files"); r == nil || r.Host != "files-replica" {
+		t.Errorf("expected the replica from the files partition, got %v", r)
+	}
 }
 
 func TestGetAllRefs(t *testing.T) {

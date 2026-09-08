@@ -57,8 +57,8 @@ type apiError struct {
 }
 
 // Lease asks the queue for up to limit tasks, presenting this client's owner.
-func (c *Client) Lease(ctx context.Context, limit int) ([]*contracts.Task, error) {
-	body, _ := json.Marshal(contracts.LeaseRequest{Limit: limit})
+func (c *Client) Lease(ctx context.Context, limit int, taskClasses []string) ([]*contracts.Task, error) {
+	body, _ := json.Marshal(contracts.LeaseRequest{Limit: limit, TaskClasses: taskClasses})
 	req, err := c.newRequest(ctx, http.MethodPost, "/api/queue/lease", body)
 	if err != nil {
 		return nil, err

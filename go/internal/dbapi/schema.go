@@ -2,6 +2,8 @@ package dbapi
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
@@ -172,6 +174,8 @@ func flattenIssues(node *contracts.SchemaNode, out *[]contracts.SchemaIssue) {
 			Table:    node.Table,
 			Column:   node.Column,
 			Key:      node.Key,
+			Expected: node.Expected,
+			Actual:   node.Actual,
 			Issue:    issue,
 			Status:   node.Status,
 		})
@@ -212,7 +216,11 @@ func (s *DiffService) charsetInfoForRef(ctx context.Context, ref *DatabaseRef) (
 	var name string
 	row := conn.QueryRowContext(ctx,
 		"SELECT CHARACTER_SET_NAME FROM INFORMATION_SCHEMA.CHARACTER_SETS WHERE CHARACTER_SET_NAME = 'utf8mb4'")
-	hasUTF8MB4 := row.Scan(&name) == nil
+	err = row.Scan(&name)
+	hasUTF8MB4 := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, classifyMySQLError(err)
+	}
 
 	info := &contracts.CharsetInfo{RefKey: ref.RefKey()}
 	if hasUTF8MB4 {

@@ -78,6 +78,12 @@ func (r *Registry) Has(taskClass string) bool {
 	return r.fallback != nil
 }
 
+// HasFallback reports whether this worker can process arbitrary task classes.
+// The consumer uses it to decide whether the lease request needs a class
+// allowlist; applying that filter at lease time prevents dedicated pools from
+// taking and delaying each other's work.
+func (r *Registry) HasFallback() bool { return r.fallback != nil }
+
 // SupportedClasses lists the registered classes, with "*" appended when a
 // fallback is set. It is the Supported field of the stats endpoint, so a setup
 // check can tell "delegates everything to PHP" from "handles a fixed set".

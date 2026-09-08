@@ -10,11 +10,12 @@
   },
   "expect": {
     "status": 200,
-    "jsonHas": ["data.refKey", "data.connectionStatus"],
+    "jsonHas": ["data.refKey", "data.connectionStatus", "data.replicationStatus"],
     "jsonEquals": {
       "data.refKey": "db1:3306",
       "data.isMaster": true,
-      "data.connectionStatus": "okay"
+      "data.connectionStatus": "okay",
+      "data.replicationStatus": "okay"
     },
     "jsonAbsent": ["error"]
   }

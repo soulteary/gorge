@@ -141,26 +141,32 @@ func (cc *ClusterConfig) GetMasterForApplication(app string) *DatabaseRef {
 // GetReplicaForApplication returns a replica for the application, matching the
 // master's partition. Nil when the application has no replica.
 func (cc *ClusterConfig) GetReplicaForApplication(app string) *DatabaseRef {
-	var appReplicas, defaultReplicas []*DatabaseRef
+	var appReplica, defaultReplica, unpartitionedReplica *DatabaseRef
 	master := cc.GetMasterForApplication(app)
 	for _, r := range cc.replicas {
 		if r.Disabled {
 			continue
 		}
-		if master != nil && master.IsApplicationHost(app) {
-			appReplicas = append(appReplicas, r)
+		if r.IsApplicationHost(app) && appReplica == nil {
+			appReplica = r
 		}
-		if master != nil && master.IsDefaultPartition {
-			defaultReplicas = append(defaultReplicas, r)
+		if r.IsDefaultPartition && defaultReplica == nil {
+			defaultReplica = r
+		}
+		if !r.IsDefaultPartition && len(r.ApplicationMap) == 0 && unpartitionedReplica == nil {
+			unpartitionedReplica = r
 		}
 	}
-	if len(appReplicas) > 0 {
-		return appReplicas[0]
+	if appReplica != nil {
+		return appReplica
 	}
-	if len(defaultReplicas) > 0 {
-		return defaultReplicas[0]
+	if master != nil && master.IsDefaultPartition && defaultReplica != nil {
+		return defaultReplica
 	}
-	return nil
+	// Older cluster files often leave replicas unpartitioned. Treat such a
+	// replica as a final generic fallback, but never let an explicitly default
+	// replica satisfy an application-specific partition.
+	return unpartitionedReplica
 }
 
 // GetAllRefs returns every configured node, enabled or not; callers skip the

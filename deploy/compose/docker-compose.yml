@@ -48,6 +48,66 @@ services:
       start_period: 5s
       retries: 3
 
+  # --- conduit: Conduit API reverse-proxy gateway ---
+  #
+  # The odd one out in this file, and in the whole layer: its consumer is other
+  # Go services, not Phorge's PHP. Every other service here answers calls that
+  # originate in Phorge; conduit sits in front of Phorge and answers calls that
+  # go *to* it. It replaces the pattern of each Go service dialling Phorge's
+  # `/api/*` directly, folding authentication, per-IP rate limiting and request
+  # auditing into one gateway.
+  #
+  # It is stateless — the rate limiter's visitor table is in-memory and per
+  # instance, nothing to persist — so the probe is /healthz, like render, not
+  # /readyz. "Ready" here would mean nothing more than "listening": the gateway
+  # never dials its upstream to decide it is up, so a probe that did would only
+  # report whether Phorge is up, which is not this service's health.
+  #
+  # And, like file-storage's blob backend and webhook's database, its upstream
+  # is not in this file. This compose is the Go service layer: there is no
+  # phorge container here, so GORGE_CONDUIT_UPSTREAM_URL defaults to a host
+  # (`phorge`) that does not resolve in a pure service-layer stack. Left at the
+  # default the gateway comes up healthy and answers /healthz, but every
+  # proxied /api/* call fails 502 — because there is nothing upstream to reach,
+  # not because the service is broken. Point it at a real Phorge to make the
+  # proxy path work; see .env.example.
+  conduit:
+    <<: *service-defaults
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-conduit
+        PORT: 8150
+    image: ghcr.io/soulteary/gorge-conduit:${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8150"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      # The Phorge PHP app this gateway proxies to. No phorge container is
+      # declared here, so the `phorge` default resolves to nothing in a pure
+      # service-layer stack and every proxied call gets 502. Point it at a real
+      # Phorge to turn the proxy path on.
+      GORGE_CONDUIT_UPSTREAM_URL: ${GORGE_CONDUIT_UPSTREAM_URL:-http://phorge:80}
+      # Per-client-IP token bucket. RPS 0 disables rate limiting entirely, which
+      # is the default: turn it on by setting a positive value. BURST is the
+      # bucket capacity, EXEMPT lists the Conduit methods that always pass
+      # (health-probe and capability calls that should never be throttled).
+      GORGE_CONDUIT_RATE_LIMIT_RPS: ${GORGE_CONDUIT_RATE_LIMIT_RPS:-0}
+      GORGE_CONDUIT_RATE_LIMIT_BURST: ${GORGE_CONDUIT_RATE_LIMIT_BURST:-20}
+      GORGE_CONDUIT_RATE_LIMIT_EXEMPT: ${GORGE_CONDUIT_RATE_LIMIT_EXEMPT:-conduit.ping,conduit.getcapabilities}
+      # Upstream request timeout in seconds, and the largest request body the
+      # gateway forwards before rejecting it.
+      GORGE_CONDUIT_PROXY_TIMEOUT_SEC: ${GORGE_CONDUIT_PROXY_TIMEOUT_SEC:-30}
+      GORGE_CONDUIT_MAX_BODY_SIZE: ${GORGE_CONDUIT_MAX_BODY_SIZE:-10M}
+    ports:
+      - "${GORGE_CONDUIT_PORT:-8150}:8150"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8150/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
   # --- gorge-notification: Aphlict-compatible notification server ---
   #
   # One process, two listeners. The split is not a choice: Phorge validates
@@ -391,7 +451,7 @@ services:
   # taskqueue's own /readyz, not a reason to cycle this container.
   #
   # Without GORGE_WORKER_CONDUIT_URL set it runs only the task classes it
-  # implements natively and fails the rest. Point that at Phorge's Conduit
+  # implements natively and leaves the rest unleased. Point that at Phorge's Conduit
   # endpoint to install a fallback that delegates every other class to PHP.
   gorge-worker:
     <<: *service-defaults

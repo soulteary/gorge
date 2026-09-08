@@ -76,10 +76,12 @@ type EnqueueRequest struct {
 }
 
 // LeaseRequest is the body of POST /api/queue/lease. Limit is how many tasks
-// the caller wants; the lease owner travels in the X-Lease-Owner header rather
+// the caller wants; TaskClasses optionally restricts candidate selection before
+// ownership changes. The lease owner travels in the X-Lease-Owner header rather
 // than here, because it identifies the caller and not the request.
 type LeaseRequest struct {
-	Limit int `json:"limit"`
+	Limit       int      `json:"limit"`
+	TaskClasses []string `json:"taskClasses,omitempty"`
 }
 
 // CompleteRequest is the body of POST /api/queue/complete. Duration is the

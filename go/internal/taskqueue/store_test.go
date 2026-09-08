@@ -45,7 +45,7 @@ func TestLeaseTakesEachTaskOnce(t *testing.T) {
 	mustEnqueue(t, m, "A", nil)
 	mustEnqueue(t, m, "B", nil)
 
-	first, err := m.Lease(t.Context(), 10, "owner-1")
+	first, err := m.Lease(t.Context(), 10, "owner-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestLeaseTakesEachTaskOnce(t *testing.T) {
 	}
 
 	// A second lease before any expires must find nothing: the tasks are held.
-	second, err := m.Lease(t.Context(), 10, "owner-2")
+	second, err := m.Lease(t.Context(), 10, "owner-2", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestLeaseOrderIsPriorityThenID(t *testing.T) {
 	low := mustEnqueue(t, m, "bulk", &bulk)
 	high := mustEnqueue(t, m, "alerts", &alerts)
 
-	leased, err := m.Lease(t.Context(), 1, "owner")
+	leased, err := m.Lease(t.Context(), 1, "owner", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,13 +84,13 @@ func TestExpiredLeaseIsLeasableAgain(t *testing.T) {
 	m := newMemStore(1_000_000)
 	task := mustEnqueue(t, m, "A", nil)
 
-	if _, err := m.Lease(t.Context(), 1, "owner-1"); err != nil {
+	if _, err := m.Lease(t.Context(), 1, "owner-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	// Move past the lease.
 	m.advance(int64(m.leaseDuration) + 1)
 
-	again, err := m.Lease(t.Context(), 1, "owner-2")
+	again, err := m.Lease(t.Context(), 1, "owner-2", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +99,82 @@ func TestExpiredLeaseIsLeasableAgain(t *testing.T) {
 	}
 	if again[0].LeaseOwner != "owner-2" {
 		t.Errorf("re-lease must record the new owner, got %q", again[0].LeaseOwner)
+	}
+}
+
+func TestDelayedTaskIsNotLeasedBeforeItsTime(t *testing.T) {
+	m := newMemStore(1_000_000)
+	delayUntil := m.now + 60
+	task, err := m.Enqueue(t.Context(), &contracts.EnqueueRequest{
+		TaskClass:  "later",
+		Data:       `{}`,
+		DelayUntil: &delayUntil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	early, err := m.Lease(t.Context(), 1, "owner", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(early) != 0 {
+		t.Fatalf("future-dated task %d leased early: %+v", task.ID, early)
+	}
+
+	m.advance(61)
+	ready, err := m.Lease(t.Context(), 1, "owner", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready) != 1 || ready[0].ID != task.ID {
+		t.Fatalf("delayed task was not leased after its deadline: %+v", ready)
+	}
+}
+
+func TestTemporaryFailureHonorsRetryWait(t *testing.T) {
+	m := newMemStore(1_000_000)
+	task := mustEnqueue(t, m, "retry", nil)
+	if _, err := m.Lease(t.Context(), 1, "owner-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	retryWait := 60
+	if err := m.Fail(t.Context(), &contracts.FailRequest{TaskID: task.ID, RetryWait: &retryWait}); err != nil {
+		t.Fatal(err)
+	}
+
+	early, err := m.Lease(t.Context(), 1, "owner-2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(early) != 0 {
+		t.Fatalf("temporarily failed task retried before backoff elapsed: %+v", early)
+	}
+
+	m.advance(61)
+	retried, err := m.Lease(t.Context(), 1, "owner-2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retried) != 1 || retried[0].ID != task.ID {
+		t.Fatalf("temporarily failed task did not become leasable: %+v", retried)
+	}
+}
+
+func TestLeaseFiltersTaskClassesBeforeOwnership(t *testing.T) {
+	m := newMemStore(1_000_000)
+	a := mustEnqueue(t, m, "A", nil)
+	b := mustEnqueue(t, m, "B", nil)
+
+	leased, err := m.Lease(t.Context(), 10, "a-worker", []string{"A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leased) != 1 || leased[0].ID != a.ID {
+		t.Fatalf("class-filtered lease returned %+v", leased)
+	}
+	if row := m.activeTask(b.ID); row == nil || row.LeaseOwner != "" || row.FailureCount != 0 {
+		t.Fatalf("nonmatching task was modified by lease: %+v", row)
 	}
 }
 

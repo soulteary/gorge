@@ -128,7 +128,7 @@ func (s *MySQLStore) Enqueue(ctx context.Context, req *contracts.EnqueueRequest)
 	}, nil
 }
 
-func (s *MySQLStore) Lease(ctx context.Context, limit int, leaseOwner string) ([]*contracts.Task, error) {
+func (s *MySQLStore) Lease(ctx context.Context, limit int, leaseOwner string, taskClasses []string) ([]*contracts.Task, error) {
 	if limit <= 0 {
 		limit = 1
 	}
@@ -143,15 +143,17 @@ func (s *MySQLStore) Lease(ctx context.Context, limit int, leaseOwner string) ([
 	defer func() { _ = tx.Rollback() }()
 
 	var leased int
+	var leasedIDs []int64
+	classClause, classArgs := taskClassClause(taskClasses)
 
 	// Phase 1: unleased tasks (new tasks first), ordered by priority then id.
 	{
+		args := append(append([]any{}, classArgs...), limit)
 		rows, err := tx.QueryContext(ctx,
 			`SELECT id FROM worker_activetask
-			 WHERE leaseOwner IS NULL
+			 WHERE leaseOwner IS NULL AND leaseExpires IS NULL`+classClause+`
 			 ORDER BY priority ASC, id ASC
-			 LIMIT ?`,
-			limit)
+			 LIMIT ?`, args...)
 		if err != nil {
 			return nil, fmt.Errorf("select unleased: %w", err)
 		}
@@ -159,27 +161,34 @@ func (s *MySQLStore) Lease(ctx context.Context, limit int, leaseOwner string) ([
 		_ = rows.Close()
 
 		if len(ids) > 0 {
-			if _, err := tx.ExecContext(ctx,
+			res, err := tx.ExecContext(ctx,
 				fmt.Sprintf(
 					`UPDATE worker_activetask
 					 SET leaseOwner = ?, leaseExpires = ?
-					 WHERE leaseOwner IS NULL AND id IN (%s)`,
+					 WHERE leaseOwner IS NULL AND leaseExpires IS NULL AND id IN (%s)`,
 					placeholders(len(ids))),
-				appendArgs(leaseOwner, leaseExp, ids)...); err != nil {
+				appendArgs(leaseOwner, leaseExp, ids)...)
+			if err != nil {
 				return nil, fmt.Errorf("update unleased: %w", err)
 			}
-			leased += len(ids)
+			n, err := res.RowsAffected()
+			if err != nil {
+				return nil, fmt.Errorf("count updated unleased: %w", err)
+			}
+			leased += int(n)
+			leasedIDs = append(leasedIDs, ids...)
 		}
 	}
 
 	// Phase 2: tasks whose lease expired (retry failed / abandoned tasks).
 	if remaining := limit - leased; remaining > 0 {
+		args := append([]any{now}, classArgs...)
+		args = append(args, remaining)
 		rows, err := tx.QueryContext(ctx,
 			`SELECT id FROM worker_activetask
-			 WHERE leaseExpires < ?
-			 ORDER BY leaseExpires ASC
-			 LIMIT ?`,
-			now, remaining)
+			 WHERE leaseExpires < ?`+classClause+`
+			 ORDER BY priority ASC, id ASC
+			 LIMIT ?`, args...)
 		if err != nil {
 			return nil, fmt.Errorf("select expired: %w", err)
 		}
@@ -187,31 +196,41 @@ func (s *MySQLStore) Lease(ctx context.Context, limit int, leaseOwner string) ([
 		_ = rows.Close()
 
 		if len(ids) > 0 {
-			if _, err := tx.ExecContext(ctx,
+			_, err := tx.ExecContext(ctx,
 				fmt.Sprintf(
 					`UPDATE worker_activetask
 					 SET leaseOwner = ?, leaseExpires = ?
 					 WHERE leaseExpires < ? AND id IN (%s)`,
 					placeholders(len(ids))),
-				appendArgs(leaseOwner, leaseExp, now, ids)...); err != nil {
+				appendArgs(leaseOwner, leaseExp, now, ids)...)
+			if err != nil {
 				return nil, fmt.Errorf("update expired: %w", err)
 			}
+			leasedIDs = append(leasedIDs, ids...)
 		}
 	}
 
-	// Fetch everything this owner now holds, joined with its data.
+	if len(leasedIDs) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit: %w", err)
+		}
+		return nil, nil
+	}
+
+	// Fetch only rows acquired by this call. A stable leaseOwner may already
+	// hold other work, and returning those rows again would execute them twice.
 	fetchRows, err := tx.QueryContext(ctx,
-		`SELECT t.id, t.taskClass, t.leaseOwner, t.leaseExpires,
+		fmt.Sprintf(`SELECT t.id, t.taskClass, t.leaseOwner, t.leaseExpires,
 		        t.failureCount, t.dataID, t.failureTime,
 		        t.priority, t.objectPHID, t.containerPHID,
 		        t.dateCreated, t.dateModified,
 		        COALESCE(d.data, '')
 		 FROM worker_activetask t
 		 LEFT JOIN worker_taskdata d ON d.id = t.dataID
-		 WHERE t.leaseOwner = ? AND t.leaseExpires > ?
+		 WHERE t.id IN (%s) AND t.leaseOwner = ? AND t.leaseExpires > ?
 		 ORDER BY t.priority ASC, t.id ASC
-		 LIMIT ?`,
-		leaseOwner, now, limit)
+		 LIMIT ?`, placeholders(len(leasedIDs))),
+		appendArgs(leasedIDs, leaseOwner, now, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("fetch leased: %w", err)
 	}
@@ -613,4 +632,18 @@ func appendArgs(args ...any) []any {
 		}
 	}
 	return out
+}
+
+// taskClassClause returns an optional SQL filter and its arguments. Keeping
+// the filter in the candidate SELECTs ensures a dedicated worker never takes
+// ownership of work intended for another pool.
+func taskClassClause(taskClasses []string) (string, []any) {
+	if len(taskClasses) == 0 {
+		return "", nil
+	}
+	args := make([]any, 0, len(taskClasses))
+	for _, taskClass := range taskClasses {
+		args = append(args, taskClass)
+	}
+	return " AND taskClass IN (" + placeholders(len(taskClasses)) + ")", args
 }

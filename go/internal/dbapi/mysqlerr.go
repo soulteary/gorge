@@ -59,8 +59,9 @@ func isRetryableQueryErr(err error) bool {
 // kind from the errno. An access-denied maps to kindAccessDenied; anything
 // else that is a MySQL error but not otherwise special is treated as an
 // internal failure, since the caller cannot act on, say, a deadlock any
-// differently than on a bug. A non-MySQL error (a dial failure) is left to the
-// caller to wrap as kindUnreachable, which is what a failed connect means.
+// differently than on a bug. A non-MySQL query error is a connection-level
+// failure from database/sql (the lazy pool dials on first use), so it is
+// classified as unreachable.
 func classifyMySQLError(err error) *DBError {
 	var myErr *mysql.MySQLError
 	if errors.As(err, &myErr) {
@@ -70,5 +71,5 @@ func classifyMySQLError(err error) *DBError {
 		}
 		return &DBError{Kind: kind, Message: err.Error(), Errno: myErr.Number}
 	}
-	return &DBError{Kind: kindInternal, Message: err.Error()}
+	return &DBError{Kind: kindUnreachable, Message: err.Error()}
 }

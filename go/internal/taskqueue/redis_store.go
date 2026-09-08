@@ -141,35 +141,67 @@ local leaseOwner    = ARGV[2]
 local leaseExpires  = tonumber(ARGV[3])
 local now           = tonumber(ARGV[4])
 local taskKeyPrefix = ARGV[5]
+local classCount    = tonumber(ARGV[6])
 
 local ids = {}
 
+local function classMatches(taskKey)
+    if classCount == 0 then
+        return true
+    end
+    local taskClass = redis.call('HGET', taskKey, 'taskClass')
+    for i = 1, classCount do
+        if taskClass == ARGV[6 + i] then
+            return true
+        end
+    end
+    return false
+end
+
 -- Phase 1: pick unleased tasks (sorted by priority+id)
-local unleased = redis.call('ZRANGE', unleasedKey, 0, limit - 1)
+local unleased = redis.call('ZRANGE', unleasedKey, 0, -1)
 for _, mid in ipairs(unleased) do
+    if #ids >= limit then
+        break
+    end
     local tk = taskKeyPrefix .. mid
-    redis.call('HSET', tk, 'leaseOwner', leaseOwner, 'leaseExpires', leaseExpires, 'dateModified', now)
-    redis.call('ZREM', unleasedKey, mid)
-    redis.call('ZADD', leasedKey, leaseExpires, mid)
-    table.insert(ids, mid)
+    if classMatches(tk) then
+        redis.call('HSET', tk, 'leaseOwner', leaseOwner, 'leaseExpires', leaseExpires, 'dateModified', now)
+        redis.call('ZREM', unleasedKey, mid)
+        redis.call('ZADD', leasedKey, leaseExpires, mid)
+        table.insert(ids, mid)
+    end
 end
 
 -- Phase 2: pick tasks with expired leases
 local remaining = limit - #ids
 if remaining > 0 then
-    local expired = redis.call('ZRANGEBYSCORE', leasedKey, '-inf', now, 'LIMIT', 0, remaining)
+    local expired = redis.call('ZRANGEBYSCORE', leasedKey, '-inf', now)
+    table.sort(expired, function(a, b)
+        local pa = tonumber(redis.call('HGET', taskKeyPrefix .. a, 'priority') or '2000')
+        local pb = tonumber(redis.call('HGET', taskKeyPrefix .. b, 'priority') or '2000')
+        if pa == pb then
+            return tonumber(a) < tonumber(b)
+        end
+        return pa < pb
+    end)
     for _, mid in ipairs(expired) do
+        if #ids >= limit then
+            break
+        end
         local tk = taskKeyPrefix .. mid
-        redis.call('HSET', tk, 'leaseOwner', leaseOwner, 'leaseExpires', leaseExpires, 'dateModified', now)
-        redis.call('ZADD', leasedKey, leaseExpires, mid)
-        table.insert(ids, mid)
+        if classMatches(tk) then
+            redis.call('HSET', tk, 'leaseOwner', leaseOwner, 'leaseExpires', leaseExpires, 'dateModified', now)
+            redis.call('ZADD', leasedKey, leaseExpires, mid)
+            table.insert(ids, mid)
+        end
     end
 end
 
 return ids
 `)
 
-func (s *RedisStore) Lease(ctx context.Context, limit int, leaseOwner string) ([]*contracts.Task, error) {
+func (s *RedisStore) Lease(ctx context.Context, limit int, leaseOwner string, taskClasses []string) ([]*contracts.Task, error) {
 	if limit <= 0 {
 		limit = 1
 	}
@@ -177,9 +209,15 @@ func (s *RedisStore) Lease(ctx context.Context, limit int, leaseOwner string) ([
 	now := time.Now().Unix()
 	leaseExp := now + int64(s.leaseDuration)
 
+	args := make([]any, 0, 6+len(taskClasses))
+	args = append(args, limit, leaseOwner, leaseExp, now, s.key("task:"), len(taskClasses))
+	for _, taskClass := range taskClasses {
+		args = append(args, taskClass)
+	}
+
 	result, err := leaseScript.Run(ctx, s.rdb,
 		[]string{s.unleasedSetKey(), s.leasedSetKey()},
-		limit, leaseOwner, leaseExp, now, s.key("task:"),
+		args...,
 	).StringSlice()
 	if err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("lease script: %w", err)
@@ -315,7 +353,8 @@ redis.call('HSET', taskKey,
     'leaseOwner', '',
     'leaseExpires', leaseExpires,
     'dateModified', now)
-redis.call('ZREM', leasedSet, taskID)
+redis.call('ZREM', unleasedSet, taskID)
+redis.call('ZADD', leasedSet, leaseExpires, taskID)
 
 if prevFC == 0 then
     redis.call('INCR', failedCtr)

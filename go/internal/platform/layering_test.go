@@ -26,6 +26,8 @@ var forbiddenPrefixes = []string{
 	"github.com/soulteary/gorge/go/internal/webhook",
 	"github.com/soulteary/gorge/go/internal/taskqueue",
 	"github.com/soulteary/gorge/go/internal/worker",
+	"github.com/soulteary/gorge/go/internal/conduit",
+	"github.com/soulteary/gorge/go/internal/dbapi",
 	"github.com/soulteary/gorge/go/internal/contracts",
 }
 

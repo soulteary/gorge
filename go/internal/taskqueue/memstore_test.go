@@ -127,7 +127,7 @@ func (m *memStore) Enqueue(_ context.Context, req *contracts.EnqueueRequest) (*c
 	return &copied, nil
 }
 
-func (m *memStore) Lease(_ context.Context, limit int, leaseOwner string) ([]*contracts.Task, error) {
+func (m *memStore) Lease(_ context.Context, limit int, leaseOwner string, taskClasses []string) ([]*contracts.Task, error) {
 	if m.leaseErr != nil {
 		return nil, m.leaseErr
 	}
@@ -141,6 +141,13 @@ func (m *memStore) Lease(_ context.Context, limit int, leaseOwner string) ([]*co
 	leaseExp := m.now + int64(m.leaseDuration)
 
 	candidates := m.sortedActiveLocked()
+	allowed := make(map[string]bool, len(taskClasses))
+	for _, taskClass := range taskClasses {
+		allowed[taskClass] = true
+	}
+	matches := func(t *contracts.Task) bool {
+		return len(allowed) == 0 || allowed[t.TaskClass]
+	}
 
 	var leased []*contracts.Task
 	// Phase 1: unleased tasks, ordered priority then id.
@@ -148,7 +155,7 @@ func (m *memStore) Lease(_ context.Context, limit int, leaseOwner string) ([]*co
 		if len(leased) >= limit {
 			break
 		}
-		if t.LeaseOwner == "" && t.LeaseExpires == nil {
+		if matches(t) && t.LeaseOwner == "" && t.LeaseExpires == nil {
 			t.LeaseOwner = leaseOwner
 			t.LeaseExpires = &leaseExp
 			t.DateModified = m.now
@@ -160,7 +167,7 @@ func (m *memStore) Lease(_ context.Context, limit int, leaseOwner string) ([]*co
 		if len(leased) >= limit {
 			break
 		}
-		if t.LeaseExpires != nil && *t.LeaseExpires < m.now {
+		if matches(t) && t.LeaseExpires != nil && *t.LeaseExpires < m.now {
 			t.LeaseOwner = leaseOwner
 			exp := leaseExp
 			t.LeaseExpires = &exp

@@ -33,10 +33,11 @@
 | `webhook/unavailable/` | 同上，但服务配的是一个必然失败的 store | 同一个文件里的第二个 `Run` |
 | `taskqueue/` | `gorge-taskqueue` | `go/internal/taskqueue/contract_test.go` |
 | `taskqueue/unavailable/` | 同上，但服务配的是一个必然失败的 store | 同一个文件里的第二个 `Run` |
+| `conduit/` | `gorge-conduit` | `go/internal/conduit/contract_test.go` |
 | `dbapi/` | `gorge-db-api` | `go/internal/dbapi/contract_test.go` |
 | `dbapi/unavailable/` | 同上，但服务对着一个连不上的库 | 同一个文件里的第二个 `Run` |
 
-**db-api 域的固件与 e2e 已落地。** db-api 的 Go 服务迁入的同时，契约固件与 e2e 脚本也一并补齐：`go/internal/dbapi/contract_test.go` 按 webhook / taskqueue 的形状写好，指向 `tests/contract/dbapi/`（七条只读路由 + 401 + 查询参数认证，共 10 份 JSON）与 `tests/contract/dbapi/unavailable/`（3 份：库连不上时 message 保持通用、body 不泄漏 SQL/库名/主机/端口）。`go test ./...` 现已整套变绿，`internal/dbapi` 覆盖率 76.8%。下面第 2.3 节的固件总数与第 4 节的 e2e 脚本数均已把 db-api 计入。
+**db-api 域的固件与 e2e 已落地。** db-api 的 Go 服务迁入的同时，契约固件与 e2e 脚本也一并补齐：`go/internal/dbapi/contract_test.go` 按 webhook / taskqueue 的形状写好，指向 `tests/contract/dbapi/`（七条只读路由 + 401 + 查询参数认证，共 10 份 JSON）与 `tests/contract/dbapi/unavailable/`（3 份：库连不上时 message 保持通用、body 不泄漏 SQL/库名/主机/端口）。`go test ./...` 现已整套变绿，`internal/dbapi` 覆盖率 79.0%。下面第 2.3 节的固件总数与第 4 节的 e2e 脚本数均已把 db-api 计入。
 
 **notification 一个域两个固件目录**，因为它是一个域两个端口，而同一条请求在两个端口上的正确答案不一样（`GET /` 在 admin 口是 200 探针、在 client 口必须是 501）。合成一个目录就没法表达这件事。
 
@@ -112,7 +113,9 @@ Go runner 用 `httptest` 起一个内存中的 `httpx.New(...)` + `RegisterRoute
 
 **taskqueue 域 8 份**：主目录 6 份（`enqueue` 入队并回显 id 与默认优先级、`lease` 用 `X-Lease-Owner` 头租走任务并回显 owner、`stats` 的四个计数、`tasks` 活跃任务列表、`tasks/:id` 单任务带 Phorge 列名、未授权），`unavailable/` 2 份（`stats` 与 `tasks` 在后端不可达时答 500 `ERR_INTERNAL`，且 body 不出现库名、主机、端口、SQL 或 `connection refused`）。worker 域**没有固件**：它唯一的端点读进程内计数器、永不失败，一个「请求加期望应答」的固件对它无可断言，那条路径由 `go/internal/worker/http_test.go` 覆盖。
 
-**db-api 域 13 份**：主目录 10 份（`servers`、`server-health`、`server-health-unknown`、`schema-diff`、`schema-issues`、`setup-issues`、`charset-info`、`migrations-status` 八条只读路由，加未授权与查询参数认证），`unavailable/` 3 份（`schema-diff`、`charset-info` 在库连不上时答 503 `ERR_DB_UNREACHABLE` 且 body 不泄漏 SQL/库名/主机/端口，`servers` 则以 in-band `fail` 记录不可达节点、`refKey` 作为契约字段合法保留）。连同上面各域，契约固件现共 **110 份**。
+**conduit 域 4 份**：未授权、限流、缺 Conduit 方法，以及成功请求的透明代理；runner 用 `httptest` 启动假上游，避免依赖真实 Phorge。
+
+**db-api 域 13 份**：主目录 10 份（`servers`、`server-health`、`server-health-unknown`、`schema-diff`、`schema-issues`、`setup-issues`、`charset-info`、`migrations-status` 八条只读路由，加未授权与查询参数认证），`unavailable/` 3 份（`schema-diff`、`charset-info` 在库连不上时答 503 `ERR_DB_UNREACHABLE` 且 body 不泄漏 SQL/库名、主机、端口，`servers` 则以 in-band `fail` 记录不可达节点、`refKey` 作为契约字段合法保留）。连同上面各域，契约固件现共 **114 份**。
 
 `index-cjk-document.json` 值得说一句它**验不到**什么：它断言一份中文文档写得进去、答 200 并回显 PHID，这是真的；但固件跑的是内存 `test` 后端，那个后端做子串匹配、不过分析器，所以**它对 `cjk` 子字段一无所知**。中文检索真正能不能工作只有 `tests/e2e/search.sh` 的第 11、12 条对着真 Elasticsearch 才验得到（见 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第 7.5 条末尾）。别把这份固件当成 CJK 的覆盖。
 
@@ -198,7 +201,7 @@ render 与 diff 共用一个端口，所以那两份是「两个脚本打同一�
 
 render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都在 `TOKEN` 为空时跳过 401 那条并明确打印 SKIP，而不是静默略过。
 
-它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。九个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）**但 `cmd/gorge-webhook` 与 `cmd/gorge-worker` 是这句话第一次不完全成立的地方**：那两个 `main()` 里的一半是「起后台 goroutine（webhook 投递 / worker 消费）、收到信号后先排空再关连接池」这段编排，而 e2e 脚本只打 HTTP 端口，看不见它。
+它填补的是单元测试与契约固件都够不着的地方：真实的 `main()`、真实的监听端口、真实的容器编排。十个 `cmd` 包的覆盖率缺口就靠它兜。（`httpx.Run()` 一度也在这个名单上，现在不在了——见第 5 节。）**但 `cmd/gorge-webhook` 与 `cmd/gorge-worker` 是这句话第一次不完全成立的地方**：那两个 `main()` 里的一半是「起后台 goroutine（webhook 投递 / worker 消费）、收到信号后先排空再关连接池」这段编排，而 e2e 脚本只打 HTTP 端口，看不见它。
 
 `diff.sh` 还有一个单元测试拿不到的作用：`\ No newline at end of file` 这个标记里含反斜杠，是整个 payload 里唯一会被 JSON 转义错误悄悄改坏的部分，而它只有过一趟真实的 HTTP 编解码才验证得到。
 
@@ -209,25 +212,29 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 | `platform/auth` | 100.0% |
 | `platform/config` | 100.0% |
 | `platform/health` | 100.0% |
-| `platform/httpx` | 97.1% |
+| `platform/httpx` | 99.1% |
 | `render` | 91.7% |
 | `render/highlight` | 92.9% |
 | `diff` | 92.1% |
 | `diff/unified` | 100.0% |
 | `diff/prose` | 100.0% |
-| `notification` | 97.1% |
+| `notification` | 97.6% |
 | `notification/hub` | 83.7% |
 | `notification/peer` | 96.2% |
-| `mailer` | 79.1%（见下） |
+| `mailer` | 79.9%（见下） |
 | `search` | 97.5% |
 | `search/engine` | 99.5% |
 | `search/esquery` | 100.0% |
 | `search/engine/elasticsearch` | 83.5% |
 | `search/engine/meilisearch` | 91.5%（见下） |
-| `filestorage` | 84.1% |
+| `filestorage` | 85.2% |
 | `webhook` | 70.4%（见下） |
-| `dbapi` | 76.8% |
-| `contracttest` | 19.7%（见下） |
+| `conduit` | 85.4% |
+| `taskqueue` | 13.4% |
+| `worker` | 78.7% |
+| `worker/handlers` | 56.8% |
+| `dbapi` | 79.0% |
+| `contracttest` | 19.0%（见下） |
 | `cmd/gorge-render` | 0.0% |
 | `cmd/gorge-notification` | 0.0% |
 | `cmd/gorge-mailer` | 0.0% |
@@ -236,26 +243,27 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 | `cmd/gorge-webhook` | 0.0% |
 | `cmd/gorge-taskqueue` | 0.0% |
 | `cmd/gorge-worker` | 0.0% |
-| `cmd/gorge-db-api` | 0.0% |
-| **总计** | **74.9%** |
+| `cmd/gorge-conduit` | 0.0% |
+| `cmd/gorge-db-api` | 3.0% |
+| **总计** | **70.6%** |
 
-上表是基线快照。**db-api 迁入后已把它计入**：`internal/dbapi` 一次干净的 `go test ./...` 覆盖率为 **76.8%**（整套现已全绿，`tests/contract/dbapi/` 与 `tests/contract/dbapi/unavailable/` 固件均已落地）；`cmd/gorge-db-api` 与其余八个 `cmd` 同理为 0.0%，由 e2e 在集成层兜（`tests/e2e/dbapi.sh` 已落地）。
+上表是基线快照。**db-api 迁入后已把它计入**：`internal/dbapi` 一次干净的 `go test ./...` 覆盖率为 **79.0%**（整套现已全绿，`tests/contract/dbapi/` 与 `tests/contract/dbapi/unavailable/` 固件均已落地）；`cmd/gorge-db-api` 只有密码选择辅助函数被单测覆盖，其余入口逻辑与另外九个 `cmd` 同理由 e2e 在集成层兜（`tests/e2e/dbapi.sh` 已落地）。
 
 `httpx` 从 74.1% 升到 97.1%，是 notification 迁入时给 `RunAll` 补的那批测试带来的：原先被认为「要起真进程才测得到」的信号循环与 `Shutdown` 路径，用 `:0` 端口起真 listener 加真 `SIGTERM` 就覆盖到了。剩下的缺口与两个 `cmd` 的 0.0% 都是刻意的：`main()` 起真进程的成本高于收益，由 e2e 在集成层面兜；`httpx` 剩的三处写在 [`platform.md`](platform.md) 第 5 节。
 
-`contracttest` 的 19.7% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
+`contracttest` 的 19.0% 仍然主要是**度量假象，不是未测代码**：它自己的 `_test.go` 只直接测两个纯函数（`lookupJSONPath` 与 `assertsStructure`，都是 notification 固件逼出来的），而重放逻辑本身被各域的固件测试每次完整跑过——`go test` 默认只把一个包自己的测试计入该包覆盖率。**不要为了让这个数字变好看而给它补测试**；那两个纯函数值得直接测，是因为它们的寻址与分派规则本身有分支，不是因为数字。真要度量就用 `-coverpkg`。
 
-`webhook` 的 70.4% 现在是本表最低的一个真实数字，而它的缺口是**整块的、而且刚好等于一个文件里的一个类型**：`MySQLStore` 的十个方法与 `OpenDB` 全部 0.0%，包里其余每一处都在 83% 到 100% 之间。
+`webhook` 的 70.4% 缺口是**整块的、而且刚好等于一个文件里的一个类型**：`MySQLStore` 的十个方法与 `OpenDB` 全部 0.0%，包里其余每一处都在 83% 到 100% 之间。taskqueue 的 13.4% 同样主要来自没有真实 MySQL/Redis 的存储边界，不应以 fake 冒充集成覆盖。
 
 这不是「新代码测得差」，是**把 store 抽成 interface 这个决定的直接账单**。域逻辑——claim、两个 cutoff、三个时间窗、payload 字节、签名、失败分类——全部由内存 fake 驱动测到，而那些 `db.QueryContext` / `db.ExecContext` 的包装层没有任何东西碰得到：仓库里没有 MySQL、也刻意不用 sqlmock（惯例是手写 fake，见 2.2）。
 
 **要看清它守住了什么、又没守住什么，得分成两半读**：那几条 SQL 的**形状**是测到的——`TestClaimStatementIsAnOptimisticCompareAndSet` 与 `TestFetchClaimableStatementKeepsItsConditionsSeparate` 直接断言常量字符串里那些 WHERE 条件都还在，而那正是最容易被「顺手简化」掉的东西。没测到的是「驱动照这些字符串跑出来的结果是不是那个意思」——`GREATEST(dateModified + 1, UNIX_TIMESTAMP())` 在秒级精度下真的每次都让版本前进吗，`RowsAffected()` 在两个并发 UPDATE 打同一行时真的只有一个是 1 吗。**这两个问题一个 fake 永远答不了**，因为 fake 实现的是本域**以为**那条 SQL 会做的事。所以这个数字不该用补测试的办法抬——抬它的唯一诚实办法是一次对着真 MySQL 的集成测试，登记在 [`findings.md`](findings.md) 第 42 条。
 
-`mailer` 的 79.1% 是本表第二低的真实数字，它的缺口同样是**可指名的**：SMTP 的两条发送路径与 SendGrid / Mailgun / Postmark 的 HTTP 往返。永久失败分类本身测到了（`classifyProviderStatus` / `classifySMTPError` 有表驱动用例，sendmail 用 stub 脚本走了真实退出码路径，SES 因为端点可配而用 `httptest` 打了完整一圈），缺的是另外三家 provider 那一圈——它们的端点是编译期常量，测不了。修法与理由写在 [`findings.md`](findings.md) 第 14 条。
+`mailer` 的 79.9% 缺口同样是**可指名的**：SMTP 的两条发送路径与 SendGrid / Mailgun / Postmark 的 HTTP 往返。永久失败分类本身测到了（`classifyProviderStatus` / `classifySMTPError` 有表驱动用例，sendmail 用 stub 脚本走了真实退出码路径，SES 因为端点可配而用 `httptest` 打了完整一圈），缺的是另外三家 provider 那一圈——它们的端点是编译期常量，测不了。修法与理由写在 [`findings.md`](findings.md) 第 14 条。
 
 `notification/hub` 的 83.7% 有一部分是同一个假象：`Listener` 那几个要真 WebSocket 才调得到的方法，连接建在 `internal/notification` 的测试里，不计入 `hub`。`-coverpkg` 合并度量后它们都是 100%，覆盖率的真实缺口只剩三处，都登记在 [`findings.md`](findings.md) 第 9 条。
 
-**总计现在是 74.9%，而它连着两次迁入往下走，两次的原因都是可指名的、而且是两种不同的原因。**先是 search 把它从 81.4% 拉到 76.2%（file-storage 随后以 84.1% 往回抬了 0.2 个点，它不在这个故事里），再是 webhook 把它带到 74.9%。
+**总计现在是 70.6%。**后续迁入的 webhook、taskqueue、worker、conduit 与 db-api 同时带来了大量数据库、Redis、后台循环和进程入口边界；其中 taskqueue 的生产存储实现是当前最主要的降幅来源，性质与 webhook 的 MySQLStore 缺口相同。
 
 **两次要分开读，因为处置方式相反。**search 那次拉低总数的是两个包，缺口在「没写的测试」上，补是可行的（第 17 条给了照抄的模板）；webhook 那次的缺口在「测不到的边界」上——`MySQLStore` 那十个方法的 0.0% 不是有人偷懒，而是仓库里没有 MySQL，而 fake 恰好证明不了那几条 SQL 真的按它们写的那样跑。前者该补，后者补了反而更坏：一个用 fake 覆盖到 100% 的 store 层看起来防线更厚，实际什么都没多守住。
 

@@ -32,8 +32,9 @@ func (s *HealthService) QueryAll(ctx context.Context, password string) ([]contra
 	refs := s.config.GetAllRefs()
 	out := make([]contracts.ServerRef, 0, len(refs))
 	for _, ref := range refs {
-		s.probeRef(ctx, ref, password)
-		out = append(out, ref.toContract())
+		probe := cloneRefForProbe(ref)
+		s.probeRef(ctx, probe, password)
+		out = append(out, probe.toContract())
 	}
 	return out, nil
 }
@@ -43,18 +44,20 @@ func (s *HealthService) QueryAll(ctx context.Context, password string) ([]contra
 func (s *HealthService) QueryOne(ctx context.Context, refKey, password string) (*contracts.ServerRef, error) {
 	for _, ref := range s.config.GetAllRefs() {
 		if ref.RefKey() == refKey {
-			s.probeRef(ctx, ref, password)
-			c := ref.toContract()
+			probe := cloneRefForProbe(ref)
+			s.probeRef(ctx, probe, password)
+			c := probe.toContract()
 			return &c, nil
 		}
 	}
 	return nil, fmt.Errorf("ref %q not found", refKey)
 }
 
-// anyReachable reports whether at least one node answered a ping. It backs the
-// readiness probe.
+// anyReachable reports whether at least one enabled master answered a ping. It
+// backs the readiness probe; replicas cannot make a master-dependent service
+// ready on their own.
 func (s *HealthService) anyReachable(ctx context.Context, password string) bool {
-	for _, ref := range s.config.GetAllRefs() {
+	for _, ref := range s.config.Masters() {
 		if ref.Disabled {
 			continue
 		}
@@ -73,26 +76,52 @@ func (s *HealthService) anyReachable(ctx context.Context, password string) bool 
 }
 
 func (s *HealthService) probeRef(ctx context.Context, ref *DatabaseRef, password string) {
+	resetProbeState(ref)
 	dsn := s.buildDSN(ref, password)
 	start := time.Now()
 
 	conn, err := s.connFactory(dsn, true)
 	if err != nil {
-		ref.ConnectionStatus = StatusFail
-		ref.ConnectionMessage = err.Error()
-		ref.ConnectionLatency = time.Since(start).Seconds()
+		recordConnectionFailure(ref, err, start)
 		return
 	}
 	defer func() { _ = conn.Close() }()
 
 	if err := conn.Ping(ctx); err != nil {
-		ref.ConnectionStatus = StatusFail
-		ref.ConnectionMessage = err.Error()
-		ref.ConnectionLatency = time.Since(start).Seconds()
+		recordConnectionFailure(ref, err, start)
 		return
 	}
 
 	s.probeReplication(ctx, conn, ref, start)
+}
+
+func cloneRefForProbe(ref *DatabaseRef) *DatabaseRef {
+	probe := *ref
+	resetProbeState(&probe)
+	return &probe
+}
+
+func resetProbeState(ref *DatabaseRef) {
+	ref.ConnectionStatus = ""
+	ref.ConnectionLatency = 0
+	ref.ConnectionMessage = ""
+	ref.ReplicaStatus = ""
+	ref.ReplicaMessage = ""
+	ref.ReplicaDelay = nil
+}
+
+func recordConnectionFailure(ref *DatabaseRef, err error, start time.Time) {
+	if isAuthFailure(err) {
+		ref.ConnectionStatus = StatusAuth
+	} else {
+		ref.ConnectionStatus = StatusFail
+	}
+	ref.ConnectionMessage = err.Error()
+	ref.ConnectionLatency = time.Since(start).Seconds()
+}
+
+func isAuthFailure(err error) bool {
+	return classifyMySQLError(err).Kind == kindAccessDenied || isAuthMsg(err.Error())
 }
 
 func (s *HealthService) buildDSN(ref *DatabaseRef, password string) DSN {

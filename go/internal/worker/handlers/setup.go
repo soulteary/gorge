@@ -20,6 +20,11 @@ import (
 // are the classes worth naming, and the fallback catches the rest. Without a
 // Conduit URL the worker handles only what it implements natively.
 func RegisterAll(registry *worker.Registry, conduitURL, conduitToken string) {
+	// This class has a complete native implementation and must remain usable
+	// even when no Conduit fallback is configured. Register it first so adding
+	// the fallback does not replace the native path either.
+	registry.Register("FeedPublisherHTTPWorker", NewFeedHTTPHandler())
+
 	if conduitURL == "" {
 		return
 	}
@@ -27,7 +32,6 @@ func RegisterAll(registry *worker.Registry, conduitURL, conduitToken string) {
 	conduit := NewConduitClient(conduitURL, conduitToken)
 	delegate := NewConduitDelegateHandler(conduit)
 
-	registry.Register("FeedPublisherHTTPWorker", delegate)
 	registry.Register("PhabricatorSearchWorker", delegate)
 	registry.Register("PhabricatorMetaMTAWorker", delegate)
 	registry.Register("PhabricatorApplicationTransactionPublishWorker", delegate)

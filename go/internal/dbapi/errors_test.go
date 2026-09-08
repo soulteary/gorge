@@ -107,12 +107,12 @@ func TestClassifyMySQLErrorOther(t *testing.T) {
 	}
 }
 
-// TestClassifyMySQLErrorNonDriver: a non-driver error (a dial failure) has no
-// errno and is left as kindInternal for the caller to wrap as unreachable.
+// TestClassifyMySQLErrorNonDriver: database/sql dials lazily, so a non-driver
+// query error is a connection-level failure and must be caller-actionable.
 func TestClassifyMySQLErrorNonDriver(t *testing.T) {
 	err := classifyMySQLError(errors.New("connection refused"))
-	if err.Kind != kindInternal {
-		t.Errorf("kind = %d, want kindInternal", err.Kind)
+	if err.Kind != kindUnreachable {
+		t.Errorf("kind = %d, want kindUnreachable", err.Kind)
 	}
 	if err.Errno != 0 {
 		t.Errorf("errno = %d, want 0", err.Errno)

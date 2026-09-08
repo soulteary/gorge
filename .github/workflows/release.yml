@@ -54,6 +54,8 @@ jobs:
           # is delivering anything. See the compose service's comment.
           - service: gorge-webhook
             port: 8160
+          - service: gorge-conduit
+            port: 8150
           - service: gorge-taskqueue
             port: 8090
           # gorge-worker's listener is status only, like gorge-webhook's — its

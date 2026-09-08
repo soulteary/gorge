@@ -374,13 +374,13 @@ components:
         connectionMessage:
           type: string
           description: Present when the probe did not return `okay`.
-        replicaStatus:
+        replicationStatus:
           type: string
           description: The replication probe outcome. Empty when the connection failed.
           enum: [okay, master-replica, replica-none, replica-slow, not-replicating]
         replicaMessage:
           type: string
-        replicaDelaySec:
+        secondsBehindMaster:
           type: integer
           nullable: true
           description: Seconds_Behind_Master. Absent when the node is not replicating or the value is NULL.
@@ -391,13 +391,17 @@ components:
       properties:
         refKey:
           type: string
-        database:
+        databaseName:
           type: string
-        table:
+        tableName:
           type: string
-        column:
+        columnName:
           type: string
         key:
+          type: string
+        expected:
+          type: string
+        actual:
           type: string
         issues:
           type: array
@@ -413,17 +417,21 @@ components:
 
     SchemaIssue:
       type: object
-      required: [refKey, database, issue, status]
+      required: [refKey, databaseName, issue, status]
       properties:
         refKey:
           type: string
-        database:
+        databaseName:
           type: string
-        table:
+        tableName:
           type: string
-        column:
+        columnName:
           type: string
-        key:
+        issueKey:
+          type: string
+        expected:
+          type: string
+        actual:
           type: string
         issue:
           type: string
@@ -433,9 +441,9 @@ components:
 
     SetupIssue:
       type: object
-      required: [key, name, message, isFatal]
+      required: [issueKey, name, message, isFatal]
       properties:
-        key:
+        issueKey:
           type: string
           description: Stable check identifier, e.g. `mysql.version`, `storage.upgrade`.
           example: storage.upgrade
