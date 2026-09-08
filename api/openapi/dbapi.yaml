@@ -152,9 +152,12 @@ paths:
       tags: [db]
       summary: Schema problems, flattened
       description: |
-        The same information as `schema-diff`, but with every node's issues
-        lifted out into flat, self-describing records ready to render in a
-        report without the tree.
+        Compares each application's selected replicas with the master for that
+        partition, then flattens charset, collation, engine, column type,
+        nullability, missing, and surplus differences into self-describing
+        records with `issueKey`, `expected`, and `actual`. Canonical comparison
+        with Phorge's application-owned SchemaSpec definitions remains on the
+        PHP side, using the complete actual tree from `schema-diff`.
       operationId: schemaIssues
       security:
         - ServiceTokenHeader: []

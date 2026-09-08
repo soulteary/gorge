@@ -69,21 +69,33 @@ type ServerRef struct {
 // collation on databases, collation and engine on tables, and character set,
 // collation, complete type, and nullability on columns.
 type SchemaNode struct {
-	RefKey       string        `json:"refKey"`
-	Database     string        `json:"databaseName,omitempty"`
-	Table        string        `json:"tableName,omitempty"`
-	Column       string        `json:"columnName,omitempty"`
-	Key          string        `json:"key,omitempty"`
-	CharacterSet string        `json:"characterSet,omitempty"`
-	Collation    string        `json:"collation,omitempty"`
-	Engine       string        `json:"engine,omitempty"`
-	ColumnType   string        `json:"columnType,omitempty"`
-	Nullable     *bool         `json:"nullable,omitempty"`
-	Expected     string        `json:"expected,omitempty"`
-	Actual       string        `json:"actual,omitempty"`
-	Issues       []string      `json:"issues,omitempty"`
-	Status       string        `json:"status"`
-	Children     []*SchemaNode `json:"children,omitempty"`
+	RefKey       string             `json:"refKey"`
+	Database     string             `json:"databaseName,omitempty"`
+	Table        string             `json:"tableName,omitempty"`
+	Column       string             `json:"columnName,omitempty"`
+	Key          string             `json:"key,omitempty"`
+	CharacterSet string             `json:"characterSet,omitempty"`
+	Collation    string             `json:"collation,omitempty"`
+	Engine       string             `json:"engine,omitempty"`
+	ColumnType   string             `json:"columnType,omitempty"`
+	Nullable     *bool              `json:"nullable,omitempty"`
+	Expected     string             `json:"expected,omitempty"`
+	Actual       string             `json:"actual,omitempty"`
+	Issues       []string           `json:"issues,omitempty"`
+	Status       string             `json:"status"`
+	Children     []*SchemaNode      `json:"children,omitempty"`
+	Diagnostics  []SchemaDiagnostic `json:"-"`
+}
+
+// SchemaDiagnostic keeps each local comparison distinct while SchemaNode's
+// compatibility fields expose the first one on the tree response. It is not a
+// wire field; /schema-issues flattens it into SchemaIssue records.
+type SchemaDiagnostic struct {
+	Key      string
+	Expected string
+	Actual   string
+	Issue    string
+	Status   string
 }
 
 // SchemaIssue is one schema problem, GET /api/db/schema-issues returns an array

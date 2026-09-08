@@ -10,6 +10,8 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/soulteary/gorge/go/internal/contracts"
 )
 
 func TestLoadActualSchemaClassifiesLazyDialFailureAsUnreachable(t *testing.T) {
@@ -345,5 +347,61 @@ func TestCollectIssuesSanitizesDatabaseErrors(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil && !errors.Is(err, sql.ErrConnDone) {
 		t.Fatal(err)
+	}
+}
+
+func TestSchemaIssuesCompareReplicaWithItsPartitionMaster(t *testing.T) {
+	notNullable := false
+	nullable := true
+	master := &DatabaseRef{Host: "master", Port: 3306, IsMaster: true, IsDefaultPartition: true}
+	replica := &DatabaseRef{Host: "replica", Port: 3306}
+	svc := NewDiffService(&ClusterConfig{
+		Namespace: "phorge", Refs: []*DatabaseRef{master, replica},
+		masters: []*DatabaseRef{master}, replicas: []*DatabaseRef{replica},
+	}, "secret")
+
+	expected := &contracts.SchemaNode{RefKey: master.RefKey(), Status: "ok", Children: []*contracts.SchemaNode{{
+		RefKey: master.RefKey(), Database: "phorge_config", CharacterSet: "utf8mb4", Collation: "utf8mb4_bin", Status: "ok",
+		Children: []*contracts.SchemaNode{{
+			RefKey: master.RefKey(), Database: "phorge_config", Table: "config_entry", Engine: "InnoDB", Collation: "utf8mb4_bin", Status: "ok",
+			Children: []*contracts.SchemaNode{
+				{RefKey: master.RefKey(), Database: "phorge_config", Table: "config_entry", Column: "configKey", ColumnType: "varchar(64)", CharacterSet: "utf8mb4", Collation: "utf8mb4_bin", Nullable: &notNullable, Status: "ok"},
+				{RefKey: master.RefKey(), Database: "phorge_config", Table: "config_entry", Column: "configValue", ColumnType: "longtext", CharacterSet: "utf8mb4", Collation: "utf8mb4_bin", Nullable: &notNullable, Status: "ok"},
+				{RefKey: master.RefKey(), Database: "phorge_config", Table: "config_entry", Column: "requiredColumn", ColumnType: "int", Nullable: &notNullable, Status: "ok"},
+			},
+		}},
+	}}}
+	actual := &contracts.SchemaNode{RefKey: replica.RefKey(), Status: "ok", Children: []*contracts.SchemaNode{{
+		RefKey: replica.RefKey(), Database: "phorge_config", CharacterSet: "latin1", Collation: "utf8_general_ci", Status: "ok",
+		Children: []*contracts.SchemaNode{{
+			RefKey: replica.RefKey(), Database: "phorge_config", Table: "config_entry", Engine: "MyISAM", Collation: "utf8mb4_bin", Status: "ok",
+			Children: []*contracts.SchemaNode{
+				{RefKey: replica.RefKey(), Database: "phorge_config", Table: "config_entry", Column: "configKey", ColumnType: "int", CharacterSet: "utf8mb4", Collation: "utf8mb4_bin", Nullable: &notNullable, Status: "ok"},
+				{RefKey: replica.RefKey(), Database: "phorge_config", Table: "config_entry", Column: "configValue", ColumnType: "longtext", CharacterSet: "utf8mb4", Collation: "utf8mb4_bin", Nullable: &nullable, Status: "ok"},
+				{RefKey: replica.RefKey(), Database: "phorge_config", Table: "config_entry", Column: "surplusColumn", ColumnType: "int", Nullable: &notNullable, Status: "ok"},
+			},
+		}},
+	}}}
+
+	svc.annotateSchemaAgainstMasters(replica, actual, map[string]*contracts.SchemaNode{
+		master.RefKey():  expected,
+		replica.RefKey(): actual,
+	})
+	var issues []contracts.SchemaIssue
+	flattenIssues(actual, &issues)
+	byKey := make(map[string]contracts.SchemaIssue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	for _, key := range []string{"charset", "collation", "engine", "columntype", "nullable", "missing", "surplus"} {
+		if _, ok := byKey[key]; !ok {
+			t.Fatalf("missing %q diagnostic: %+v", key, issues)
+		}
+	}
+	if issue := byKey["columntype"]; issue.Expected != "varchar(64)" || issue.Actual != "int" || issue.Column != "configKey" {
+		t.Fatalf("column type diagnostic = %+v", issue)
+	}
+	if issue := byKey["nullable"]; issue.Expected != "false" || issue.Actual != "true" || issue.Status != "fail" {
+		t.Fatalf("nullable diagnostic = %+v", issue)
 	}
 }

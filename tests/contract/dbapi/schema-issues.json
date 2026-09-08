@@ -1,6 +1,6 @@
 {
   "name": "a healthy schema reports no issues",
-  "description": "GET /api/db/schema-issues flattens every problem found while walking the schema tree into self-describing records (refKey, databaseName, tableName, columnName, issueKey, expected, actual, issue). A healthy node has none, so the answer is an empty data array — the honest report that there is nothing to fix. What this fixture pins is that 'no issues' is an empty array in the envelope, not a null, an error, or a missing field.",
+  "description": "GET /api/db/schema-issues compares each selected replica with the master for its application partition and flattens every attribute, missing, or surplus difference into self-describing records (refKey, databaseName, tableName, columnName, issueKey, expected, actual, issue). Canonical application SchemaSpec comparison remains in Phorge and consumes schema-diff. A consistent node has no drift, so the answer is an empty data array — not a null, an error, or a missing field.",
   "request": {
     "method": "GET",
     "path": "/api/db/schema-issues",

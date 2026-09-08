@@ -13,6 +13,7 @@ import (
 type Router struct {
 	config   *ClusterConfig
 	password string
+	connect  func(DSN, bool, RetryPolicy) (*Conn, error)
 
 	mu       sync.Mutex
 	readOnly bool
@@ -26,6 +27,7 @@ func NewRouter(cfg *ClusterConfig, password string) *Router {
 	return &Router{
 		config:   cfg,
 		password: password,
+		connect:  ConnectWithRetry,
 		conns:    make(map[string]*Conn),
 	}
 }
@@ -125,12 +127,17 @@ func (r *Router) getOrCreateConn(ref *DatabaseRef, app string, readOnly bool) (*
 
 	dsn := r.buildDSN(ref, app)
 
-	conn, err := ConnectWithRetry(dsn, readOnly, DefaultRetryPolicy())
+	conn, err := r.connect(dsn, readOnly, DefaultRetryPolicy())
 	if err != nil {
 		return nil, err
 	}
 
 	r.mu.Lock()
+	if cached, ok := r.conns[key]; ok {
+		r.mu.Unlock()
+		_ = conn.Close()
+		return cached, nil
+	}
 	r.conns[key] = conn
 	r.mu.Unlock()
 

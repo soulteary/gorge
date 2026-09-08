@@ -177,6 +177,37 @@ func (cc *ClusterConfig) GetReplicaForApplication(app string) *DatabaseRef {
 	return unpartitionedReplica
 }
 
+// ServesApplication reports whether ref belongs to the highest-priority
+// partition for an application in its role. Partition ownership is
+// cluster-wide: explicit application partitions supersede default partitions,
+// which supersede the legacy unpartitioned form. Every ref in the winning
+// partition is included, not only the first ref the router selects.
+func (cc *ClusterConfig) ServesApplication(ref *DatabaseRef, app string) bool {
+	var refs []*DatabaseRef
+	if ref.IsMaster {
+		refs = cc.masters
+	} else {
+		refs = cc.replicas
+	}
+
+	hasExplicit := false
+	hasDefault := false
+	for _, candidate := range refs {
+		if candidate.Disabled {
+			continue
+		}
+		hasExplicit = hasExplicit || candidate.IsApplicationHost(app)
+		hasDefault = hasDefault || candidate.IsDefaultPartition
+	}
+	if hasExplicit {
+		return ref.IsApplicationHost(app)
+	}
+	if hasDefault {
+		return ref.IsDefaultPartition
+	}
+	return len(ref.ApplicationMap) == 0
+}
+
 // GetAllRefs returns every configured node, enabled or not; callers skip the
 // disabled ones themselves.
 func (cc *ClusterConfig) GetAllRefs() []*DatabaseRef { return cc.Refs }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
+	"strings"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
@@ -173,10 +175,9 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 // at any node into self-describing records.
 func (s *DiffService) CollectIssues(ctx context.Context) ([]contracts.SchemaIssue, error) {
 	issues := make([]contracts.SchemaIssue, 0)
-	for _, ref := range s.config.GetAllRefs() {
-		if ref.Disabled {
-			continue
-		}
+	refs := s.CollectRefs()
+	trees := make(map[string]*contracts.SchemaNode, len(refs))
+	for _, ref := range refs {
 		tree, err := s.LoadActualSchema(ctx, ref)
 		if err != nil {
 			issues = append(issues, contracts.SchemaIssue{
@@ -186,9 +187,205 @@ func (s *DiffService) CollectIssues(ctx context.Context) ([]contracts.SchemaIssu
 			})
 			continue
 		}
+		trees[ref.RefKey()] = tree
+	}
+
+	for _, ref := range refs {
+		tree := trees[ref.RefKey()]
+		if tree == nil {
+			continue
+		}
+		s.annotateSchemaAgainstMasters(ref, tree, trees)
 		flattenIssues(tree, &issues)
 	}
 	return issues, nil
+}
+
+// annotateSchemaAgainstMasters compares each database on a selected replica
+// with the master chosen for that application's partition. The canonical
+// Phorge schema remains owned by the PHP SchemaSpec classes and is compared
+// there against /schema-diff; this pass catches drift inside the configured
+// cluster and gives /schema-issues concrete expected/actual diagnostics.
+func (s *DiffService) annotateSchemaAgainstMasters(
+	ref *DatabaseRef,
+	actualServer *contracts.SchemaNode,
+	trees map[string]*contracts.SchemaNode,
+) {
+	if ref.IsMaster {
+		return
+	}
+
+	actualDatabases := childrenByName(actualServer.Children, schemaNodeName)
+	for _, actualDatabase := range actualServer.Children {
+		app, ok := s.applicationForDatabase(actualDatabase.Database)
+		if !ok || !s.config.ServesApplication(ref, app) {
+			continue
+		}
+		master := s.config.GetMasterForApplication(app)
+		if master == nil {
+			continue
+		}
+		expectedServer := trees[master.RefKey()]
+		if expectedServer == nil {
+			continue
+		}
+		expectedDatabase := childrenByName(expectedServer.Children, schemaNodeName)[actualDatabase.Database]
+		if expectedDatabase == nil {
+			setSchemaIssue(actualDatabase, "surplus", "missing", "present",
+				"This schema is not expected to exist.", "fail")
+			continue
+		}
+		compareSchemaNodes(expectedDatabase, actualDatabase)
+	}
+
+	// Also materialize databases missing from the selected replica, so the
+	// flattened endpoint does not silently omit them.
+	for _, expectedServer := range trees {
+		for _, expectedDatabase := range expectedServer.Children {
+			app, ok := s.applicationForDatabase(expectedDatabase.Database)
+			if !ok || !s.config.ServesApplication(ref, app) {
+				continue
+			}
+			master := s.config.GetMasterForApplication(app)
+			if master == nil || master.RefKey() != expectedServer.RefKey {
+				continue
+			}
+			if actualDatabases[expectedDatabase.Database] == nil {
+				missing := emptySchemaClone(expectedDatabase, ref.RefKey())
+				setSchemaIssue(missing, "missing", "present", "missing",
+					"This schema is expected to exist, but does not.", "fail")
+				actualServer.Children = append(actualServer.Children, missing)
+			}
+		}
+	}
+}
+
+func (s *DiffService) applicationForDatabase(database string) (string, bool) {
+	prefix := s.config.Namespace + "_"
+	if !strings.HasPrefix(database, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(database, prefix), true
+}
+
+func compareSchemaNodes(expected, actual *contracts.SchemaNode) {
+	switch {
+	case actual.Column != "":
+		compareSchemaProperty(actual, "charset", expected.CharacterSet, actual.CharacterSet,
+			"This schema can use a better character set.", "warn")
+		compareSchemaProperty(actual, "collation", expected.Collation, actual.Collation,
+			"This schema can use a better collation.", "warn")
+		if !sameColumnType(expected.ColumnType, actual.ColumnType) {
+			setSchemaIssue(actual, "columntype", expected.ColumnType, actual.ColumnType,
+				"This schema can use a better column type.", "warn")
+		}
+		if expected.Nullable != nil && actual.Nullable != nil && *expected.Nullable != *actual.Nullable {
+			setSchemaIssue(actual, "nullable", strconv.FormatBool(*expected.Nullable), strconv.FormatBool(*actual.Nullable),
+				"This schema has the wrong nullable setting.", "fail")
+		}
+	case actual.Table != "":
+		compareSchemaProperty(actual, "collation", expected.Collation, actual.Collation,
+			"This schema can use a better collation.", "warn")
+		compareSchemaProperty(actual, "engine", expected.Engine, actual.Engine,
+			"This table can use a better table engine.", "warn")
+	case actual.Database != "":
+		compareSchemaProperty(actual, "charset", expected.CharacterSet, actual.CharacterSet,
+			"This schema can use a better character set.", "warn")
+		compareSchemaProperty(actual, "collation", expected.Collation, actual.Collation,
+			"This schema can use a better collation.", "warn")
+	}
+
+	expectedChildren := childrenByName(expected.Children, schemaNodeName)
+	actualChildren := childrenByName(actual.Children, schemaNodeName)
+	for name, actualChild := range actualChildren {
+		expectedChild := expectedChildren[name]
+		if expectedChild == nil {
+			setSchemaIssue(actualChild, "surplus", "missing", "present",
+				"This schema is not expected to exist.", "fail")
+			continue
+		}
+		compareSchemaNodes(expectedChild, actualChild)
+	}
+	for name, expectedChild := range expectedChildren {
+		if actualChildren[name] != nil {
+			continue
+		}
+		missing := emptySchemaClone(expectedChild, actual.RefKey)
+		setSchemaIssue(missing, "missing", "present", "missing",
+			"This schema is expected to exist, but does not.", "fail")
+		actual.Children = append(actual.Children, missing)
+	}
+}
+
+func compareSchemaProperty(node *contracts.SchemaNode, key, expected, actual, issue, status string) {
+	if expected != actual {
+		setSchemaIssue(node, key, expected, actual, issue, status)
+	}
+}
+
+// SchemaNode's wire shape carries one expected/actual pair. Keep the first
+// local mismatch, matching the most specific comparison order above, while
+// still descending into children so every location can report independently.
+func setSchemaIssue(node *contracts.SchemaNode, key, expected, actual, issue, status string) {
+	node.Diagnostics = append(node.Diagnostics, contracts.SchemaDiagnostic{
+		Key: key, Expected: expected, Actual: actual, Issue: issue, Status: status,
+	})
+	node.Issues = append(node.Issues, issue)
+	if node.Key == "" {
+		node.Key = key
+		node.Expected = expected
+		node.Actual = actual
+	}
+	if status == "fail" || node.Status == "ok" {
+		node.Status = status
+	}
+}
+
+func schemaNodeName(node *contracts.SchemaNode) string {
+	switch {
+	case node.Column != "":
+		return node.Column
+	case node.Table != "":
+		return node.Table
+	default:
+		return node.Database
+	}
+}
+
+func childrenByName(
+	children []*contracts.SchemaNode,
+	name func(*contracts.SchemaNode) string,
+) map[string]*contracts.SchemaNode {
+	out := make(map[string]*contracts.SchemaNode, len(children))
+	for _, child := range children {
+		out[name(child)] = child
+	}
+	return out
+}
+
+func emptySchemaClone(node *contracts.SchemaNode, refKey string) *contracts.SchemaNode {
+	return &contracts.SchemaNode{
+		RefKey: refKey, Database: node.Database, Table: node.Table, Column: node.Column,
+		Status: "ok",
+	}
+}
+
+func sameColumnType(expected, actual string) bool {
+	normalize := func(value string) string {
+		switch value {
+		case "int(10) unsigned":
+			return "int unsigned"
+		case "int(10)":
+			return "int"
+		case "bigint(20) unsigned":
+			return "bigint unsigned"
+		case "bigint(20)":
+			return "bigint"
+		default:
+			return value
+		}
+	}
+	return normalize(expected) == normalize(actual)
 }
 
 func safeSchemaIssue(err error) string {
@@ -200,18 +397,28 @@ func safeSchemaIssue(err error) string {
 }
 
 func flattenIssues(node *contracts.SchemaNode, out *[]contracts.SchemaIssue) {
-	for _, issue := range node.Issues {
-		*out = append(*out, contracts.SchemaIssue{
-			RefKey:   node.RefKey,
-			Database: node.Database,
-			Table:    node.Table,
-			Column:   node.Column,
-			Key:      node.Key,
-			Expected: node.Expected,
-			Actual:   node.Actual,
-			Issue:    issue,
-			Status:   node.Status,
-		})
+	if len(node.Diagnostics) > 0 {
+		for _, diagnostic := range node.Diagnostics {
+			*out = append(*out, contracts.SchemaIssue{
+				RefKey: node.RefKey, Database: node.Database, Table: node.Table, Column: node.Column,
+				Key: diagnostic.Key, Expected: diagnostic.Expected, Actual: diagnostic.Actual,
+				Issue: diagnostic.Issue, Status: diagnostic.Status,
+			})
+		}
+	} else {
+		for _, issue := range node.Issues {
+			*out = append(*out, contracts.SchemaIssue{
+				RefKey:   node.RefKey,
+				Database: node.Database,
+				Table:    node.Table,
+				Column:   node.Column,
+				Key:      node.Key,
+				Expected: node.Expected,
+				Actual:   node.Actual,
+				Issue:    issue,
+				Status:   node.Status,
+			})
+		}
 	}
 	for _, child := range node.Children {
 		flattenIssues(child, out)

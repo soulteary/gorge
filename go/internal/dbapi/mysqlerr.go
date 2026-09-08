@@ -2,6 +2,7 @@ package dbapi
 
 import (
 	"errors"
+	"net"
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -44,7 +45,14 @@ func isRetryableConnectErr(err error) bool {
 	if errors.As(err, &myErr) {
 		return retryableConnectCodes[myErr.Number]
 	}
-	return false
+
+	// database/sql and go-sql-driver/mysql return raw *net.OpError values for
+	// real TCP dial failures (including refused connections and timeouts), not
+	// the client-side 2002/2003 codes Phorge's PHP driver reports. They are the
+	// same transient connection-establishment failures and should receive the
+	// same bounded retry treatment.
+	var netErr *net.OpError
+	return errors.As(err, &netErr)
 }
 
 func isRetryableQueryErr(err error) bool {

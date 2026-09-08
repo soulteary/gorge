@@ -19,7 +19,7 @@
 **负责**：如实报告集群的当前状态。四件事，对应四个内部 service：
 
 - **健康**（`HealthService`）：逐台探测连接与复制状态，镜像 Phorge 的 `PhabricatorDatabaseRef::queryAll`——一次短连接、一次 ping、对 MySQL 再跑一次 `SHOW REPLICA STATUS`。一台连不上的节点照样出现在结果里，`connectionStatus` 为 `fail`、原因在 `connectionMessage` 里，因为「这台服务器挂了」正是健康报告存在的理由。
-- **schema 诊断**（`DiffService`）：三级 `INFORMATION_SCHEMA` 遍历（Server → Database → Table → Column）把每台服务器的实际 schema 与 Phorge 的预期比对，产出一棵 `SchemaNode` 树（`/schema-diff`）或把问题拍平成 `SchemaIssue` 列表（`/schema-issues`），外加 `/charset-info` 报告每台能不能用 utf8mb4。
+- **schema 诊断**（`DiffService`）：三级 `INFORMATION_SCHEMA` 遍历（Server → Database → Table → Column）产出每台服务器的实际 `SchemaNode` 树（`/schema-diff`，交给 Phorge 与应用 SchemaSpec 比较），并把 replica 相对其分区 master 的属性/缺失/多余差异拍平成 `SchemaIssue` 列表（`/schema-issues`），外加 `/charset-info` 报告每台能不能用 utf8mb4。
 - **环境检查**（`SetupService`）：跑 Phorge 的 `PhabricatorDatabaseSetupCheck` 与 `PhabricatorMySQLSetupCheck` 检的那些项——每台节点的版本、InnoDB 和服务器变量，以及真正承载 `meta_data` 的分区中 `{namespace}_meta_data` 库在不在——每一条是一个 `SetupIssue`，`isFatal` 与 Phorge 的判定对齐。
 - **迁移状态**（`MigrationService`）：读承载 `meta_data` 的 master 上 `{namespace}_meta_data.patch_status`，报告 `bin/storage upgrade` 跑到哪了（`/migrations/status`）。replica 的 patch_status 通过复制到达，不是它自己迁出来的。
 
@@ -72,6 +72,8 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 `Router` 镜像 Phorge 的 `PhabricatorLiskDAO` 集群连接选择：按 Phorge 应用（`meta_data` / `worker` / …）选 master 或 replica，优先选显式绑定到该应用的节点、否则回落到默认分区的节点，并按 `(节点, 应用, 只读)` 三元组缓存连接。
 
 **只读降级是 Phorge 自己就有的行为**：`GetReader` 连不上 master 时把 router 翻成只读、改从 replica 读，于是后续的写会被 `GetWriter` 拒成 `ERR_READONLY`，而不是被发去一个可能陈旧的 replica。这段逻辑连同它对应的错误码一起保留，但如第 1 节所述，当前七条只读路由都不经过 Router 的写入分支。
+
+schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性，Phorge PHP 侧用自己的 `PhabricatorConfigSchemaSpec`（应用代码的唯一规范来源）构造预期 schema 并比较；`/schema-issues` 另外做集群内一致性检查，把每个应用分区的 replica 与该分区路由到的 master 比较。库字符集/排序规则、表引擎/排序规则、列字符集/排序规则/完整类型/nullability，以及缺失或多余的表列，都会生成带 `issueKey`、`expected`、`actual` 的记录。这样 Go 不复制一份会随 Phorge 应用代码漂移的 SchemaSpec，同时 replica 的 schema 漂移也不会被空列表掩盖。
 
 ### 3.3 健康探测：连接一半 + 复制一半，且区分「没权限」与「坏了」
 

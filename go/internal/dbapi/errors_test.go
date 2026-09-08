@@ -2,8 +2,10 @@ package dbapi
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
@@ -140,6 +142,14 @@ func TestIsRetryableConnectErr(t *testing.T) {
 	for _, errno := range []uint16{2013, 1044, 1062} {
 		if isRetryableConnectErr(&mysql.MySQLError{Number: errno}) {
 			t.Errorf("errno %d should NOT be a retryable connect error", errno)
+		}
+	}
+	for _, err := range []error{
+		&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+		&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{IsTimeout: true}},
+	} {
+		if !isRetryableConnectErr(err) {
+			t.Errorf("%T should be a retryable connect error", err)
 		}
 	}
 	if isRetryableConnectErr(errors.New("plain error")) {

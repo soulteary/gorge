@@ -35,10 +35,11 @@ func failConnFactory() ConnFactory {
 
 func singleNode(t *testing.T) *ClusterConfig {
 	t.Helper()
+	ref := &DatabaseRef{Host: "h1", Port: 3306, IsMaster: true}
 	return &ClusterConfig{
-		Refs:      []*DatabaseRef{{Host: "h1", Port: 3306, IsMaster: true}},
+		Refs:      []*DatabaseRef{ref},
 		Namespace: "phorge",
-		masters:   []*DatabaseRef{{Host: "h1", Port: 3306, IsMaster: true}},
+		masters:   []*DatabaseRef{ref},
 	}
 }
 
@@ -227,7 +228,7 @@ func TestCheckRefMissingMetaDataDatabase(t *testing.T) {
 	}
 }
 
-func TestCheckRefSkipsMetaDataDatabaseOutsideItsPartition(t *testing.T) {
+func TestCheckRefSkipsDefaultMetadataCheckWhenSpecificPartitionExists(t *testing.T) {
 	db, mock, _ := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	defer func() { _ = db.Close() }()
 
@@ -237,19 +238,25 @@ func TestCheckRefSkipsMetaDataDatabaseOutsideItsPartition(t *testing.T) {
 	mock.ExpectQuery("SHOW ENGINES").WillReturnRows(
 		sqlmock.NewRows([]string{"Engine", "Support", "c1", "c2", "c3", "c4"}).
 			AddRow("InnoDB", "YES", nil, nil, nil, nil))
-	// No SHOW DATABASES expectation: a maniphest-only partition does not host
-	// meta_data, while the server-wide variable checks still apply.
+	// No SHOW DATABASES expectation: the explicit metadata partition supersedes
+	// the default node, while the server-wide variable checks still apply.
 	expectHealthyServerVariables(mock)
 	mock.ExpectClose()
 
 	ref := &DatabaseRef{
-		Host: "maniphest", Port: 3306, IsMaster: true,
-		ApplicationMap: map[string]bool{"maniphest": true},
+		Host: "default", Port: 3306, IsMaster: true, IsDefaultPartition: true,
 	}
-	cfg := &ClusterConfig{Refs: []*DatabaseRef{ref}, Namespace: "phorge", masters: []*DatabaseRef{ref}}
+	metadata := &DatabaseRef{
+		Host: "metadata", Port: 3306, IsMaster: true,
+		ApplicationMap: map[string]bool{"meta_data": true},
+	}
+	cfg := &ClusterConfig{
+		Refs: []*DatabaseRef{ref, metadata}, Namespace: "phorge",
+		masters: []*DatabaseRef{ref, metadata},
+	}
 	svc := &SetupService{config: cfg, connFactory: mockConnFactory(db)}
 	if issues := svc.checkRef(context.Background(), ref); len(issues) != 0 {
-		t.Fatalf("application partition produced setup issues: %+v", issues)
+		t.Fatalf("default partition produced metadata setup issues: %+v", issues)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

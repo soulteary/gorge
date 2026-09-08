@@ -441,6 +441,21 @@ func TestGetMasterForApplicationPreferSpecific(t *testing.T) {
 	}
 }
 
+func TestServesApplicationExcludesDefaultWhenSpecificExists(t *testing.T) {
+	defaultMaster := &DatabaseRef{Host: "default", IsMaster: true, IsDefaultPartition: true}
+	metadataMaster := &DatabaseRef{
+		Host: "metadata", IsMaster: true,
+		ApplicationMap: map[string]bool{"meta_data": true},
+	}
+	cc := &ClusterConfig{masters: []*DatabaseRef{defaultMaster, metadataMaster}}
+	if !cc.ServesApplication(metadataMaster, "meta_data") {
+		t.Fatal("explicit metadata master should own meta_data")
+	}
+	if cc.ServesApplication(defaultMaster, "meta_data") {
+		t.Fatal("default master must not also own meta_data when an explicit partition exists")
+	}
+}
+
 func TestGetMasterForApplicationNoMatch(t *testing.T) {
 	cc := &ClusterConfig{masters: []*DatabaseRef{
 		{Host: "m1", Disabled: true, IsDefaultPartition: true},
