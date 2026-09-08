@@ -75,6 +75,39 @@ func TestQueryWithRetryInsideTransactionNoRetry(t *testing.T) {
 	}
 }
 
+func TestQueryWithRetryRejectsTransactionWriteOnReadOnlyConnection(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+	conn := NewConnFromDB(db, DSN{Database: "phorge_config"}, true)
+	txm := NewTxManager(conn)
+	ctx := context.Background()
+	if err := txm.Begin(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := QueryWithRetry(ctx, conn, txm, DefaultRetryPolicy(), "UPDATE config SET value = 1")
+	if rows != nil {
+		_ = rows.Close()
+		t.Fatal("write on a read-only transaction unexpectedly returned rows")
+	}
+	var dbErr *DBError
+	if !errors.As(err, &dbErr) || dbErr.Kind != kindReadonly {
+		t.Fatalf("error = %v, want kindReadonly", err)
+	}
+	if err := txm.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQueryWithRetryUsesActiveTransactionInsteadOfPassedPool(t *testing.T) {
 	txDB, txMock, err := sqlmock.New()
 	if err != nil {

@@ -101,6 +101,11 @@ func (m *TxManager) queryContext(ctx context.Context, query string, args ...any)
 	if m.depth <= 0 || m.tx == nil {
 		return nil, false, nil
 	}
+	if m.conn.IsReadOnly() && !isReadQuery(query) {
+		return nil, true, newDBError(kindReadonly,
+			"write query inside transaction on read-only connection (database %q)",
+			m.conn.DSN().Database)
+	}
 	rows, err := m.tx.QueryContext(ctx, query, args...)
 	return rows, true, err
 }
