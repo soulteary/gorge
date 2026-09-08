@@ -230,3 +230,23 @@ func TestConnQueryRowContext(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestConnQueryRowContextRejectsWriteWhenReadOnly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	conn := NewConnFromDB(db, DSN{Database: "phorge_config"}, true)
+	var value int
+	err = conn.QueryRowContext(context.Background(),
+		"UPDATE config SET value = 1 RETURNING value").Scan(&value)
+	var dbErr *DBError
+	if !errors.As(err, &dbErr) || dbErr.Kind != kindReadonly {
+		t.Fatalf("error = %v, want kindReadonly", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

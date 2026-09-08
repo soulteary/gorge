@@ -16,10 +16,13 @@ import (
 // snake-free Go while the JSON contract uses camelCase, and keeps the domain
 // free to add fields the contract does not expose.
 type DatabaseRef struct {
-	Host               string
-	Port               int
-	User               string
+	Host string
+	Port int
+	User string
+	// Password and PasswordSet distinguish an explicit passwordless node from
+	// a node that inherits the cluster-wide password. Neither is exposed.
 	Password           string
+	PasswordSet        bool
 	IsMaster           bool
 	Disabled           bool
 	IsIndividual       bool
@@ -39,7 +42,7 @@ type DatabaseRef struct {
 // one, otherwise the cluster-wide mysql.pass fallback. Password is deliberately
 // internal and is never projected by toContract.
 func (r *DatabaseRef) passwordOr(fallback string) string {
-	if r.Password != "" {
+	if r.PasswordSet || r.Password != "" {
 		return r.Password
 	}
 	return fallback

@@ -255,10 +255,12 @@ func TestBuildClusterMultiNode(t *testing.T) {
 }
 
 func TestClusterNodePasswordOverridesGlobalPassword(t *testing.T) {
+	globalSecret := "global-secret"
+	nodeSecret := "node-secret"
 	cc := buildClusterFromRaw(rawClusterFile{
-		MysqlPass: "global-secret",
+		MysqlPass: &globalSecret,
 		ClusterDBs: []nodeSpec{
-			{Host: "custom", Role: "master", Pass: "node-secret"},
+			{Host: "custom", Role: "master", Pass: &nodeSecret},
 			{Host: "fallback", Role: "replica"},
 		},
 	}, &Config{})
@@ -288,6 +290,51 @@ func TestClusterNodePasswordOverridesGlobalPassword(t *testing.T) {
 	}
 	if got := NewRouter(cc, cc.MySQLPass).buildDSN(ref, "config").Password; got != "node-secret" {
 		t.Errorf("router DSN password = %q", got)
+	}
+}
+
+func TestClusterScalarExplicitEmptyPasswordOverridesEnvironment(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"mysql.host": "passwordless",
+		"mysql.pass": ""
+	}`)
+	cc, err := (&Config{ConfigFile: path, MySQLPass: "environment-secret"}).BuildCluster()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cc.MySQLPass != "" {
+		t.Fatalf("cluster password = %q, want explicit empty password", cc.MySQLPass)
+	}
+	if got := cc.Refs[0].passwordOr("wrong-fallback"); got != "" {
+		t.Fatalf("single-node password = %q, want explicit empty password", got)
+	}
+}
+
+func TestClusterNodeExplicitEmptyPasswordOverridesGlobalPassword(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"mysql.pass": "global-secret",
+		"cluster.databases": [
+			{"host": "passwordless", "role": "master", "pass": ""}
+		]
+	}`)
+	cc, err := (&Config{ConfigFile: path}).BuildCluster()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := cc.Refs[0]
+	if !ref.PasswordSet {
+		t.Fatal("explicit empty node password was treated as omitted")
+	}
+	for name, got := range map[string]string{
+		"schema":    NewDiffService(cc, cc.MySQLPass).buildDSN(ref).Password,
+		"setup":     NewSetupService(cc, cc.MySQLPass).buildDSN(ref).Password,
+		"migration": NewMigrationService(cc, cc.MySQLPass).buildDSN(ref).Password,
+		"health":    NewHealthService(cc).buildDSN(ref, cc.MySQLPass).Password,
+		"router":    NewRouter(cc, cc.MySQLPass).buildDSN(ref, "config").Password,
+	} {
+		if got != "" {
+			t.Errorf("%s DSN password = %q, want explicit empty password", name, got)
+		}
 	}
 }
 

@@ -117,7 +117,22 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args ...any) (sql.
 	return c.db.ExecContext(ctx, query, args...)
 }
 
-func (c *Conn) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+// RowScanner is the part of sql.Row callers use. The interface lets a rejected
+// read-only statement surface its DBError from Scan without sending the query
+// to the driver.
+type RowScanner interface {
+	Scan(dest ...any) error
+}
+
+type errorRow struct{ err error }
+
+func (r errorRow) Scan(...any) error { return r.err }
+
+func (c *Conn) QueryRowContext(ctx context.Context, query string, args ...any) RowScanner {
+	if c.readOnly && !isReadQuery(query) {
+		return errorRow{err: newDBError(kindReadonly,
+			"write query on read-only connection (database %q)", c.dsn.Database)}
+	}
 	return c.db.QueryRowContext(ctx, query, args...)
 }
 

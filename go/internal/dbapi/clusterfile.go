@@ -35,7 +35,7 @@ type nodeSpec struct {
 	Host      string          `json:"host"`
 	Port      int             `json:"port,omitempty"`
 	User      string          `json:"user,omitempty"`
-	Pass      string          `json:"pass,omitempty"`
+	Pass      *string         `json:"pass,omitempty"`
 	Role      string          `json:"role"`
 	Roles     map[string]bool `json:"roles,omitempty"`
 	Disabled  bool            `json:"disabled,omitempty"`
@@ -61,7 +61,7 @@ type rawClusterFile struct {
 	MysqlHost  string     `json:"mysql.host"`
 	MysqlPort  int        `json:"mysql.port"`
 	MysqlUser  string     `json:"mysql.user"`
-	MysqlPass  string     `json:"mysql.pass"`
+	MysqlPass  *string    `json:"mysql.pass"`
 	Namespace  string     `json:"storage.default-namespace"`
 	ClusterDBs []nodeSpec `json:"cluster.databases"`
 }
@@ -80,7 +80,10 @@ func loadClusterFromFile(path string, base *Config) (*ClusterConfig, error) {
 
 func buildClusterFromRaw(raw rawClusterFile, base *Config) *ClusterConfig {
 	ns := firstNonEmpty(raw.Namespace, base.Namespace, DefaultNamespace)
-	pass := firstNonEmpty(raw.MysqlPass, base.MySQLPass)
+	pass := base.MySQLPass
+	if raw.MysqlPass != nil {
+		pass = *raw.MysqlPass
+	}
 
 	// No cluster.databases: the file is describing a single node through the
 	// scalar mysql.* keys, so build one master the same way the env path does.
@@ -90,6 +93,7 @@ func buildClusterFromRaw(raw rawClusterFile, base *Config) *ClusterConfig {
 			Port:               firstNonZero(raw.MysqlPort, base.MySQLPort, DefaultMySQLPort),
 			User:               firstNonEmpty(raw.MysqlUser, base.MySQLUser, DefaultMySQLUser),
 			Password:           pass,
+			PasswordSet:        raw.MysqlPass != nil,
 			IsMaster:           true,
 			IsIndividual:       true,
 			IsDefaultPartition: true,
@@ -104,13 +108,20 @@ func buildClusterFromRaw(raw rawClusterFile, base *Config) *ClusterConfig {
 
 	var refs, masters, replicas []*DatabaseRef
 	for _, spec := range raw.ClusterDBs {
+		password := pass
+		passwordSet := false
+		if spec.Pass != nil {
+			password = *spec.Pass
+			passwordSet = true
+		}
 		ref := &DatabaseRef{
-			Host:     firstNonEmpty(spec.Host, raw.MysqlHost, base.MySQLHost),
-			Port:     firstNonZero(spec.Port, raw.MysqlPort, base.MySQLPort, DefaultMySQLPort),
-			User:     firstNonEmpty(spec.User, raw.MysqlUser, base.MySQLUser),
-			Password: firstNonEmpty(spec.Pass, pass),
-			IsMaster: spec.role() == "master",
-			Disabled: spec.Disabled,
+			Host:        firstNonEmpty(spec.Host, raw.MysqlHost, base.MySQLHost),
+			Port:        firstNonZero(spec.Port, raw.MysqlPort, base.MySQLPort, DefaultMySQLPort),
+			User:        firstNonEmpty(spec.User, raw.MysqlUser, base.MySQLUser),
+			Password:    password,
+			PasswordSet: passwordSet,
+			IsMaster:    spec.role() == "master",
+			Disabled:    spec.Disabled,
 		}
 		if len(spec.Partition) > 0 {
 			ref.ApplicationMap = make(map[string]bool, len(spec.Partition))

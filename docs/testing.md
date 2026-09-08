@@ -245,7 +245,7 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 | `cmd/gorge-worker` | 0.0% |
 | `cmd/gorge-conduit` | 0.0% |
 | `cmd/gorge-db-api` | 3.0% |
-| **总计** | **72.4%** |
+| **总计** | **72.5%** |
 
 上表是基线快照。**db-api 迁入后已把它计入**：`internal/dbapi` 一次干净的 `go test ./...` 覆盖率为 **87.0%**（整套现已全绿，`tests/contract/dbapi/` 与 `tests/contract/dbapi/unavailable/` 固件均已落地）；`cmd/gorge-db-api` 只有密码选择辅助函数被单测覆盖，其余入口逻辑与另外九个 `cmd` 同理由 e2e 在集成层兜（`tests/e2e/dbapi.sh` 已落地）。
 
@@ -263,7 +263,7 @@ render、diff、mailer、search、file-storage、webhook 与 taskqueue 七份都
 
 `notification/hub` 的 83.7% 有一部分是同一个假象：`Listener` 那几个要真 WebSocket 才调得到的方法，连接建在 `internal/notification` 的测试里，不计入 `hub`。`-coverpkg` 合并度量后它们都是 100%，覆盖率的真实缺口只剩三处，都登记在 [`findings.md`](findings.md) 第 9 条。
 
-**总计现在是 72.4%。**后续迁入的 webhook、taskqueue、worker、conduit 与 db-api 同时带来了大量数据库、Redis、后台循环和进程入口边界；其中 taskqueue 的生产存储实现是当前最主要的降幅来源，性质与 webhook 的 MySQLStore 缺口相同。
+**总计现在是 72.5%。**后续迁入的 webhook、taskqueue、worker、conduit 与 db-api 同时带来了大量数据库、Redis、后台循环和进程入口边界；其中 taskqueue 的生产存储实现是当前最主要的降幅来源，性质与 webhook 的 MySQLStore 缺口相同。
 
 **两次要分开读，因为处置方式相反。**search 那次拉低总数的是两个包，缺口在「没写的测试」上，补是可行的（第 17 条给了照抄的模板）；webhook 那次的缺口在「测不到的边界」上——`MySQLStore` 那十个方法的 0.0% 不是有人偷懒，而是仓库里没有 MySQL，而 fake 恰好证明不了那几条 SQL 真的按它们写的那样跑。前者该补，后者补了反而更坏：一个用 fake 覆盖到 100% 的 store 层看起来防线更厚，实际什么都没多守住。
 
