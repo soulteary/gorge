@@ -64,18 +64,26 @@ type ServerRef struct {
 //
 // Status is one of ok, warn, fail. Issues holds the human-readable problems
 // found at this node; GET /api/db/schema-issues is the same information
-// flattened into SchemaIssue records.
+// flattened into SchemaIssue records. The property fields preserve the actual
+// INFORMATION_SCHEMA values at their applicable level: character set and
+// collation on databases, collation and engine on tables, and character set,
+// collation, complete type, and nullability on columns.
 type SchemaNode struct {
-	RefKey   string        `json:"refKey"`
-	Database string        `json:"databaseName,omitempty"`
-	Table    string        `json:"tableName,omitempty"`
-	Column   string        `json:"columnName,omitempty"`
-	Key      string        `json:"key,omitempty"`
-	Expected string        `json:"expected,omitempty"`
-	Actual   string        `json:"actual,omitempty"`
-	Issues   []string      `json:"issues,omitempty"`
-	Status   string        `json:"status"`
-	Children []*SchemaNode `json:"children,omitempty"`
+	RefKey       string        `json:"refKey"`
+	Database     string        `json:"databaseName,omitempty"`
+	Table        string        `json:"tableName,omitempty"`
+	Column       string        `json:"columnName,omitempty"`
+	Key          string        `json:"key,omitempty"`
+	CharacterSet string        `json:"characterSet,omitempty"`
+	Collation    string        `json:"collation,omitempty"`
+	Engine       string        `json:"engine,omitempty"`
+	ColumnType   string        `json:"columnType,omitempty"`
+	Nullable     *bool         `json:"nullable,omitempty"`
+	Expected     string        `json:"expected,omitempty"`
+	Actual       string        `json:"actual,omitempty"`
+	Issues       []string      `json:"issues,omitempty"`
+	Status       string        `json:"status"`
+	Children     []*SchemaNode `json:"children,omitempty"`
 }
 
 // SchemaIssue is one schema problem, GET /api/db/schema-issues returns an array

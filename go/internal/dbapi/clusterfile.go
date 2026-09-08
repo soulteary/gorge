@@ -49,6 +49,7 @@ func buildClusterFromRaw(raw rawClusterFile, base *Config) *ClusterConfig {
 			Host:               firstNonEmpty(raw.MysqlHost, base.MySQLHost, DefaultMySQLHost),
 			Port:               firstNonZero(raw.MysqlPort, base.MySQLPort, DefaultMySQLPort),
 			User:               firstNonEmpty(raw.MysqlUser, base.MySQLUser, DefaultMySQLUser),
+			Password:           pass,
 			IsMaster:           true,
 			IsIndividual:       true,
 			IsDefaultPartition: true,
@@ -67,6 +68,7 @@ func buildClusterFromRaw(raw rawClusterFile, base *Config) *ClusterConfig {
 			Host:     firstNonEmpty(spec.Host, raw.MysqlHost, base.MySQLHost),
 			Port:     firstNonZero(spec.Port, raw.MysqlPort, base.MySQLPort, DefaultMySQLPort),
 			User:     firstNonEmpty(spec.User, raw.MysqlUser, base.MySQLUser),
+			Password: firstNonEmpty(spec.Pass, pass),
 			IsMaster: spec.Role == "master",
 			Disabled: spec.Disabled,
 		}

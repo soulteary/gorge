@@ -123,16 +123,7 @@ func (r *Router) getOrCreateConn(ref *DatabaseRef, app string, readOnly bool) (*
 	}
 	r.mu.Unlock()
 
-	dsn := DSN{
-		Host:            ref.Host,
-		Port:            ref.Port,
-		User:            ref.User,
-		Password:        r.password,
-		Database:        r.config.DatabaseName(app),
-		MaxRetries:      3,
-		ConnTimeoutSec:  10,
-		QueryTimeoutSec: 30,
-	}
+	dsn := r.buildDSN(ref, app)
 
 	conn, err := ConnectWithRetry(dsn, readOnly, DefaultRetryPolicy())
 	if err != nil {
@@ -144,4 +135,17 @@ func (r *Router) getOrCreateConn(ref *DatabaseRef, app string, readOnly bool) (*
 	r.mu.Unlock()
 
 	return conn, nil
+}
+
+func (r *Router) buildDSN(ref *DatabaseRef, app string) DSN {
+	return DSN{
+		Host:            ref.Host,
+		Port:            ref.Port,
+		User:            ref.User,
+		Password:        ref.passwordOr(r.password),
+		Database:        r.config.DatabaseName(app),
+		MaxRetries:      3,
+		ConnTimeoutSec:  10,
+		QueryTimeoutSec: 30,
+	}
 }

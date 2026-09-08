@@ -1165,6 +1165,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 | `issueKey` | `issue_key` | `SetupIssue` / `SchemaIssue` | Phorge 的 issue 常量名，据它去重与定位 |
 | `databaseName` | `database_name` | `SchemaNode` / `SchemaIssue` | 三级树的库层键，`{namespace}_meta_data` 等 |
 | `tableName` / `columnName` | `table_name` / `column_name` | `SchemaNode` / `SchemaIssue` | 树的表层与列层键 |
+| `characterSet` / `collation` / `engine` / `columnType` / `nullable` | 独立服务迁入后补齐 | `SchemaNode` | `INFORMATION_SCHEMA` 的实际库、表、列属性，PHP 据它们构造实际 schema 后比较 |
 | `expected` / `actual` | 同名 | `SchemaIssue` | schema 差异的两侧值 |
 | `patch` / `initialized` | 同名 / `is_initialized` | `MigrationStatus` | `patch_status` 里跑过的 patch 列表与「库建了没」 |
 

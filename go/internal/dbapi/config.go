@@ -102,6 +102,7 @@ func (c *Config) singleNodeCluster() *ClusterConfig {
 		Host:               c.MySQLHost,
 		Port:               c.MySQLPort,
 		User:               c.MySQLUser,
+		Password:           c.MySQLPass,
 		IsMaster:           true,
 		IsIndividual:       true,
 		IsDefaultPartition: true,

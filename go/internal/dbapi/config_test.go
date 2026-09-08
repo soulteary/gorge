@@ -220,6 +220,43 @@ func TestBuildClusterMultiNode(t *testing.T) {
 	}
 }
 
+func TestClusterNodePasswordOverridesGlobalPassword(t *testing.T) {
+	cc := buildClusterFromRaw(rawClusterFile{
+		MysqlPass: "global-secret",
+		ClusterDBs: []nodeSpec{
+			{Host: "custom", Role: "master", Pass: "node-secret"},
+			{Host: "fallback", Role: "replica"},
+		},
+	}, &Config{})
+
+	if got := cc.Refs[0].Password; got != "node-secret" {
+		t.Fatalf("custom node password = %q, want node-secret", got)
+	}
+	if got := cc.Refs[1].Password; got != "global-secret" {
+		t.Fatalf("fallback node password = %q, want global-secret", got)
+	}
+	if got := cc.Refs[0].toContract(); got.User == "" && got.RefKey == "" {
+		t.Fatal("unexpected empty contract projection")
+	}
+
+	ref := cc.Refs[0]
+	if got := NewDiffService(cc, cc.MySQLPass).buildDSN(ref).Password; got != "node-secret" {
+		t.Errorf("schema DSN password = %q", got)
+	}
+	if got := NewSetupService(cc, cc.MySQLPass).buildDSN(ref).Password; got != "node-secret" {
+		t.Errorf("setup DSN password = %q", got)
+	}
+	if got := NewMigrationService(cc, cc.MySQLPass).buildDSN(ref).Password; got != "node-secret" {
+		t.Errorf("migration DSN password = %q", got)
+	}
+	if got := NewHealthService(cc).buildDSN(ref, cc.MySQLPass).Password; got != "node-secret" {
+		t.Errorf("health DSN password = %q", got)
+	}
+	if got := NewRouter(cc, cc.MySQLPass).buildDSN(ref, "config").Password; got != "node-secret" {
+		t.Errorf("router DSN password = %q", got)
+	}
+}
+
 func TestBuildClusterNodeInheritsDefaults(t *testing.T) {
 	path := writeConfigFile(t, `{
 		"mysql.host": "shared-host",

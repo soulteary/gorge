@@ -19,6 +19,7 @@ type DatabaseRef struct {
 	Host               string
 	Port               int
 	User               string
+	Password           string
 	IsMaster           bool
 	Disabled           bool
 	IsIndividual       bool
@@ -32,6 +33,16 @@ type DatabaseRef struct {
 	ReplicaStatus  ReplicaStatus
 	ReplicaMessage string
 	ReplicaDelay   *int
+}
+
+// passwordOr returns this node's credential when cluster.databases defines
+// one, otherwise the cluster-wide mysql.pass fallback. Password is deliberately
+// internal and is never projected by toContract.
+func (r *DatabaseRef) passwordOr(fallback string) string {
+	if r.Password != "" {
+		return r.Password
+	}
+	return fallback
 }
 
 // ConnectionStatus is the outcome of the connection half of a health probe.

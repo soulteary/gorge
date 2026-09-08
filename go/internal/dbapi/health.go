@@ -3,9 +3,12 @@ package dbapi
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
@@ -129,25 +132,24 @@ func (s *HealthService) buildDSN(ref *DatabaseRef, password string) DSN {
 		Host:            ref.Host,
 		Port:            ref.Port,
 		User:            ref.User,
-		Password:        password,
+		Password:        ref.passwordOr(password),
 		MaxRetries:      0,
 		ConnTimeoutSec:  2,
 		QueryTimeoutSec: 2,
 	}
 }
 
-// probeReplication runs SHOW REPLICA STATUS and classifies the result. A
-// permission error is StatusReplicationClient, not a failure: the node is up,
-// the probing user just cannot see replication. Anything else that fails the
-// query is StatusFail.
+// probeReplication prefers SHOW REPLICA STATUS, then retries with the legacy
+// spelling when the server reports a syntax error. MySQL added the newer form
+// in 8.0.22, while this service supports all MySQL 8 releases.
 func (s *HealthService) probeReplication(ctx context.Context, conn *Conn, ref *DatabaseRef, start time.Time) {
-	rows, err := conn.QueryContext(ctx, "SHOW REPLICA STATUS")
+	rows, statement, err := queryReplicationStatus(ctx, conn)
 	if err != nil {
 		msg := err.Error()
 		switch {
 		case isAccessDeniedMsg(msg):
 			ref.ConnectionStatus = StatusReplicationClient
-			ref.ConnectionMessage = "No permission to run SHOW REPLICA STATUS"
+			ref.ConnectionMessage = "No permission to run " + statement
 		case isAuthMsg(msg):
 			ref.ConnectionStatus = StatusAuth
 			ref.ConnectionMessage = msg
@@ -180,6 +182,23 @@ func (s *HealthService) probeReplication(ctx context.Context, conn *Conn, ref *D
 	if isReplica {
 		s.analyzeReplicaLag(rows, columns, ref)
 	}
+}
+
+func queryReplicationStatus(ctx context.Context, conn *Conn) (*sql.Rows, string, error) {
+	const replicaStatement = "SHOW REPLICA STATUS"
+	rows, err := conn.QueryContext(ctx, replicaStatement)
+	if err == nil || !isReplicaStatusSyntaxError(err) {
+		return rows, replicaStatement, err
+	}
+
+	const slaveStatement = "SHOW SLAVE STATUS"
+	rows, err = conn.QueryContext(ctx, slaveStatement)
+	return rows, slaveStatement, err
+}
+
+func isReplicaStatusSyntaxError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1064
 }
 
 // analyzeReplicaLag extracts Seconds_Behind_Master by column name — the column

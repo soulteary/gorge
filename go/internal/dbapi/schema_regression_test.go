@@ -86,3 +86,42 @@ func TestCharsetInfoFallsBackOnlyWhenUTF8MB4IsAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadActualSchemaPreservesDatabaseTableAndColumnProperties(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").
+		WillReturnRows(sqlmock.NewRows([]string{"SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME"}).
+			AddRow("phorge_config", "utf8mb4", "utf8mb4_bin"))
+	mock.ExpectQuery("INFORMATION_SCHEMA.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}).
+			AddRow("config_entry", "utf8mb4_unicode_ci", "InnoDB"))
+	mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
+			AddRow("configValue", "longtext", "YES", "utf8mb4", "utf8mb4_bin"))
+	mock.ExpectClose()
+
+	ref := &DatabaseRef{Host: "db1", Port: 3306}
+	svc := NewDiffService(&ClusterConfig{Refs: []*DatabaseRef{ref}, Namespace: "phorge"}, "secret")
+	svc.SetConnFactory(mockConnFactory(db))
+	tree, gotErr := svc.LoadActualSchema(context.Background(), ref)
+	if gotErr != nil {
+		t.Fatal(gotErr)
+	}
+	database := tree.Children[0]
+	if database.CharacterSet != "utf8mb4" || database.Collation != "utf8mb4_bin" {
+		t.Fatalf("database properties were lost: %+v", database)
+	}
+	table := database.Children[0]
+	if table.Engine != "InnoDB" || table.Collation != "utf8mb4_unicode_ci" {
+		t.Fatalf("table properties were lost: %+v", table)
+	}
+	column := table.Children[0]
+	if column.ColumnType != "longtext" || column.CharacterSet != "utf8mb4" ||
+		column.Collation != "utf8mb4_bin" || column.Nullable == nil || !*column.Nullable {
+		t.Fatalf("column properties were lost: %+v", column)
+	}
+}

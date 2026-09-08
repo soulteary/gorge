@@ -10,12 +10,23 @@
   },
   "expect": {
     "status": 200,
-    "jsonHas": ["data.0.refKey", "data.0.children.0.databaseName"],
+    "jsonHas": [
+      "data.0.refKey",
+      "data.0.children.0.databaseName",
+      "data.0.children.0.characterSet",
+      "data.0.children.0.children.0.engine",
+      "data.0.children.0.children.0.children.0.columnType",
+      "data.0.children.0.children.0.children.0.nullable"
+    ],
     "jsonEquals": {
       "data.0.refKey": "db1:3306",
       "data.0.status": "ok",
       "data.0.children.0.databaseName": "phorge_meta_data",
-      "data.0.children.0.children.0.tableName": "patch_status"
+      "data.0.children.0.characterSet": "utf8mb4",
+      "data.0.children.0.children.0.tableName": "patch_status",
+      "data.0.children.0.children.0.engine": "InnoDB",
+      "data.0.children.0.children.0.children.0.columnType": "varchar(255)",
+      "data.0.children.0.children.0.children.0.nullable": false
     },
     "jsonAbsent": ["error"]
   }

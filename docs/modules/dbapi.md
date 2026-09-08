@@ -65,7 +65,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 ### 3.1 单节点与集群两种配置，每次启动只用一种
 
-有两种描述集群的方式，每次启动恰好用一种：`GORGE_DB_MYSQL_*` 那组标量描述单个节点，而 `GORGE_DB_CONFIG_FILE` 指向的 Phorge 风格 local.json 通过它的 `cluster.databases` 描述完整拓扑。**文件存在时文件赢**——有 local.json 的部署跑的是真集群，标量只够描述其中一个节点。`BuildCluster` 解析文件失败时**回退到单节点**而不是启动失败：一份坏文件降级成「一台服务器」，真实状态随后由健康探针报出来，比直接拒绝启动更符合本域「如实报告」的职责。
+有两种描述集群的方式，每次启动恰好用一种：`GORGE_DB_MYSQL_*` 那组标量描述单个节点，而 `GORGE_DB_CONFIG_FILE` 指向的 Phorge 风格 local.json 通过它的 `cluster.databases` 描述完整拓扑。**文件存在时文件赢**——有 local.json 的部署跑的是真集群，标量只够描述其中一个节点。每个 `cluster.databases` 节点自己的 `pass` 优先于全局 `mysql.pass`，没有节点密码时才回落到全局值；所有探针和 Router 都遵守同一优先级。`BuildCluster` 解析文件失败时**回退到单节点**而不是启动失败：一份坏文件降级成「一台服务器」，真实状态随后由健康探针报出来，比直接拒绝启动更符合本域「如实报告」的职责。
 
 ### 3.2 应用分区路由与只读降级，原样保留自 Phorge
 
@@ -75,7 +75,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 ### 3.3 健康探测：连接一半 + 复制一半，且区分「没权限」与「坏了」
 
-`probeRef` 用一个 2 秒超时、**不重试**的短连接探一台节点——健康检查要报「此刻」的状态，而不是等一个重试循环跑完。连接或 ping 失败即 `connectionStatus = fail`、原因进 `connectionMessage`。连得上就跑 `SHOW REPLICA STATUS` 探复制。
+`probeRef` 用一个 2 秒超时、**不重试**的短连接探一台节点——健康检查要报「此刻」的状态，而不是等一个重试循环跑完。连接或 ping 失败即 `connectionStatus = fail`、原因进 `connectionMessage`。连得上就优先跑 `SHOW REPLICA STATUS` 探复制；MySQL 8.0.0–8.0.21 对这个新拼法返回 1064 时，回落到兼容的 `SHOW SLAVE STATUS`。
 
 这里有一处判据值得单记，它也是 `connectionStatus` 有 `replication-client` 这个取值的理由：**「探测用户没有权限跑 `SHOW REPLICA STATUS`」不是一次失败，是一个独立状态**。节点答了话、只是这个用户看不到复制信息——这是一个去授权（GRANT）能解决的问题，不是一台要修的服务器。所以它被分类成 `replication-client` 而不是 `fail`。同理 `1045` 一族被分成 `auth`。复制延迟从 `SHOW REPLICA STATUS` 里**按列名**取 `Seconds_Behind_Master`（这张结果集的列会随 MySQL 版本变，按位置取会错位），`>30` 秒标为 `replica-slow`。
 

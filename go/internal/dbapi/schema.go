@@ -29,7 +29,7 @@ func (s *DiffService) buildDSN(ref *DatabaseRef) DSN {
 		Host:            ref.Host,
 		Port:            ref.Port,
 		User:            ref.User,
-		Password:        s.password,
+		Password:        ref.passwordOr(s.password),
 		ConnTimeoutSec:  2,
 		QueryTimeoutSec: 30,
 	}
@@ -70,24 +70,32 @@ func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *Dat
 	}
 	defer func() { _ = rows.Close() }()
 
-	var databases []string
+	type databaseInfo struct {
+		name      string
+		charset   string
+		collation string
+	}
+	var databases []databaseInfo
 	for rows.Next() {
 		var name, charset, collation string
 		if err := rows.Scan(&name, &charset, &collation); err != nil {
 			continue
 		}
-		databases = append(databases, name)
+		databases = append(databases, databaseInfo{name: name, charset: charset, collation: collation})
 	}
 
-	for _, dbName := range databases {
-		dbNode, err := s.loadDatabaseSchema(ctx, conn, ref.RefKey(), dbName)
+	for _, database := range databases {
+		dbNode, err := s.loadDatabaseSchema(ctx, conn, ref.RefKey(), database.name)
 		if err != nil {
 			dbNode = &contracts.SchemaNode{
 				RefKey:   ref.RefKey(),
-				Database: dbName,
+				Database: database.name,
 				Status:   "fail",
 				Issues:   []string{err.Error()},
 			}
+		} else {
+			dbNode.CharacterSet = database.charset
+			dbNode.Collation = database.collation
 		}
 		server.Children = append(server.Children, dbNode)
 	}
@@ -106,34 +114,44 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 	}
 	defer func() { _ = rows.Close() }()
 
-	var tables []string
+	type tableInfo struct {
+		name      string
+		collation string
+		engine    string
+	}
+	var tables []tableInfo
 	for rows.Next() {
 		var tableName, collation, engine string
 		if err := rows.Scan(&tableName, &collation, &engine); err != nil {
 			continue
 		}
-		tables = append(tables, tableName)
+		tables = append(tables, tableInfo{name: tableName, collation: collation, engine: engine})
 	}
 
-	for _, tableName := range tables {
-		tableNode := &contracts.SchemaNode{RefKey: refKey, Database: dbName, Table: tableName, Status: "ok"}
+	for _, table := range tables {
+		tableNode := &contracts.SchemaNode{
+			RefKey: refKey, Database: dbName, Table: table.name,
+			Collation: table.collation, Engine: table.engine, Status: "ok",
+		}
 		colRows, err := conn.QueryContext(ctx,
 			"SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, CHARACTER_SET_NAME, COLLATION_NAME "+
 				"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
-			dbName, tableName)
-		if err == nil {
+			dbName, table.name)
+		if err != nil {
+			tableNode.Status = "fail"
+			tableNode.Issues = []string{classifyMySQLError(err).Error()}
+		} else {
 			for colRows.Next() {
 				var colName, colType, nullable string
-				var charset, colCollation *string
+				var charset, colCollation sql.NullString
 				if err := colRows.Scan(&colName, &colType, &nullable, &charset, &colCollation); err != nil {
 					continue
 				}
+				isNullable := nullable == "YES"
 				tableNode.Children = append(tableNode.Children, &contracts.SchemaNode{
-					RefKey:   refKey,
-					Database: dbName,
-					Table:    tableName,
-					Column:   colName,
-					Status:   "ok",
+					RefKey: refKey, Database: dbName, Table: table.name, Column: colName,
+					CharacterSet: charset.String, Collation: colCollation.String,
+					ColumnType: colType, Nullable: &isNullable, Status: "ok",
 				})
 			}
 			_ = colRows.Close()

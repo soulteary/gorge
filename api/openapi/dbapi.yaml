@@ -399,6 +399,21 @@ components:
           type: string
         key:
           type: string
+        characterSet:
+          type: string
+          description: Actual database or column character set reported by INFORMATION_SCHEMA.
+        collation:
+          type: string
+          description: Actual database, table, or column collation reported by INFORMATION_SCHEMA.
+        engine:
+          type: string
+          description: Actual table storage engine reported by INFORMATION_SCHEMA.
+        columnType:
+          type: string
+          description: Complete actual column type, such as `varchar(255)` or `bigint unsigned`.
+        nullable:
+          type: boolean
+          description: Whether the actual column accepts NULL; present on column nodes.
         expected:
           type: string
         actual:

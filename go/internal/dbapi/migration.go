@@ -26,7 +26,7 @@ func (m *MigrationService) buildDSN(ref *DatabaseRef) DSN {
 		Host:            ref.Host,
 		Port:            ref.Port,
 		User:            ref.User,
-		Password:        m.password,
+		Password:        ref.passwordOr(m.password),
 		Database:        m.config.DatabaseName("meta_data"),
 		ConnTimeoutSec:  2,
 		QueryTimeoutSec: 10,
