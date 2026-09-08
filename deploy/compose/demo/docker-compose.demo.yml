@@ -59,7 +59,9 @@ services:
     restart: unless-stopped
     environment:
       discovery.type: single-node
-      # demo 关掉安全，省掉证书与密码；ES_VERSION=7 走 gorge-search 的 >=5 分支。
+      # demo 关掉安全，省掉证书与密码。下面 gorge-search 那份后端 JSON 里的
+      # "version":7 必须与这里的镜像主版本对上：ES 7 没有 mapping type，填 5 会让
+      # 建索引直接被拒。
       xpack.security.enabled: "false"
       # 单节点小内存，跑得动就行。
       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
@@ -103,9 +105,20 @@ services:
   # ---------------------------------------------------------------------------
   # 后端四：soulteary/webhook —— webhook 接收端，gorge-webhook 的投递目标
   #   收到 POST 后执行一条 hook（这里只打印 payload），/health 用作探针。
+  #
+  # 标签必须是 extend 变体，不能用 latest。latest 是 scratch 镜像，里面只有
+  # /usr/bin/webhook 一个文件，而本服务需要另外两样东西，两样都不在里面：
+  #   - 下面 healthcheck 的 wget（缺了它探针必然 exit 1，容器永远 unhealthy，
+  #     而 gorge-webhook 用 service_healthy 等它，于是整个 up 卡在依赖上——
+  #     偏偏 /health 本身是好的，从宿主 curl 得 200，所以这个故障看起来像
+  #     「接收端坏了」，其实是探针自己跑不起来）。
+  #   - hooks/hooks.json 里 execute-command 的 /bin/sh（缺了它投递会真的到达、
+  #     hook 也会 matched，但 exec 失败让接收端答 500，gorge-webhook 因此把
+  #     一次成功的投递记成失败）。
+  # extend 变体是同一个版本、同一个 entrypoint，只是多了 shell 与 curl/wget。
   # ---------------------------------------------------------------------------
   webhook-receiver:
-    image: ghcr.io/soulteary/webhook:latest
+    image: ghcr.io/soulteary/webhook:${WEBHOOK_RECEIVER_TAG:-extend-7.3.0}
     restart: unless-stopped
     command: ["-verbose", "-hooks", "/etc/webhook/hooks.json", "-hotreload"]
     volumes:

@@ -280,6 +280,75 @@ func TestBuildFiltersExclude(t *testing.T) {
 	}
 }
 
+// Every attribute buildFilters can name has to be declared filterable, or
+// Meilisearch answers the query with a 400 instead of filtering it.
+//
+// This is deliberately written as a relation between the two functions rather
+// than as a list of expected attributes. Restating the list would be tested
+// against the same understanding that produced it — which is how `id` came to
+// be missing while both TestBuildFiltersExclude and TestIndexIsSane passed:
+// the first only reads the rendered filter string, and the second compares
+// filterableAttributes() against itself.
+func TestEveryFilterableAttributeIsDeclared(t *testing.T) {
+	b := newBackend(engine.BackendDef{Hosts: []string{"meili:7700"}})
+
+	declared := make(map[string]bool)
+	for _, attr := range b.filterableAttributes() {
+		declared[attr] = true
+	}
+
+	// Two queries, because the open and closed status filters are mutually
+	// exclusive branches and one query can only reach one of them.
+	queries := []*contracts.SearchQuery{
+		{
+			Types:           []string{"TASK", "DREV"},
+			Exclude:         "PHID-TASK-9",
+			AuthorPHIDs:     []string{"PHID-USER-1"},
+			SubscriberPHIDs: []string{"PHID-USER-2"},
+			ProjectPHIDs:    []string{"PHID-PROJ-1"},
+			RepositoryPHIDs: []string{"PHID-REPO-1"},
+			Statuses:        []string{esquery.RelOpen},
+			WithUnowned:     true,
+		},
+		{Statuses: []string{esquery.RelClosed}},
+	}
+
+	// The attribute is the first token of a rendered filter, whether the
+	// operator is "=", "!=" or "EXISTS".
+	attrOf := func(filter string) string {
+		return strings.Fields(filter)[0]
+	}
+
+	seen := 0
+	for _, q := range queries {
+		for _, filter := range b.buildFilters(q) {
+			// A filter is either one expression or an OR-group of them.
+			var exprs []string
+			switch f := filter.(type) {
+			case string:
+				exprs = []string{f}
+			case []string:
+				exprs = f
+			default:
+				t.Fatalf("unexpected filter type %T: %v", filter, filter)
+			}
+			for _, expr := range exprs {
+				attr := attrOf(expr)
+				seen++
+				if !declared[attr] {
+					t.Errorf("filter %q uses attribute %q, which filterableAttributes() does not declare", expr, attr)
+				}
+			}
+		}
+	}
+
+	// Guards the guard: a buildFilters that stopped rendering anything would
+	// otherwise make this test vacuously pass.
+	if seen == 0 {
+		t.Fatal("no filters were rendered, so nothing was checked")
+	}
+}
+
 // The relationship map is rendered in sorted key order so one query always
 // renders to the same filter list.
 func TestBuildFiltersRelationships(t *testing.T) {
