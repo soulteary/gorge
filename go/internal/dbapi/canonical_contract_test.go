@@ -38,8 +38,8 @@ const canonicalDir = "../../../tests/contract/dbapi/canonical"
 // a database/table/column/index chain with charset, collation, engine, type,
 // nullability, auto_increment and a composite prefixed unique key in
 // schema-diff; a fatal and a non-fatal issue in setup-issues; a real utf8mb4
-// set in charset-info; and an initialized master with applied patches and a
-// state digest in migrations-status.
+// set in charset-info; and an initialized master with applied patches, a
+// present cluster state and its digest in migrations-status.
 func canonicalCases() []struct {
 	file  string
 	value any
@@ -111,8 +111,9 @@ func canonicalCases() []struct {
 
 	migrations := []contracts.MigrationStatus{{
 		RefKey: "db1:3306", Initialized: true,
-		AppliedPatches:     []string{"phabricator:0001.legacy.sql", "phabricator:daemonstatus.sql"},
-		ClusterStateDigest: "b0f3c2b0a1d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e",
+		AppliedPatches:      []string{"phabricator:0001.legacy.sql", "phabricator:daemonstatus.sql"},
+		ClusterStatePresent: true,
+		ClusterStateDigest:  "b0f3c2b0a1d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e",
 	}}
 
 	return []struct {

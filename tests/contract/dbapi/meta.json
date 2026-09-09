@@ -12,7 +12,7 @@
     "status": 200,
     "jsonHas": ["data.contractVersion", "data.capabilities.0"],
     "jsonEquals": {
-      "data.contractVersion": "1.0",
+      "data.contractVersion": "1.1",
       "data.namespace": "phorge",
       "data.topologySource": "file"
     },

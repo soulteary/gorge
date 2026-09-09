@@ -10,7 +10,7 @@ package contracts
 // the current PHP adapter can not read; bump the minor for additive changes a
 // current consumer can ignore. It is a string so it can carry the
 // "major.minor" form without a second field.
-const ContractVersion = "1.0"
+const ContractVersion = "1.1"
 
 // Capabilities is the body of GET /api/db/meta: the small, cheap-to-serve
 // description the PHP consumer reads before it routes the database console
@@ -216,17 +216,31 @@ type CharsetInfo struct {
 // missing set. Phorge holds the canonical list (PhabricatorSQLPatchList) and
 // diffs it against AppliedPatches on the PHP side.
 //
-// ClusterStateDigest is the SHA-256 of the raw `cluster.databases` state this
-// master carries in its hoststate table, or empty when that row is absent. The
-// raw state is never returned — it names hosts — but the digest lets Phorge
-// detect that two masters disagree on the committed cluster configuration
-// (db.state.desync) without the service holding the topology.
+// ClusterStatePresent and ClusterStateDigest describe the raw
+// `cluster.databases` state this master carries in its hoststate table, kept as
+// two fields so "absent" and "present but empty/invalid" are never conflated:
+//
+//   - ClusterStatePresent is true when a `cluster.databases` hoststate row
+//     exists on this master, regardless of that row's value. It is false only
+//     when the row is genuinely absent. A query that fails is never faked as
+//     absent — the whole status errors out instead — so present=false is a
+//     real observation Phorge can act on.
+//   - ClusterStateDigest is the SHA-256 of the raw stateValue bytes for that
+//     row (over empty bytes when the value is SQL NULL, since a NULL row is
+//     present-but-invalid, not consistent). It is omitted (empty) when the row
+//     is absent, i.e. when ClusterStatePresent is false.
+//
+// The raw state is never returned — it names hosts — but the digest plus the
+// presence flag let Phorge detect that two masters disagree on the committed
+// cluster configuration (db.state.desync), including the case where one master
+// carries no committed state at all, without the service holding the topology.
 //
 // Only masters are reported: a replica's patch_status arrives through
 // replication, not through a migration of its own.
 type MigrationStatus struct {
-	RefKey             string   `json:"refKey"`
-	Initialized        bool     `json:"initialized"`
-	AppliedPatches     []string `json:"appliedPatches"`
-	ClusterStateDigest string   `json:"clusterStateDigest,omitempty"`
+	RefKey              string   `json:"refKey"`
+	Initialized         bool     `json:"initialized"`
+	AppliedPatches      []string `json:"appliedPatches"`
+	ClusterStatePresent bool     `json:"clusterStatePresent"`
+	ClusterStateDigest  string   `json:"clusterStateDigest,omitempty"`
 }

@@ -41,7 +41,7 @@ info:
     or fix the infrastructure), `ERR_READONLY` (409, direct the write at a
     reachable master) and `ERR_DB_ACCESS_DENIED` (403, add a GRANT). They are
     the analogue of file-storage's `ERR_NO_ENGINE`.
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -616,15 +616,26 @@ components:
             (`PhabricatorSQLPatchList`) and diffs it against this array.
           items:
             type: string
+        clusterStatePresent:
+          type: boolean
+          description: |
+            True when a `cluster.databases` row exists in this master's
+            `hoststate` table, regardless of that row's value; false only when
+            the row is genuinely absent. A query that fails is never faked as
+            absent — the endpoint errors instead — so `false` is a real
+            observation (a master carrying no committed cluster state) Phorge
+            can act on. When false, `clusterStateDigest` is omitted.
         clusterStateDigest:
           type: string
           description: |
             The SHA-256 of the raw `cluster.databases` state this master holds
-            in its `hoststate` table, or absent when that row is missing. The
-            raw state names hosts and is never returned; the digest lets Phorge
-            detect that two masters disagree on the committed topology
-            (`db.state.desync`) by comparing it against its own local state's
-            digest.
+            in its `hoststate` table (over empty bytes when the stored value is
+            SQL NULL, which is present-but-invalid, not consistent), or absent
+            when the row is missing (`clusterStatePresent` false). The raw
+            state names hosts and is never returned; the digest plus the
+            presence flag let Phorge detect that two masters disagree on the
+            committed topology (`db.state.desync`) by comparing it against its
+            own local state's digest.
 
     Capabilities:
       type: object
@@ -638,7 +649,7 @@ components:
             refuses to switch over on a major it does not understand. Bump the
             major when a field is removed or its type/meaning changes; bump the
             minor for additive changes a current consumer can ignore.
-          example: "1.0"
+          example: "1.1"
         namespace:
           type: string
           description: |

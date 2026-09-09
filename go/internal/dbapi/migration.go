@@ -3,7 +3,9 @@ package dbapi
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
@@ -104,13 +106,37 @@ func (m *MigrationService) checkRef(ctx context.Context, ref *DatabaseRef) (cont
 	// hoststate carries the raw cluster.databases state Phorge commits between
 	// masters. The raw value names hosts, so it is never returned; its SHA-256
 	// digest is, which lets Phorge detect that two masters disagree on the
-	// committed topology (db.state.desync) without this service holding it. A
-	// missing row leaves the digest empty.
+	// committed topology (db.state.desync) without this service holding it.
+	//
+	// Presence and digest are reported separately so "no committed state" and
+	// "committed state present" are never conflated. A query failure is not
+	// faked as absent: any error other than ErrNoRows is returned so an
+	// unreadable hoststate is not reported as a master with no committed state.
 	var stateValue *string
-	_ = conn.QueryRowContext(ctx,
+	err = conn.QueryRowContext(ctx,
 		"SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'").Scan(&stateValue)
-	if stateValue != nil {
-		sum := sha256.Sum256([]byte(*stateValue))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// The row is genuinely absent: present=false, digest empty. This is a
+		// real observation (a master carrying no committed cluster state), not
+		// an error, so the status is returned successfully.
+		st.ClusterStatePresent = false
+	case err != nil:
+		// Access denied / connection reset / any other query failure must not
+		// be masked as "absent"; classify and return it (preserves
+		// ERR_DB_ACCESS_DENIED / ERR_DB_UNREACHABLE / ERR_INTERNAL).
+		return st, classifyMySQLError(err)
+	default:
+		// The row exists. present=true regardless of the row's value. A SQL
+		// NULL stateValue is a present-but-invalid state, not a consistent one,
+		// so it is digested as empty bytes rather than skipped — Phorge must be
+		// able to tell it apart from a real committed state.
+		st.ClusterStatePresent = true
+		var raw []byte
+		if stateValue != nil {
+			raw = []byte(*stateValue)
+		}
+		sum := sha256.Sum256(raw)
 		st.ClusterStateDigest = hex.EncodeToString(sum[:])
 	}
 

@@ -515,11 +515,13 @@ services:
   #
   # The healthcheck probes /healthz rather than /readyz, and its dependency on
   # MySQL must be `service_started`, never `service_healthy`. Both follow the
-  # same reasoning file-storage and webhook document: the DSN the readiness
-  # probe would dial names `{namespace}_meta_data`, a database created by
-  # `bin/storage upgrade` inside the Phorge container — which is ordered after
-  # this service. A `service_healthy` gate (or a /readyz healthcheck) would
-  # therefore deadlock first boot. This compose file declares no MySQL and no
+  # same reasoning file-storage and webhook document: /readyz only pings a
+  # master with a DSN that names NO database, so it comes up before Phorge's
+  # `{namespace}_meta_data` — created by `bin/storage upgrade` inside the
+  # Phorge container, which is ordered after this service — exists. Even so, a
+  # `service_healthy` gate (or a /readyz healthcheck) tracks database
+  # reachability rather than process liveness and can keep this container
+  # "unhealthy" while MySQL is still starting, so it is avoided here. This compose file declares no MySQL and no
   # Phorge, so there is no depends_on to write here; the ordering constraint
   # lives in the phorge-fork orchestration. See docs/modules/dbapi.md section 3
   # and compat/phorge/README.md section 8.7.
