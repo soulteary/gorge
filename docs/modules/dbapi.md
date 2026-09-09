@@ -25,14 +25,14 @@
 
 **不负责**：**改动集群**。它不建库、不建表、不改 schema、不跑迁移——所有这些都是 Phorge 的 `bin/storage upgrade` 的事，本服务只观察。它也不做连接池以外的**缓存**：每次请求都现查，因为一份「五分钟前的健康报告」在这个域里几乎没有价值。它更不是 Phorge 数据的读写代理——它不碰业务表，只碰 `INFORMATION_SCHEMA`、`SHOW *`、`patch_status` 与 `hoststate` 这类元信息。
 
-**Router 里有写入路径，但七条路由都不用它。** `Router.GetWriter` / `GetReader` 与只读降级是从独立服务原样搬来的域逻辑（Phorge 的 `PhabricatorLiskDAO` 集群连接选择），保留是为了忠实复现 Phorge 的路由与降级语义、也为后续可能的写路径留着接口；但当前七个 handler 全是只读探测，走的是各 service 自己开的短连接，不经过 Router 的写入分支。所以 `ERR_READONLY`（见第 6 节）目前是一条**定义了但七条路由都到不了**的码——它随 Router 一起保留，理由与它的语义都在那一节。
+**写入路径抽象已迁出到 `internal/dbproxy`，七条路由本就不用它。** `Router.GetWriter` / `GetReader` 与只读降级、`TxManager` 的 savepoint 嵌套事务、写/连接重试，是从独立服务原样搬来的域逻辑（Phorge 的 `PhabricatorLiskDAO` 集群连接选择、`AphrontDatabaseConnection` 的 savepoint），但当前七个 handler 全是只读探测，走各 service 自己开的短连接，不经过它们。审计确认这些符号无任何 handler / 后台任务调用，故迁到独立内部包 `go/internal/dbproxy/`（迁移而非删除，保留为未来写端点的地基），owner 与未来入口见 [`../adr/0001-isolate-db-proxy.md`](../adr/0001-isolate-db-proxy.md)。**留在 `dbapi` 的是仍在只读路径上的部分**：共享 `Conn` 的只读双层拦截（`QueryContext`/`ExecContext` 守卫）、`isReadQuery`、`classifyMySQLError` 错误分类，以及 `ERR_READONLY`（见第 6 节）——后者绑定的是共享只读连接的写拒绝语义，是「定义了但七条路由到不了」的码，随只读守卫留在本包。
 
 ## 2. 路由与依赖
 
 ```go
 func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g := app.Group("/api/db")
-	g.Use(auth.Token(deps.Token))
+	g.Use(auth.Token(deps.Token, auth.WithQueryToken(false)))
 
 	g.Get("/servers", listServers(deps))
 	g.Get("/servers/:ref/health", serverHealth(deps))
@@ -41,6 +41,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g.Get("/setup-issues", setupIssues(deps))
 	g.Get("/charset-info", charsetInfo(deps))
 	g.Get("/migrations/status", migrationStatus(deps))
+	g.Get("/meta", meta(deps))
 }
 ```
 
@@ -53,27 +54,34 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 | GET | `/api/db/setup-issues` | 需要 | 信封，`SetupIssue[]` |
 | GET | `/api/db/charset-info` | 需要 | 信封，`CharsetInfo[]`（每台一条） |
 | GET | `/api/db/migrations/status` | 需要 | 信封，`MigrationStatus[]`（`meta_data` master 一条） |
+| GET | `/api/db/meta` | 需要 | 信封，`Capabilities`（`contractVersion`/`namespace`/`topologySource`/能力列表；不查库、不会因集群失败） |
 | GET | `/`、`/healthz`、`/readyz` | 不需要（平台层注册） | 裸 `{"status":"ok"}` |
 
 **路径按域命名而非按二进制命名**（理由同 render / file-storage）：`PhabricatorGorgeDBClient` 按字面调这七条，改路径要同步改 PHP。`:ref` 是 `host:port` 形式的 refKey，与 Phorge 自己的 `PhabricatorDatabaseRef` key 相同，所以两侧指的是同一台服务器。
 
-`Deps` 里是四个 service（`Health` / `Schema` / `Setup` / `Migration`）、一个 `Router`（只为退出时关连接池而在此持有）、集群配置 `Cluster`、探测用的 `Password` 与鉴权 `Token`。**`NewDeps` 不开任何连接**：和 file-storage / taskqueue 一样，连接池是惰性的，所以进程能在 MySQL 起来之前就启动。
+`Deps` 里是四个 service（`Health` / `Schema` / `Setup` / `Migration`）、集群配置 `Cluster`、探测用的 `Password`、鉴权 `Token` 与 `TopologySource`。**不再持有 `Router`**：写入路径抽象已迁到 `internal/dbproxy`（见第 1 节与 [ADR 0001](../adr/0001-isolate-db-proxy.md)），而每条答复都是请求作用域内开合的短连接，没有长期连接池。**`NewDeps` 不开任何连接**：和 file-storage / taskqueue 一样，连接池是惰性的，所以进程能在 MySQL 起来之前就启动。`TopologySource` 是 `file` 或 `single-node`，由 `main.go` 按是否设置 `GORGE_DB_CONFIG_FILE` 判定，供 `/api/db/meta` 上报。
 
-`main.go` 与 file-storage 同形：`httpx.New(httpx.Config{Ready: deps.Ready})`，退出时**显式** `deps.Close()`（关 Router 的连接池）而不用 `defer`——失败分支要 `os.Exit`，那会跳过 `defer`。
+**本域的鉴权比其他域更紧：token 只认 `X-Service-Token` header，不认 `?token=` query。** 共享中间件 `auth.Token` 默认仍接受 query fallback（其他域的 runbook curl 依赖它），本域显式传 `auth.WithQueryToken(false)` 关掉它——URL 里的 token 会进访问日志、浏览器历史与 Referer，而 `/api/db/**` 不会被浏览器链接到，query fallback 在这里是纯风险。带对 token 但只放在 query 上的请求会和「没带 token」一样被 401 拒绝（contract fixture `token-via-query-param.json` 锁这条）。
+
+**`/api/db/meta` 是切流前的握手。** PHP 消费端在把数据库控制台切给本服务之前先读它：`contractVersion`（`major.minor`，消费端只在自己看得懂的 major 上切流）、`namespace`（必须等于 Phorge 的 `storage.default-namespace`）、`topologySource`、以及本 build 提供的能力列表。契约版本或 namespace 不兼容时，PHP 显式报 setup issue 并继续走原生 SQL，而不是去读可能已经改名/改义的字段。这个端点不查库、不带主机/凭据信息，是唯一不会因集群故障而失败的 `/api/db` 路由。`ContractVersion` 常量与 `Capabilities` 结构在 [`../../go/internal/contracts/dbapi.go`](../../go/internal/contracts/dbapi.go)。
+
+`main.go` 与 file-storage 同形：`httpx.New(httpx.Config{Ready: deps.Ready})`，退出时**显式** `deps.Close()` 而不用 `defer`——失败分支要 `os.Exit`，那会跳过 `defer`。`Close()` 当前是有文档的 no-op（返回 nil）：没有长期池要释放，保留它是为了让关停契约稳定、将来有真正的池时有显而易见的释放点。
 
 ## 3. 核心实现
 
 ### 3.1 单节点与集群两种配置，每次启动只用一种
 
-有两种描述集群的方式，每次启动恰好用一种：`GORGE_DB_MYSQL_*` 那组标量描述单个节点，而 `GORGE_DB_CONFIG_FILE` 指向的 Phorge 风格 local.json 通过它的 `cluster.databases` 描述完整拓扑。**文件存在时文件赢**——有 local.json 的部署跑的是真集群，标量只够描述其中一个节点。节点角色和分区以 Phorge 当前的 `role` 字符串与 `partition` 字符串列表为标准；为兼容旧版或分支配置，解析器也接受 `roles` 布尔对象和标量 `partition`，进入拓扑前统一归一化。每个节点自己的 `pass` 优先于全局 `mysql.pass`，没有节点密码时才回落到全局值；所有探针和 Router 都遵守同一优先级。`BuildCluster` 解析文件失败时**回退到单节点**而不是启动失败：一份坏文件降级成「一台服务器」，真实状态随后由健康探针报出来，比直接拒绝启动更符合本域「如实报告」的职责。
+有两种描述集群的方式，每次启动恰好用一种：`GORGE_DB_MYSQL_*` 那组标量描述单个节点，而 `GORGE_DB_CONFIG_FILE` 指向的 Phorge 风格 local.json 通过它的 `cluster.databases` 描述完整拓扑。**文件存在时文件赢**——有 local.json 的部署跑的是真集群，标量只够描述其中一个节点。节点角色和分区以 Phorge 当前的 `role` 字符串与 `partition` 字符串列表为标准；为兼容旧版或分支配置，解析器也接受 `roles` 布尔对象和标量 `partition`，进入拓扑前统一归一化。每个节点自己的 `pass` 优先于全局 `mysql.pass`，没有节点密码时才回落到全局值；所有探针和 Router 都遵守同一优先级。
 
-### 3.2 应用分区路由与只读降级，原样保留自 Phorge
+**两条路径的失败方式刻意不同。** 标量单节点路径是默认部署，永远成功：一个主机名就够，主机连不上是「就绪」问题而非「启动」问题。但当 `GORGE_DB_CONFIG_FILE` 显式指向一个文件时，操作者是在描述一套真集群，于是这份描述的每一种失败——文件缺失、JSON 非法、字段类型错、能解析但没有任何可用 master——都是操作者**必须看见**的配置错误，而不是可以悄悄兜底的东西。此时把它降级成用标量兜底拼出来的单节点，会把所有应用路由到一台主机、在每份报告里藏掉 replica，还一路显示健康。所以文件路径**fail closed**：`BuildCluster` 返回配置错误，`main.go` 停止启动（错误消息只带操作者提供的文件路径，不含主机、库名或凭据）。标量单节点兜底只在该变量**未设置**时才可达。
 
-`Router` 镜像 Phorge 的 `PhabricatorLiskDAO` 集群连接选择：按 Phorge 应用（`meta_data` / `worker` / …）选 master 或 replica，优先选显式绑定到该应用的节点、否则回落到默认分区的节点，并按 `(节点, 应用, 只读)` 三元组缓存连接。
+### 3.2 应用分区路由与只读降级，已迁出到 `internal/dbproxy`
 
-**只读降级是 Phorge 自己就有的行为**：`GetReader` 连不上 master 时把 router 翻成只读、改从 replica 读，于是后续的写会被 `GetWriter` 拒成 `ERR_READONLY`，而不是被发去一个可能陈旧的 replica。这段逻辑连同它对应的错误码一起保留，但如第 1 节所述，当前七条只读路由都不经过 Router 的写入分支。
+`dbproxy.Router` 镜像 Phorge 的 `PhabricatorLiskDAO` 集群连接选择：按 Phorge 应用（`meta_data` / `worker` / …）选 master 或 replica，优先选显式绑定到该应用的节点、否则回落到默认分区的节点，并按 `(节点, 应用, 只读)` 三元组缓存连接。`dbproxy.TxManager` 实现 Phorge `AphrontDatabaseConnection` 的 savepoint 嵌套事务（命名 `Aphront_Savepoint_%d` 逐字一致）。
 
-schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性，Phorge PHP 侧用自己的 `PhabricatorConfigSchemaSpec`（应用代码的唯一规范来源）构造预期 schema 并比较；`/schema-issues` 另外做集群内一致性检查，把每个应用分区的 replica 与该分区路由到的 master 比较。库字符集/排序规则、表引擎/排序规则、列字符集/排序规则/完整类型/nullability，以及缺失或多余的表列，都会生成带 `issueKey`、`expected`、`actual` 的记录。这样 Go 不复制一份会随 Phorge 应用代码漂移的 SchemaSpec，同时 replica 的 schema 漂移也不会被空列表掩盖。
+**只读降级是 Phorge 自己就有的行为**：`GetReader` 连不上 master 时把 router 翻成只读、改从 replica 读，于是后续的写会被 `GetWriter` 拒成 `ERR_READONLY`，而不是被发去一个可能陈旧的 replica。这段逻辑连同 `TxManager`、写/连接重试一起迁到了 `internal/dbproxy`——当前七条只读路由都不驱动它，各 service 走自己的短连接（见第 1 节与 [ADR 0001](../adr/0001-isolate-db-proxy.md)）。共享 `Conn` 的只读守卫与 `ERR_READONLY` 码本身留在 `dbapi`。
+
+schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性——库字符集/排序规则、表引擎/排序规则、列字符集/排序规则/完整类型/nullability/auto_increment，以及每张表的索引（`keys`：名称、按 `SEQ_IN_INDEX` 排序并保留 `Sub_part` 前缀的列名、唯一性、索引类型）——Phorge PHP 侧用自己的 `PhabricatorConfigSchemaSpec`（应用代码的唯一规范来源）构造预期 schema 并逐字段比较。每库的 `COLUMNS` 与 `STATISTICS` 各只查一次再在内存里按表分组，避免每表一查的 N+1。`/schema-diff` 还接受可选的 `databases` 查询参数（逗号分隔、限量限长的期望库名）：存在但当前用户无权查看的库会回一个 `accessDenied: true` 的库节点，因为仅凭可见集无法把「受限」与「缺失」区分开——缺失留给 Phorge 自己的期望-实际比较。`/schema-issues` 另外做集群内一致性检查，把每个应用分区的 replica 与该分区路由到的 master 比较（字符集/排序规则/引擎/列类型/nullability/auto_increment 差异，及缺失或多余的表列），都会生成带 `issueKey`、`expected`、`actual` 的记录。这样 Go 不复制一份会随 Phorge 应用代码漂移的 SchemaSpec，同时 replica 的 schema 漂移也不会被空列表掩盖。
 
 ### 3.3 健康探测：连接一半 + 复制一半，且区分「没权限」与「坏了」
 
@@ -81,11 +89,11 @@ schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性，P
 
 这里有一处判据值得单记，它也是 `connectionStatus` 有 `replication-client` 这个取值的理由：**「探测用户没有权限跑 `SHOW REPLICA STATUS`」不是一次失败，是一个独立状态**。节点答了话、只是这个用户看不到复制信息——这是一个去授权（GRANT）能解决的问题，不是一台要修的服务器。所以它被分类成 `replication-client` 而不是 `fail`。同理 `1045` 一族被分成 `auth`。复制延迟从结果里**按列名**取：MySQL 8.0.26+ 的 `Seconds_Behind_Source` 或旧版的 `Seconds_Behind_Master`（结果列会随版本变，按位置取会错位），`>30` 秒标为 `replica-slow`；同时检查新版 `Replica_IO_Running` / `Replica_SQL_Running` 与旧版 `Slave_IO_Running` / `Slave_SQL_Running`，任一线程停止都标为 `not-replicating`，即使 lag 恰好还是 0；结果集在 `Columns` / `Next` / `Scan` 阶段中断则整次探测标为 `fail`，不会把不完整结果写成 `okay`。
 
-### 3.4 迁移状态读 `patch_status`，另读一次 `hoststate` 并丢弃
+### 3.4 迁移状态读 `patch_status`，并用 `hoststate` 的摘要暴露集群状态
 
-`MigrationService.Status` 先按分区路由选出承载 `meta_data` 的 enabled master，`checkRef` 再连接它的 `{namespace}_meta_data` 库读 `SELECT patch FROM patch_status`；其它应用的专属 master 不应有这个库，也不会被误报成未初始化。**建连或 Ping 失败时 `initialized` 留 `false`，这是如实报告而不是错误**：`{namespace}_meta_data` 库还不存在，正是 `bin/storage upgrade` 跑之前的状态，调用方读到「未初始化」就对了。但 Ping 已成功后，读取 `patch_status` 失败会按域错误显式返回（权限不足为 403、连接中断为 503），不能伪装成 `initialized:true` 且 patch 列表为空。
+`MigrationService.Status` 遍历所有承载 `meta_data` 分区的 enabled master（而非只取路由会选中的第一个），对每个 `checkRef` 连接它的 `{namespace}_meta_data` 库读 `SELECT patch FROM patch_status`；其它应用的专属 master 不承载这个库，不会被列入也不会被误报成未初始化。报告全部 master 让 Phorge 能比较它们各自提交的集群状态，抓出某个以过期配置启动的 master。**建连或 Ping 失败时 `initialized` 留 `false`，这是如实报告而不是错误**：`{namespace}_meta_data` 库还不存在，正是 `bin/storage upgrade` 跑之前的状态，调用方读到「未初始化」就对了。但 Ping 已成功后，读取 `patch_status` 失败会按域错误显式返回（权限不足为 403、连接中断为 503），不能伪装成 `initialized:true` 且 patch 列表为空。服务只上报观察到的 `appliedPatches`，不持有期望 patch 列表——期望列表（`PhabricatorSQLPatchList`）由 Phorge 持有并在 PHP 侧求差集，所以不返回 `totalExpected`/`missingPatches`。
 
-它还额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，**读出来就丢**——`hoststate` 是 Phorge 在多 master 之间同步 `cluster.databases` 状态用的表，这里读它只是保留独立服务预留的那个多 master 同步接口点，当前不消费。两张表名（`patch_status`、`hoststate`）与库名约定（`{namespace}_meta_data`）都是兼容契约，见第 5 节。
+它还额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，对读到的**原始串**算 SHA-256 作为 `clusterStateDigest` 返回（该行缺失则摘要为空）。`hoststate` 是 Phorge 在多 master 之间提交 `cluster.databases` 状态用的表，原始值含主机名故绝不外泄；只回摘要既能让 Phorge 用本地 `getPartitionStateForCommit()` 的同字节 SHA-256 比对、发现两个 master 对已提交拓扑不一致（`db.state.desync`），又不让本服务持有拓扑。两张表名（`patch_status`、`hoststate`）与库名约定（`{namespace}_meta_data`）都是兼容契约，见第 5 节。
 
 ### 3.5 `/readyz` 只 ping，且 DSN 不带库名——这是刻意躲开首启死锁
 
@@ -108,7 +116,7 @@ schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性，P
 | `GORGE_DB_MYSQL_USER` | `MYSQL_USER` | `root` | |
 | `GORGE_DB_MYSQL_PASS` | `MYSQL_PASS` | 空 | |
 | `GORGE_DB_NAMESPACE` | `STORAGE_NAMESPACE` | `phorge` | 库名由它拼成 `{namespace}_meta_data` 等，必须与该装置的 `storage.default-namespace` 一致 |
-| `GORGE_DB_CONFIG_FILE` | `PHORGE_CONFIG` | 空 | Phorge local.json 路径。非空则读它的 `cluster.databases` 拓扑，标量退化为每节点兜底；空 = 用标量描述的单节点 |
+| `GORGE_DB_CONFIG_FILE` | `PHORGE_CONFIG` | 空 | Phorge local.json 路径。非空则读它的 `cluster.databases` 拓扑，标量退化为每节点兜底；空 = 用标量描述的单节点。**非空时 fail closed**：文件缺失/JSON 非法/类型错/无可用 master 会让启动失败，而不是降级成单节点 |
 
 ## 5. 兼容契约
 
@@ -130,6 +138,6 @@ schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性，P
 
 映射由 `codeForKind` 完成（`errors.go`）：域内把驱动错误分类成 `DBError`（`mysqlerr.go` 按 errno 表，access-denied 一族 → `kindAccessDenied`，2006/2013 连接中断 → `kindUnreachable`），handler 的 `fail` 再把可被调用方处置的 kind 翻成上面三个码，**并且答一句通用文案**——`genericMessage` 只说「哪一类东西出了问题」，绝不带主机名、库名或查询。一个通过了 token 校验的服务间调用方，仍然不该从响应体里拿到集群的拓扑细节；真正的错误留给 `slog` 日志（走 `ERR_INTERNAL` 那条 return err 的路径）。
 
-**其余失败一律收敛进平台六码**：鉴权→`ERR_UNAUTHORIZED`(401)、`:ref` 无匹配→`ERR_NOT_FOUND`(404)、无路由→`ERR_NOT_FOUND`、内部/不可处置的驱动错误→`ERR_INTERNAL`(500)。如第 1 节所述，`ERR_READONLY` 当前是一条定义了但七条只读路由都到不了的码，它随 Router 的写入路径一起保留。
+**其余失败一律收敛进平台六码**：鉴权→`ERR_UNAUTHORIZED`(401)、`:ref` 无匹配→`ERR_NOT_FOUND`(404)、无路由→`ERR_NOT_FOUND`、内部/不可处置的驱动错误→`ERR_INTERNAL`(500)。如第 1 节所述，`ERR_READONLY` 当前是一条定义了但七条只读路由都到不了的码；它绑定的是共享 `Conn` 的只读守卫（`conn.go`），随只读连接层留在 `dbapi`——写入路径抽象（`Router` / `TxManager` / 写重试）本身已迁到 `internal/dbproxy`（见 [ADR 0001](../adr/0001-isolate-db-proxy.md)）。
 
 **新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。**

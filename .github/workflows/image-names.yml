@@ -1,0 +1,84 @@
+name: Image Names
+
+# The one deploy-time failure this guards against is an image reference that
+# uses the per-service repository form `ghcr.io/soulteary/gorge-<service>`
+# instead of the tag-prefix form `ghcr.io/soulteary/gorge:<prefix>-<tag>`. The
+# two look almost identical; the wrong one publishes to a package that does not
+# exist and fails `docker compose pull` at deploy time with a 404 that names a
+# tag, not the mistake. A static check keeps it from reaching a release.
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'deploy/compose/docker-compose.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/image-names.yml'
+      - '.github/scripts/check-image-names.py'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'deploy/compose/docker-compose.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/image-names.yml'
+      - '.github/scripts/check-image-names.py'
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Canonical image names
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Gorge
+        uses: actions/checkout@v6
+        with:
+          path: gorge
+
+      # The phorge-fork overlay lives in a separate repository. It is checked
+      # out beside gorge so the same script can assert its ten gorge services
+      # use the canonical form too. The checkout is best-effort: if it is
+      # unavailable the script skips that half and still checks the Gorge repo.
+      - name: Checkout phorge-fork
+        uses: actions/checkout@v6
+        continue-on-error: true
+        with:
+          repository: soulteary/phorge
+          path: phorge-fork
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Check image names (static)
+        run: python3 gorge/.github/scripts/check-image-names.py gorge phorge-fork
+
+      # Belt and braces: render each compose file with `docker compose config`
+      # (which resolves variables and merges overlays exactly as a deploy
+      # would) and run the same check against the forbidden repository form on
+      # the rendered output. The static pass above already covers the invariant
+      # against the raw files; this catches anything a variable default or an
+      # overlay could introduce that the raw scan would miss.
+      - name: Check rendered compose (docker compose config)
+        run: |
+          set -euo pipefail
+          render() {
+            local out="$1"; shift
+            if docker compose "$@" config >"$out" 2>/dev/null; then
+              echo "rendered $out"
+            else
+              echo "note: could not render $* ; skipping"
+              : >"$out"
+            fi
+          }
+          render gorge.config.yml -f gorge/deploy/compose/docker-compose.yml
+          if [ -f phorge-fork/docker-compose.gorge.yml ]; then
+            render phorge.config.yml \
+              -f phorge-fork/docker-compose.yml \
+              -f phorge-fork/docker-compose.gorge.yml
+          fi
+          if grep -RnE 'ghcr\.io/soulteary/gorge-[a-z0-9-]+' \
+              gorge.config.yml phorge.config.yml 2>/dev/null; then
+            echo "::error::rendered compose contains the forbidden ghcr.io/soulteary/gorge-<service> form"
+            exit 1
+          fi
+          echo "rendered compose files use the canonical image form"

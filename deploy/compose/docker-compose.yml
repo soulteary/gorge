@@ -534,9 +534,24 @@ services:
     image: ghcr.io/soulteary/gorge:db-api-${GORGE_IMAGE_TAG:-latest}
     environment:
       GORGE_LISTEN_ADDR: ":8080"
+      # Shared service token. Empty disables authentication entirely, which is
+      # fine for a local single-node bring-up but MUST be set in production:
+      # without it, anything that can reach :8080 can read the cluster
+      # topology and per-node status the service reports.
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
       # Phorge's database. The service only reads — INFORMATION_SCHEMA, SHOW,
-      # and `{namespace}_meta_data.patch_status` — and needs no DDL rights.
+      # and `{namespace}_meta_data.patch_status` — and needs no DDL rights, so
+      # production should NOT point it at root or another ALL PRIVILEGES
+      # account. Create a least-privilege read-only user and use it instead
+      # (verify the minimal grant set on both MySQL 8 and MariaDB first):
+      #
+      #   CREATE USER 'gorge_dbapi_ro'@'%' IDENTIFIED BY '...';
+      #   GRANT SELECT ON `information_schema`.* TO 'gorge_dbapi_ro'@'%';
+      #   GRANT SELECT ON `phorge_meta_data`.* TO 'gorge_dbapi_ro'@'%';
+      #   GRANT SHOW VIEW ON *.* TO 'gorge_dbapi_ro'@'%';
+      #   GRANT REPLICATION CLIENT ON *.* TO 'gorge_dbapi_ro'@'%';
+      #
+      # The default below is root only so the compose file works out of the box.
       # Empty host falls through to 127.0.0.1 and /readyz reports it unready;
       # it is not a switch, there is nothing here to turn off.
       GORGE_DB_MYSQL_HOST: ${GORGE_DB_MYSQL_HOST:-}
@@ -548,17 +563,25 @@ services:
       GORGE_DB_NAMESPACE: ${GORGE_DB_NAMESPACE:-phorge}
       # Optional path to a Phorge local.json. When set, the cluster topology is
       # read from its `cluster.databases` and the scalars above are used only
-      # as per-node fallbacks. Blank = the single node described above. The
-      # path is resolved inside the container, so the file has to be mounted
-      # there first — a compose override adding a volume is the usual way.
+      # as per-node fallbacks; the service then FAILS CLOSED — a missing file,
+      # malformed JSON, a wrong field type or no usable master stops the boot
+      # rather than degrading to the single node above. Blank = the single node
+      # described above. The path is resolved inside the container, so the file
+      # has to be mounted there first — a compose override adding a read-only
+      # volume is the usual way. Prefer a dedicated file that carries only the
+      # namespace, nodes, roles, partitions and read-only credential reference
+      # over mounting a full local.json.
       GORGE_DB_CONFIG_FILE: ${GORGE_DB_CONFIG_FILE:-}
     ports:
       - "${GORGE_DB_API_PORT:-8080}:8080"
     healthcheck:
-      # /healthz, not /readyz: a /readyz probe dials `{namespace}_meta_data`,
-      # which does not exist until `bin/storage upgrade` runs in the Phorge
-      # container that starts after this one — probing it here would deadlock
-      # first boot. See the comment above and compat/phorge/README.md 8.7.
+      # /healthz, not /readyz. Both are safe to probe — /readyz dials a master
+      # with a DSN that names NO database, so it succeeds before Phorge's
+      # tables exist — but container health should track process liveness, not
+      # database reachability: a /readyz-based healthcheck would keep this
+      # container "unhealthy" (and block anything depending on it as
+      # service_healthy) until `bin/storage upgrade` runs in the Phorge
+      # container that starts after this one. See compat/phorge/README.md 8.7.
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s
       timeout: 3s
