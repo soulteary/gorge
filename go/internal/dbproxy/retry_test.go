@@ -1,4 +1,4 @@
-package dbapi
+package dbproxy
 
 import (
 	"context"
@@ -8,12 +8,14 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/soulteary/gorge/go/internal/dbapi"
 )
 
 // The retry tests are ported from the standalone service's
 // internal/dbcore/retry_test.go. The retry policy is unchanged; the driver
 // abstraction the standalone tests reached through (GetDriver) is gone, so the
-// retryable-classification is asserted directly on this package's functions.
+// retryable-classification is asserted directly on the shared dbapi functions.
 
 func TestDefaultRetryPolicy(t *testing.T) {
 	if p := DefaultRetryPolicy(); p.MaxAttempts != 3 {
@@ -30,7 +32,7 @@ func TestQueryWithRetryWriteQueryNoRetry(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	conn := NewConnFromDB(db, DSN{}, false)
+	conn := dbapi.NewConnFromDB(db, dbapi.DSN{}, false)
 	mock.ExpectQuery("INSERT INTO foo").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 
 	rows, err := QueryWithRetry(context.Background(), conn, nil, DefaultRetryPolicy(), "INSERT INTO foo VALUES (1)")
@@ -56,7 +58,7 @@ func TestQueryWithRetryInsideTransactionNoRetry(t *testing.T) {
 	mock.ExpectQuery("SELECT 1").WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 	mock.ExpectCommit()
 
-	conn := NewConnFromDB(db, DSN{}, false)
+	conn := dbapi.NewConnFromDB(db, dbapi.DSN{}, false)
 	txm := NewTxManager(conn)
 	ctx := context.Background()
 	if err := txm.Begin(ctx); err != nil {
@@ -84,7 +86,7 @@ func TestQueryWithRetryRejectsTransactionWriteOnReadOnlyConnection(t *testing.T)
 
 	mock.ExpectBegin()
 	mock.ExpectRollback()
-	conn := NewConnFromDB(db, DSN{Database: "phorge_config"}, true)
+	conn := dbapi.NewConnFromDB(db, dbapi.DSN{Database: "phorge_config"}, true)
 	txm := NewTxManager(conn)
 	ctx := context.Background()
 	if err := txm.Begin(ctx); err != nil {
@@ -96,9 +98,8 @@ func TestQueryWithRetryRejectsTransactionWriteOnReadOnlyConnection(t *testing.T)
 		_ = rows.Close()
 		t.Fatal("write on a read-only transaction unexpectedly returned rows")
 	}
-	var dbErr *DBError
-	if !errors.As(err, &dbErr) || dbErr.Kind != kindReadonly {
-		t.Fatalf("error = %v, want kindReadonly", err)
+	if !dbapi.IsReadonlyError(err) {
+		t.Fatalf("error = %v, want a read-only DBError", err)
 	}
 	if err := txm.Rollback(ctx); err != nil {
 		t.Fatal(err)
@@ -125,12 +126,12 @@ func TestQueryWithRetryUsesActiveTransactionInsteadOfPassedPool(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("inside"))
 	txMock.ExpectRollback()
 
-	txm := NewTxManager(NewConnFromDB(txDB, DSN{}, false))
+	txm := NewTxManager(dbapi.NewConnFromDB(txDB, dbapi.DSN{}, false))
 	ctx := context.Background()
 	if err := txm.Begin(ctx); err != nil {
 		t.Fatal(err)
 	}
-	outside := NewConnFromDB(poolDB, DSN{}, false)
+	outside := dbapi.NewConnFromDB(poolDB, dbapi.DSN{}, false)
 	rows, err := QueryWithRetry(ctx, outside, txm, DefaultRetryPolicy(), "SELECT transaction_value")
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +156,7 @@ func TestQueryWithRetryReadSuccess(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow("ok"))
-	conn := NewConnFromDB(db, DSN{}, false)
+	conn := dbapi.NewConnFromDB(db, dbapi.DSN{}, false)
 	rows, err := QueryWithRetry(context.Background(), conn, nil, DefaultRetryPolicy(), "SELECT 1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -174,17 +175,17 @@ func TestQueryWithRetryClassifiesMySQLError(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT").WillReturnError(&mysql.MySQLError{Number: 1044, Message: "Access denied"})
-	conn := NewConnFromDB(db, DSN{}, false)
+	conn := dbapi.NewConnFromDB(db, dbapi.DSN{}, false)
 	_, qErr := QueryWithRetry(context.Background(), conn, nil, RetryPolicy{MaxAttempts: 1}, "SELECT 1")
 	if qErr == nil {
 		t.Fatal("expected an error")
 	}
-	var dbErr *DBError
+	var dbErr *dbapi.DBError
 	if !errors.As(qErr, &dbErr) {
-		t.Fatalf("expected a *DBError, got %T", qErr)
+		t.Fatalf("expected a *dbapi.DBError, got %T", qErr)
 	}
-	if dbErr.Kind != kindAccessDenied {
-		t.Errorf("kind = %d, want kindAccessDenied", dbErr.Kind)
+	if !dbapi.IsAccessDeniedError(qErr) {
+		t.Errorf("error = %v, want an access-denied DBError", qErr)
 	}
 }
 
@@ -196,7 +197,7 @@ func TestQueryWithRetryZeroAttemptsRunsOnce(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(1))
-	conn := NewConnFromDB(db, DSN{}, false)
+	conn := dbapi.NewConnFromDB(db, dbapi.DSN{}, false)
 	rows, err := QueryWithRetry(context.Background(), conn, nil, RetryPolicy{MaxAttempts: 0}, "SELECT 1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -212,7 +213,7 @@ func TestQueryWithRetryNonMySQLReadErrorPropagates(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT").WillReturnError(errors.New("network timeout"))
-	conn := NewConnFromDB(db, DSN{}, false)
+	conn := dbapi.NewConnFromDB(db, dbapi.DSN{}, false)
 	_, qErr := QueryWithRetry(context.Background(), conn, nil, RetryPolicy{MaxAttempts: 1}, "SELECT 1")
 	if qErr == nil {
 		t.Fatal("expected an error")

@@ -1,10 +1,12 @@
-package dbapi
+package dbproxy
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"sync"
+
+	"github.com/soulteary/gorge/go/internal/dbapi"
 )
 
 // TxManager implements nested-transaction semantics with MySQL savepoints,
@@ -13,13 +15,14 @@ import (
 // `Aphront_Savepoint_N`. The savepoint naming is a compatibility contract, not
 // an implementation detail — it is the same string Phorge emits.
 type TxManager struct {
-	conn  *Conn
+	conn  *dbapi.Conn
 	tx    *sql.Tx
 	depth int
 	mu    sync.Mutex
 }
 
-func NewTxManager(conn *Conn) *TxManager { return &TxManager{conn: conn} }
+// NewTxManager builds a manager over a connection.
+func NewTxManager(conn *dbapi.Conn) *TxManager { return &TxManager{conn: conn} }
 
 func (m *TxManager) Depth() int {
 	m.mu.Lock()
@@ -101,8 +104,8 @@ func (m *TxManager) queryContext(ctx context.Context, query string, args ...any)
 	if m.depth <= 0 || m.tx == nil {
 		return nil, false, nil
 	}
-	if m.conn.IsReadOnly() && !isReadQuery(query) {
-		return nil, true, newDBError(kindReadonly,
+	if m.conn.IsReadOnly() && !dbapi.IsReadQuery(query) {
+		return nil, true, dbapi.NewReadonlyError(
 			"write query inside transaction on read-only connection (database %q)",
 			m.conn.DSN().Database)
 	}

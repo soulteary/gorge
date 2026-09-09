@@ -1,9 +1,22 @@
-package dbapi
+// Package dbproxy holds the master/replica write-path abstractions the db-api
+// domain grew for parity with Phorge's AphrontDatabaseConnection but does not
+// yet drive from any HTTP handler or background task. It is a deliberately
+// separated home — not dead code deleted, not a live route added — so the
+// day a write endpoint is introduced it has a reviewed, tested foundation.
+//
+// See gorge/docs/adr/0001-isolate-db-proxy.md for the owner, the intended
+// future entry point and the record that these abstractions are, as of this
+// change, not on any runtime path. The read-only db-api endpoints do not use
+// this package: each read service opens its own short-lived connection through
+// dbapi.ConnFactory and never routes through here.
+package dbproxy
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/soulteary/gorge/go/internal/dbapi"
 )
 
 // RetryPolicy bounds how many times a connect or a read query is retried. The
@@ -12,12 +25,13 @@ type RetryPolicy struct {
 	MaxAttempts int
 }
 
+// DefaultRetryPolicy returns the three-attempt policy.
 func DefaultRetryPolicy() RetryPolicy { return RetryPolicy{MaxAttempts: 3} }
 
 // ConnectWithRetry opens and pings a connection, retrying on the connect errors
-// isRetryableConnectErr recognises (timeout, refused). A non-retryable error,
-// or the last attempt, returns immediately.
-func ConnectWithRetry(dsn DSN, readOnly bool, policy RetryPolicy) (*Conn, error) {
+// dbapi.IsRetryableConnectErr recognises (timeout, refused). A non-retryable
+// error, or the last attempt, returns immediately.
+func ConnectWithRetry(dsn dbapi.DSN, readOnly bool, policy RetryPolicy) (*dbapi.Conn, error) {
 	maxAttempts := policy.MaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -25,10 +39,10 @@ func ConnectWithRetry(dsn DSN, readOnly bool, policy RetryPolicy) (*Conn, error)
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		conn, err := NewConn(dsn, readOnly)
+		conn, err := dbapi.NewConn(dsn, readOnly)
 		if err != nil {
 			lastErr = err
-			if isRetryableConnectErr(err) && attempt < maxAttempts {
+			if dbapi.IsRetryableConnectErr(err) && attempt < maxAttempts {
 				continue
 			}
 			return nil, err
@@ -36,7 +50,7 @@ func ConnectWithRetry(dsn DSN, readOnly bool, policy RetryPolicy) (*Conn, error)
 		if err := conn.Ping(context.Background()); err != nil {
 			_ = conn.Close()
 			lastErr = err
-			if isRetryableConnectErr(err) && attempt < maxAttempts {
+			if dbapi.IsRetryableConnectErr(err) && attempt < maxAttempts {
 				continue
 			}
 			return nil, err
@@ -51,13 +65,13 @@ func ConnectWithRetry(dsn DSN, readOnly bool, policy RetryPolicy) (*Conn, error)
 // Retrying a write would risk a double apply, and retrying inside a
 // transaction would break its atomicity — the same constraint Phorge's own
 // connection enforces.
-func QueryWithRetry(ctx context.Context, conn *Conn, txm *TxManager, policy RetryPolicy, query string, args ...any) (*sql.Rows, error) {
+func QueryWithRetry(ctx context.Context, conn *dbapi.Conn, txm *TxManager, policy RetryPolicy, query string, args ...any) (*sql.Rows, error) {
 	if txm != nil {
 		if rows, active, err := txm.queryContext(ctx, query, args...); active {
 			return rows, err
 		}
 	}
-	if !isReadQuery(query) {
+	if !dbapi.IsReadQuery(query) {
 		return conn.QueryContext(ctx, query, args...)
 	}
 
@@ -73,10 +87,10 @@ func QueryWithRetry(ctx context.Context, conn *Conn, txm *TxManager, policy Retr
 			return rows, nil
 		}
 		lastErr = err
-		if isRetryableQueryErr(err) && attempt < maxAttempts {
+		if dbapi.IsRetryableQueryErr(err) && attempt < maxAttempts {
 			continue
 		}
-		return nil, classifyMySQLError(err)
+		return nil, dbapi.ClassifyMySQLError(err)
 	}
 	return nil, lastErr
 }

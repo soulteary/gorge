@@ -1,4 +1,4 @@
-package dbapi
+package dbproxy
 
 import (
 	"context"
@@ -6,17 +6,16 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/soulteary/gorge/go/internal/dbapi"
 )
 
 func TestConcurrentConnectionCreationKeepsAndClosesOnePool(t *testing.T) {
-	master := &DatabaseRef{Host: "master", Port: 3306, IsMaster: true}
-	router := NewRouter(&ClusterConfig{
-		Namespace: "phorge",
-		Refs:      []*DatabaseRef{master},
-		masters:   []*DatabaseRef{master},
-	}, "secret")
+	master := &dbapi.DatabaseRef{Host: "master", Port: 3306, IsMaster: true}
+	router := NewRouter(dbapi.NewClusterConfigForRefs(
+		"phorge", "secret", []*dbapi.DatabaseRef{master}), "secret")
 
-	conns := make([]*Conn, 2)
+	conns := make([]*dbapi.Conn, 2)
 	mocks := make([]sqlmock.Sqlmock, 2)
 	for i := range conns {
 		db, mock, err := sqlmock.New()
@@ -24,14 +23,14 @@ func TestConcurrentConnectionCreationKeepsAndClosesOnePool(t *testing.T) {
 			t.Fatal(err)
 		}
 		mock.ExpectClose()
-		conns[i] = NewConnFromDB(db, DSN{}, false)
+		conns[i] = dbapi.NewConnFromDB(db, dbapi.DSN{}, false)
 		mocks[i] = mock
 	}
 
 	ready := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var calls atomic.Int32
-	router.connect = func(DSN, bool, RetryPolicy) (*Conn, error) {
+	router.connect = func(dbapi.DSN, bool, RetryPolicy) (*dbapi.Conn, error) {
 		index := int(calls.Add(1)) - 1
 		ready <- struct{}{}
 		<-release
@@ -39,7 +38,7 @@ func TestConcurrentConnectionCreationKeepsAndClosesOnePool(t *testing.T) {
 	}
 
 	type result struct {
-		conn *Conn
+		conn *dbapi.Conn
 		err  error
 	}
 	results := make(chan result, 2)

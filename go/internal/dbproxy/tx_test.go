@@ -1,4 +1,4 @@
-package dbapi
+package dbproxy
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/soulteary/gorge/go/internal/dbapi"
 )
 
 // The transaction tests are ported from the standalone service's
@@ -47,7 +49,7 @@ func TestTxManagerBeginCommit(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectCommit()
 
-	txm := NewTxManager(NewConnFromDB(db, DSN{}, false))
+	txm := NewTxManager(dbapi.NewConnFromDB(db, dbapi.DSN{}, false))
 	ctx := context.Background()
 
 	if err := txm.Begin(ctx); err != nil {
@@ -77,7 +79,7 @@ func TestTxManagerBeginRollback(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectRollback()
 
-	txm := NewTxManager(NewConnFromDB(db, DSN{}, false))
+	txm := NewTxManager(dbapi.NewConnFromDB(db, dbapi.DSN{}, false))
 	ctx := context.Background()
 	if err := txm.Begin(ctx); err != nil {
 		t.Fatalf("Begin: %v", err)
@@ -109,7 +111,7 @@ func TestTxManagerNestedSavepoints(t *testing.T) {
 	mock.ExpectExec("SAVEPOINT Aphront_Savepoint_2").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
-	txm := NewTxManager(NewConnFromDB(db, DSN{}, false))
+	txm := NewTxManager(dbapi.NewConnFromDB(db, dbapi.DSN{}, false))
 	ctx := context.Background()
 
 	for wantDepth := 1; wantDepth <= 3; wantDepth++ {
@@ -147,7 +149,7 @@ func TestTxManagerNestedRollback(t *testing.T) {
 	mock.ExpectExec("ROLLBACK TO SAVEPOINT Aphront_Savepoint_1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
-	txm := NewTxManager(NewConnFromDB(db, DSN{}, false))
+	txm := NewTxManager(dbapi.NewConnFromDB(db, dbapi.DSN{}, false))
 	ctx := context.Background()
 
 	if err := txm.Begin(ctx); err != nil {
