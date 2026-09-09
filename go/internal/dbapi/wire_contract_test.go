@@ -7,7 +7,15 @@ import (
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
 
-func TestDBAPIWireFieldNamesMatchPhorge(t *testing.T) {
+// TestDBAPIWireFieldNamesAreCamelCaseContract asserts only what this side can
+// assert alone: that the Go contract types marshal to the camelCase wire keys
+// the PHP consumer reads, and that no legacy snake/short key survives. It does
+// not, and can not, prove the PHP side reads them — the earlier name
+// ("...MatchPhorge") over-claimed a two-repo guarantee this one-repo test never
+// had. The cross-repo half lives in the canonical fixtures
+// (TestDBAPICanonicalFixturesMatchContract here, replayed by the PHP
+// PhabricatorGorgeDBContractTestCase) and in the integration workflow.
+func TestDBAPIWireFieldNamesAreCamelCaseContract(t *testing.T) {
 	delay := 7
 	cases := []struct {
 		name   string
@@ -51,8 +59,8 @@ func TestDBAPIWireFieldNamesMatchPhorge(t *testing.T) {
 		{
 			name:   "migration status",
 			value:  contracts.MigrationStatus{AppliedPatches: []string{"patch-1"}},
-			want:   []string{"patch"},
-			absent: []string{"appliedPatches"},
+			want:   []string{"appliedPatches"},
+			absent: []string{"patch", "totalExpected", "missingPatches"},
 		},
 	}
 

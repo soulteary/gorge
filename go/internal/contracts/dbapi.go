@@ -1,5 +1,40 @@
 package contracts
 
+// ContractVersion is the wire-contract version the db-api service implements.
+// It is exposed on the capability endpoint (GET /api/db/meta) so the PHP
+// consumer can refuse to switch the database console over to a service whose
+// contract it does not understand, rather than silently reading fields that
+// have moved or changed meaning.
+//
+// Bump the major when a field is removed or its type/meaning changes in a way
+// the current PHP adapter can not read; bump the minor for additive changes a
+// current consumer can ignore. It is a string so it can carry the
+// "major.minor" form without a second field.
+const ContractVersion = "1.0"
+
+// Capabilities is the body of GET /api/db/meta: the small, cheap-to-serve
+// description the PHP consumer reads before it routes the database console
+// through the service. It names no host, credential or database — only the
+// contract the service speaks, the namespace it was configured for, where its
+// topology came from, and which capability endpoints it serves — so it is safe
+// to answer even though nothing past it is.
+//
+// ContractVersion is compared by the consumer against the version it was
+// written for. Namespace must equal Phorge's storage.default-namespace, or the
+// service is reporting on databases named with a different prefix than Phorge
+// reads. TopologySource is "file" when the cluster was read from a
+// GORGE_DB_CONFIG_FILE local.json and "single-node" when it was built from the
+// scalar GORGE_DB_MYSQL_* settings, so the consumer can tell a real cluster
+// report from a single-node one. Capabilities lists the /api/db routes this
+// build serves, so a consumer can detect a build that predates a route it
+// wants without probing for a 404.
+type Capabilities struct {
+	ContractVersion string   `json:"contractVersion"`
+	Namespace       string   `json:"namespace"`
+	TopologySource  string   `json:"topologySource"`
+	Capabilities    []string `json:"capabilities"`
+}
+
 // The db-api types describe the JSON contract of the `gorge-db-api` binary,
 // which reports on Phorge's MySQL cluster: which servers are configured, how
 // healthy each one is, how its schema compares to what Phorge expects, and how
@@ -67,24 +102,48 @@ type ServerRef struct {
 // flattened into SchemaIssue records. The property fields preserve the actual
 // INFORMATION_SCHEMA values at their applicable level: character set and
 // collation on databases, collation and engine on tables, and character set,
-// collation, complete type, and nullability on columns.
+// collation, complete type, nullability, and auto_increment on columns. Keys
+// carries a table's indexes, one SchemaKey per index.
+//
+// AccessDenied marks a database node that exists but the configured user is
+// not permitted to inspect. It is only ever set on a database node, and only
+// in response to an explicit `databases` request parameter naming an expected
+// database (the visible-set walk cannot tell "restricted" from "absent" on its
+// own). Phorge maps it onto PhabricatorConfigDatabaseSchema::setAccessDenied.
 type SchemaNode struct {
-	RefKey       string             `json:"refKey"`
-	Database     string             `json:"databaseName,omitempty"`
-	Table        string             `json:"tableName,omitempty"`
-	Column       string             `json:"columnName,omitempty"`
-	Key          string             `json:"key,omitempty"`
-	CharacterSet string             `json:"characterSet,omitempty"`
-	Collation    string             `json:"collation,omitempty"`
-	Engine       string             `json:"engine,omitempty"`
-	ColumnType   string             `json:"columnType,omitempty"`
-	Nullable     *bool              `json:"nullable,omitempty"`
-	Expected     string             `json:"expected,omitempty"`
-	Actual       string             `json:"actual,omitempty"`
-	Issues       []string           `json:"issues,omitempty"`
-	Status       string             `json:"status"`
-	Children     []*SchemaNode      `json:"children,omitempty"`
-	Diagnostics  []SchemaDiagnostic `json:"-"`
+	RefKey        string             `json:"refKey"`
+	Database      string             `json:"databaseName,omitempty"`
+	Table         string             `json:"tableName,omitempty"`
+	Column        string             `json:"columnName,omitempty"`
+	Key           string             `json:"key,omitempty"`
+	CharacterSet  string             `json:"characterSet,omitempty"`
+	Collation     string             `json:"collation,omitempty"`
+	Engine        string             `json:"engine,omitempty"`
+	ColumnType    string             `json:"columnType,omitempty"`
+	Nullable      *bool              `json:"nullable,omitempty"`
+	AutoIncrement *bool              `json:"autoIncrement,omitempty"`
+	AccessDenied  bool               `json:"accessDenied,omitempty"`
+	Keys          []SchemaKey        `json:"keys,omitempty"`
+	Expected      string             `json:"expected,omitempty"`
+	Actual        string             `json:"actual,omitempty"`
+	Issues        []string           `json:"issues,omitempty"`
+	Status        string             `json:"status"`
+	Children      []*SchemaNode      `json:"children,omitempty"`
+	Diagnostics   []SchemaDiagnostic `json:"-"`
+}
+
+// SchemaKey is one index on a table, as it appears in a table SchemaNode's
+// Keys. It is derived from INFORMATION_SCHEMA.STATISTICS: ColumnNames is the
+// index's columns ordered by SEQ_IN_INDEX, each carrying a `(prefix)` suffix
+// when the index covers only a leading Sub_part of the column, so it matches
+// the shape Phorge's `SHOW INDEXES` reflection produces. Unique is the inverse
+// of NON_UNIQUE and IndexType is INDEX_TYPE (BTREE, FULLTEXT, …). It is a
+// distinct structure from the issue key field: an index is not a diagnostic.
+type SchemaKey struct {
+	Name        string   `json:"name"`
+	ColumnNames []string `json:"columnNames"`
+	Unique      bool     `json:"unique"`
+	IndexType   string   `json:"indexType,omitempty"`
 }
 
 // SchemaDiagnostic keeps each local comparison distinct while SchemaNode's
@@ -147,17 +206,27 @@ type CharsetInfo struct {
 }
 
 // MigrationStatus reports how far `bin/storage upgrade` has run on a master,
-// GET /api/db/migrations/status returns one per master. It is read from the
-// server's own `{namespace}_meta_data.patch_status` table, so Initialized
-// false means that database does not exist yet — the pre-upgrade state, not an
-// error.
+// GET /api/db/migrations/status returns one per master that serves the
+// meta_data partition. It is read from the server's own
+// `{namespace}_meta_data.patch_status` table, so Initialized false means that
+// database does not exist yet — the pre-upgrade state, not an error.
+//
+// AppliedPatches is the observed set of patch keys, and nothing more: the
+// service owns no expected patch list, so it does not report a total or a
+// missing set. Phorge holds the canonical list (PhabricatorSQLPatchList) and
+// diffs it against AppliedPatches on the PHP side.
+//
+// ClusterStateDigest is the SHA-256 of the raw `cluster.databases` state this
+// master carries in its hoststate table, or empty when that row is absent. The
+// raw state is never returned — it names hosts — but the digest lets Phorge
+// detect that two masters disagree on the committed cluster configuration
+// (db.state.desync) without the service holding the topology.
 //
 // Only masters are reported: a replica's patch_status arrives through
 // replication, not through a migration of its own.
 type MigrationStatus struct {
-	RefKey         string   `json:"refKey"`
-	Initialized    bool     `json:"initialized"`
-	AppliedPatches []string `json:"patch"`
-	MissingPatches []string `json:"missingPatches,omitempty"`
-	TotalExpected  int      `json:"totalExpected"`
+	RefKey             string   `json:"refKey"`
+	Initialized        bool     `json:"initialized"`
+	AppliedPatches     []string `json:"appliedPatches"`
+	ClusterStateDigest string   `json:"clusterStateDigest,omitempty"`
 }
