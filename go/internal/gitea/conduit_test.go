@@ -74,6 +74,66 @@ func TestConduitSinkWritesFormEncodedComment(t *testing.T) {
 	}
 }
 
+func TestConduitSinkSearchesOlderTransactions(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if !strings.HasSuffix(r.URL.Path, "/api/transaction.search") {
+			t.Errorf("unexpected method path %q", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		var params map[string]any
+		if err := json.Unmarshal([]byte(r.Form.Get("params")), &params); err != nil {
+			t.Fatal(err)
+		}
+
+		switch requests {
+		case 1:
+			if _, ok := params["after"]; ok {
+				t.Error("first page unexpectedly has an after cursor")
+			}
+			_, _ = w.Write([]byte(`{"result":{"data":[],"cursor":{"limit":100,"after":"older-page","before":null}},"error_code":null,"error_info":null}`))
+		case 2:
+			if params["after"] != "older-page" {
+				t.Errorf("after = %#v", params["after"])
+			}
+			_, _ = w.Write([]byte(`{"result":{"data":[{"comments":[{"content":{"raw":"Gitea-Delivery: delivery-old"}}]}],"cursor":{"limit":100,"after":null,"before":"newer-page"}},"error_code":null,"error_info":null}`))
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	}))
+	defer server.Close()
+
+	sink := NewConduitSink(server.URL, "api-token", "", server.Client())
+	posted, err := sink.Append(context.Background(), "T1", Event{DeliveryID: "delivery-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posted || requests != 2 {
+		t.Fatalf("posted=%v requests=%d", posted, requests)
+	}
+}
+
+func TestConduitSinkRejectsRepeatedCursor(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"result":{"data":[],"cursor":{"limit":100,"after":"same-page","before":null}},"error_code":null,"error_info":null}`))
+	}))
+	defer server.Close()
+
+	sink := NewConduitSink(server.URL, "api-token", "", server.Client())
+	posted, err := sink.Append(context.Background(), "T1", Event{DeliveryID: "delivery-loop"})
+	if err == nil || !strings.Contains(err.Error(), "repeated cursor") {
+		t.Fatalf("posted=%v err=%v", posted, err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d", requests)
+	}
+}
+
 func readRequestBody(t *testing.T, r *http.Request) string {
 	t.Helper()
 	if err := r.ParseForm(); err != nil {

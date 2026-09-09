@@ -39,22 +39,44 @@ type transactionSearch struct {
 			} `json:"content"`
 		} `json:"comments"`
 	} `json:"data"`
+	Cursor struct {
+		After *string `json:"after"`
+	} `json:"cursor"`
 }
 
 func (s *ConduitSink) Append(ctx context.Context, task string, event Event) (bool, error) {
-	var history transactionSearch
-	if err := s.call(ctx, "transaction.search", map[string]any{
-		"objectIdentifier": task,
-		"limit":            100,
-	}, &history); err != nil {
-		return false, err
-	}
-	for _, transaction := range history.Data {
-		for _, comment := range transaction.Comments {
-			if strings.Contains(comment.Content.Raw, event.Marker()) {
-				return false, nil
+	after := ""
+	seenCursors := make(map[string]struct{})
+	for {
+		params := map[string]any{
+			"objectIdentifier": task,
+			"limit":            100,
+		}
+		if after != "" {
+			params["after"] = after
+		}
+
+		var history transactionSearch
+		if err := s.call(ctx, "transaction.search", params, &history); err != nil {
+			return false, err
+		}
+		for _, transaction := range history.Data {
+			for _, comment := range transaction.Comments {
+				if strings.Contains(comment.Content.Raw, event.Marker()) {
+					return false, nil
+				}
 			}
 		}
+
+		if history.Cursor.After == nil || *history.Cursor.After == "" {
+			break
+		}
+		next := *history.Cursor.After
+		if _, ok := seenCursors[next]; ok {
+			return false, fmt.Errorf("transaction.search repeated cursor")
+		}
+		seenCursors[next] = struct{}{}
+		after = next
 	}
 
 	return true, s.call(ctx, "maniphest.edit", map[string]any{
