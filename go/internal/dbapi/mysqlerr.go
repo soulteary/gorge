@@ -23,7 +23,7 @@ var retryableConnectCodes = map[uint16]bool{
 
 // retryableQueryCodes are the mid-query errors a retry may clear: a connection
 // dropped underneath a query. Retrying these is only safe for a read outside a
-// transaction, a constraint QueryWithRetry enforces.
+// transaction, a constraint dbproxy.QueryWithRetry enforces.
 var retryableQueryCodes = map[uint16]bool{
 	2013: true, // Connection Dropped
 	2006: true, // Gone Away

@@ -104,8 +104,10 @@ func TestLoadActualSchemaPreservesDatabaseTableAndColumnProperties(t *testing.T)
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}).
 			AddRow("config_entry", "utf8mb4_unicode_ci", "InnoDB"))
 	mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
-			AddRow("configValue", "longtext", "YES", "utf8mb4", "utf8mb4_bin"))
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME", "EXTRA"}).
+			AddRow("config_entry", "configValue", "longtext", "YES", "utf8mb4", "utf8mb4_bin", ""))
+	mock.ExpectQuery("INFORMATION_SCHEMA.STATISTICS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "INDEX_NAME", "SEQ_IN_INDEX", "COLUMN_NAME", "SUB_PART", "NON_UNIQUE", "INDEX_TYPE"}))
 	mock.ExpectClose()
 
 	ref := &DatabaseRef{Host: "db1", Port: 3306}
@@ -169,7 +171,7 @@ func TestLoadActualSchemaDetectsRowIterationFailuresAtEveryLevel(t *testing.T) {
 						AddRow("phorge_config", "utf8mb4", "utf8mb4_bin").RowError(0, streamErr))
 			},
 			load: func(svc *DiffService, conn *Conn, ref *DatabaseRef) error {
-				_, err := svc.loadServerSchema(context.Background(), conn, ref)
+				_, err := svc.loadServerSchema(context.Background(), conn, ref, nil)
 				return err
 			},
 		},
@@ -192,8 +194,8 @@ func TestLoadActualSchemaDetectsRowIterationFailuresAtEveryLevel(t *testing.T) {
 					sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}).
 						AddRow("config_entry", "utf8mb4_bin", "InnoDB"))
 				mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").WillReturnRows(
-					sqlmock.NewRows([]string{"COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
-						AddRow("configValue", "longtext", "YES", "utf8mb4", "utf8mb4_bin").RowError(0, streamErr))
+					sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME", "EXTRA"}).
+						AddRow("config_entry", "configValue", "longtext", "YES", "utf8mb4", "utf8mb4_bin", "").RowError(0, streamErr))
 			},
 			load: func(svc *DiffService, conn *Conn, ref *DatabaseRef) error {
 				_, err := svc.loadDatabaseSchema(context.Background(), conn, ref.RefKey(), "phorge_config")
@@ -297,7 +299,9 @@ func TestLoadActualSchemaAcceptsNullableViewMetadata(t *testing.T) {
 		sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}).
 			AddRow("active_config", nil, nil))
 	mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").WillReturnRows(
-		sqlmock.NewRows([]string{"COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME"}))
+		sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME", "EXTRA"}))
+	mock.ExpectQuery("INFORMATION_SCHEMA.STATISTICS").WillReturnRows(
+		sqlmock.NewRows([]string{"TABLE_NAME", "INDEX_NAME", "SEQ_IN_INDEX", "COLUMN_NAME", "SUB_PART", "NON_UNIQUE", "INDEX_TYPE"}))
 	mock.ExpectClose()
 
 	ref := &DatabaseRef{Host: "db1", Port: 3306}

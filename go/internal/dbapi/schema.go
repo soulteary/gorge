@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
 
@@ -31,7 +33,7 @@ func (s *DiffService) buildDSN(ref *DatabaseRef) DSN {
 		Host:            ref.Host,
 		Port:            ref.Port,
 		User:            ref.User,
-		Password:        ref.passwordOr(s.password),
+		Password:        ref.PasswordOr(s.password),
 		ConnTimeoutSec:  2,
 		QueryTimeoutSec: 30,
 	}
@@ -48,8 +50,12 @@ func (s *DiffService) CollectRefs() []*DatabaseRef {
 	return refs
 }
 
-// LoadActualSchema returns the schema tree for one server.
-func (s *DiffService) LoadActualSchema(ctx context.Context, ref *DatabaseRef) (*contracts.SchemaNode, error) {
+// LoadActualSchema returns the schema tree for one server. requestedDatabases
+// is the optional set of expected database names the caller (Phorge) wants
+// resolved even when they are not visible: a name that exists but the
+// configured user cannot inspect is reported as an accessDenied database node,
+// which the visible set alone cannot distinguish from an absent one.
+func (s *DiffService) LoadActualSchema(ctx context.Context, ref *DatabaseRef, requestedDatabases ...string) (*contracts.SchemaNode, error) {
 	dsn := s.buildDSN(ref)
 	conn, err := s.connFactory(dsn, true)
 	if err != nil {
@@ -57,10 +63,10 @@ func (s *DiffService) LoadActualSchema(ctx context.Context, ref *DatabaseRef) (*
 	}
 	defer func() { _ = conn.Close() }()
 
-	return s.loadServerSchema(ctx, conn, ref)
+	return s.loadServerSchema(ctx, conn, ref, requestedDatabases)
 }
 
-func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *DatabaseRef) (*contracts.SchemaNode, error) {
+func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *DatabaseRef, requestedDatabases []string) (*contracts.SchemaNode, error) {
 	server := &contracts.SchemaNode{RefKey: ref.RefKey(), Status: "ok"}
 
 	prefix := s.config.Namespace + "_"
@@ -79,12 +85,14 @@ func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *Dat
 		collation string
 	}
 	var databases []databaseInfo
+	visible := make(map[string]bool)
 	for rows.Next() {
 		var name, charset, collation string
 		if err := rows.Scan(&name, &charset, &collation); err != nil {
 			return nil, classifyMySQLError(err)
 		}
 		databases = append(databases, databaseInfo{name: name, charset: charset, collation: collation})
+		visible[name] = true
 	}
 	if err := rows.Err(); err != nil {
 		return nil, classifyMySQLError(err)
@@ -100,7 +108,58 @@ func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *Dat
 		server.Children = append(server.Children, dbNode)
 	}
 
+	// A requested database that is not visible either does not exist or exists
+	// but is not inspectable by the configured user. Only the latter is worth
+	// reporting as accessDenied; a genuinely missing database is Phorge's own
+	// "expected but absent" case, handled by its comparison against the
+	// expected schema, so it is left off the tree here.
+	for _, name := range requestedDatabases {
+		if name == "" || visible[name] {
+			continue
+		}
+		denied, err := s.databaseExistsButDenied(ctx, conn, name)
+		if err != nil {
+			return nil, err
+		}
+		if denied {
+			server.Children = append(server.Children, &contracts.SchemaNode{
+				RefKey: ref.RefKey(), Database: name, AccessDenied: true, Status: "fail",
+			})
+		}
+	}
+
 	return server, nil
+}
+
+// databaseExistsButDenied probes a database the SCHEMATA read did not surface.
+// An access-denied error (1044) means it exists but the user cannot see it; a
+// "database missing" error (1049) means it is genuinely absent, not restricted,
+// so it resolves to false and is left to Phorge's own expected-vs-actual
+// comparison. Any other failure is returned classified.
+func (s *DiffService) databaseExistsButDenied(ctx context.Context, conn *Conn, dbName string) (bool, error) {
+	rows, err := conn.QueryContext(ctx, "SHOW TABLES IN `"+escapeIdent(dbName)+"`")
+	if err != nil {
+		var myErr *mysql.MySQLError
+		if errors.As(err, &myErr) {
+			switch myErr.Number {
+			case 1044, 1142, 1227: // access denied (database / table / command)
+				return true, nil
+			case 1049: // unknown database
+				return false, nil
+			}
+		}
+		return false, classifyMySQLError(err)
+	}
+	_ = rows.Close()
+	return false, nil
+}
+
+// escapeIdent makes a database name safe to interpolate into a backtick-quoted
+// identifier. SHOW TABLES IN takes an identifier, not a placeholder, so the
+// name (already constrained by the caller to a validated expected database)
+// has its backticks doubled to prevent identifier injection.
+func escapeIdent(name string) string {
+	return strings.ReplaceAll(name, "`", "``")
 }
 
 func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey, dbName string) (*contracts.SchemaNode, error) {
@@ -134,41 +193,131 @@ func (s *DiffService) loadDatabaseSchema(ctx context.Context, conn *Conn, refKey
 		return nil, classifyMySQLError(err)
 	}
 
+	// One COLUMNS read and one STATISTICS read for the whole database, grouped
+	// in memory by table, rather than a query per table: the standalone
+	// service's per-table walk was an N+1 against INFORMATION_SCHEMA.
+	columnsByTable, err := s.loadColumns(ctx, conn, refKey, dbName)
+	if err != nil {
+		return nil, err
+	}
+	keysByTable, err := s.loadKeys(ctx, conn, dbName)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, table := range tables {
 		tableNode := &contracts.SchemaNode{
 			RefKey: refKey, Database: dbName, Table: table.name,
 			Collation: table.collation, Engine: table.engine, Status: "ok",
+			Children: columnsByTable[table.name],
+			Keys:     keysByTable[table.name],
 		}
-		colRows, err := conn.QueryContext(ctx,
-			"SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, CHARACTER_SET_NAME, COLLATION_NAME "+
-				"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
-			dbName, table.name)
-		if err != nil {
-			return nil, classifyMySQLError(err)
-		}
-		for colRows.Next() {
-			var colName, colType, nullable string
-			var charset, colCollation sql.NullString
-			if err := colRows.Scan(&colName, &colType, &nullable, &charset, &colCollation); err != nil {
-				_ = colRows.Close()
-				return nil, classifyMySQLError(err)
-			}
-			isNullable := nullable == "YES"
-			tableNode.Children = append(tableNode.Children, &contracts.SchemaNode{
-				RefKey: refKey, Database: dbName, Table: table.name, Column: colName,
-				CharacterSet: charset.String, Collation: colCollation.String,
-				ColumnType: colType, Nullable: &isNullable, Status: "ok",
-			})
-		}
-		if err := colRows.Err(); err != nil {
-			_ = colRows.Close()
-			return nil, classifyMySQLError(err)
-		}
-		_ = colRows.Close()
 		dbNode.Children = append(dbNode.Children, tableNode)
 	}
 
 	return dbNode, nil
+}
+
+// loadColumns reads every column of a database in one query and groups them by
+// table, preserving AUTO_INCREMENT from the EXTRA field the way Phorge's
+// reflection does.
+func (s *DiffService) loadColumns(ctx context.Context, conn *Conn, refKey, dbName string) (map[string][]*contracts.SchemaNode, error) {
+	rows, err := conn.QueryContext(ctx,
+		"SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, CHARACTER_SET_NAME, COLLATION_NAME, EXTRA "+
+			"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ?",
+		dbName)
+	if err != nil {
+		return nil, classifyMySQLError(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	byTable := make(map[string][]*contracts.SchemaNode)
+	for rows.Next() {
+		var tableName, colName, colType, nullable string
+		var charset, colCollation, extra sql.NullString
+		if err := rows.Scan(&tableName, &colName, &colType, &nullable, &charset, &colCollation, &extra); err != nil {
+			return nil, classifyMySQLError(err)
+		}
+		isNullable := nullable == "YES"
+		isAutoIncrement := strings.Contains(strings.ToLower(extra.String), "auto_increment")
+		byTable[tableName] = append(byTable[tableName], &contracts.SchemaNode{
+			RefKey: refKey, Database: dbName, Table: tableName, Column: colName,
+			CharacterSet: charset.String, Collation: colCollation.String,
+			ColumnType: colType, Nullable: &isNullable, AutoIncrement: &isAutoIncrement, Status: "ok",
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyMySQLError(err)
+	}
+	return byTable, nil
+}
+
+// loadKeys reads every index of a database in one INFORMATION_SCHEMA.STATISTICS
+// query and groups them by table then by index name, ordering columns by
+// SEQ_IN_INDEX and preserving the Sub_part prefix, so each index matches the
+// shape Phorge's SHOW INDEXES reflection produces.
+func (s *DiffService) loadKeys(ctx context.Context, conn *Conn, dbName string) (map[string][]contracts.SchemaKey, error) {
+	rows, err := conn.QueryContext(ctx,
+		"SELECT TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, NON_UNIQUE, INDEX_TYPE "+
+			"FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = ? "+
+			"ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX",
+		dbName)
+	if err != nil {
+		return nil, classifyMySQLError(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	// Preserve first-seen order of indexes within a table so the key list is
+	// stable across reads.
+	type keyAccum struct {
+		key   *contracts.SchemaKey
+		order int
+	}
+	perTable := make(map[string]map[string]*keyAccum)
+	tableOrder := make(map[string]int)
+	for rows.Next() {
+		var tableName, indexName, columnName, indexType string
+		var seq int
+		var subPart sql.NullInt64
+		var nonUnique int
+		if err := rows.Scan(&tableName, &indexName, &seq, &columnName, &subPart, &nonUnique, &indexType); err != nil {
+			return nil, classifyMySQLError(err)
+		}
+		byName := perTable[tableName]
+		if byName == nil {
+			byName = make(map[string]*keyAccum)
+			perTable[tableName] = byName
+		}
+		accum := byName[indexName]
+		if accum == nil {
+			accum = &keyAccum{
+				key: &contracts.SchemaKey{
+					Name: indexName, Unique: nonUnique == 0, IndexType: indexType,
+				},
+				order: tableOrder[tableName],
+			}
+			tableOrder[tableName]++
+			byName[indexName] = accum
+		}
+		name := columnName
+		if subPart.Valid {
+			name = name + "(" + strconv.FormatInt(subPart.Int64, 10) + ")"
+		}
+		accum.key.ColumnNames = append(accum.key.ColumnNames, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyMySQLError(err)
+	}
+
+	out := make(map[string][]contracts.SchemaKey, len(perTable))
+	for tableName, byName := range perTable {
+		keys := make([]contracts.SchemaKey, len(byName))
+		for _, accum := range byName {
+			keys[accum.order] = *accum.key
+		}
+		out[tableName] = keys
+	}
+	return out, nil
 }
 
 // CollectIssues walks every server's schema tree and flattens the issues found
@@ -282,6 +431,10 @@ func compareSchemaNodes(expected, actual *contracts.SchemaNode) {
 		if expected.Nullable != nil && actual.Nullable != nil && *expected.Nullable != *actual.Nullable {
 			setSchemaIssue(actual, "nullable", strconv.FormatBool(*expected.Nullable), strconv.FormatBool(*actual.Nullable),
 				"This schema has the wrong nullable setting.", "fail")
+		}
+		if expected.AutoIncrement != nil && actual.AutoIncrement != nil && *expected.AutoIncrement != *actual.AutoIncrement {
+			setSchemaIssue(actual, "autoincrement", strconv.FormatBool(*expected.AutoIncrement), strconv.FormatBool(*actual.AutoIncrement),
+				"This column has the wrong autoincrement setting.", "warn")
 		}
 	case actual.Table != "":
 		compareSchemaProperty(actual, "collation", expected.Collation, actual.Collation,
