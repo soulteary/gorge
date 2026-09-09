@@ -10,6 +10,7 @@ const (
 	DefaultListenAddr = ":8140"
 	DefaultMaxBytes   = 1048576
 	DefaultTimeoutSec = 15
+	DefaultEnableDiff = true
 )
 
 // Config is the render service configuration. The domain-specific limits carry
@@ -17,8 +18,9 @@ const (
 // soon as a second domain shares this process.
 type Config struct {
 	config.Base
-	MaxBytes   int `json:"maxBytes"`
-	TimeoutSec int `json:"timeoutSec"`
+	MaxBytes   int  `json:"maxBytes"`
+	TimeoutSec int  `json:"timeoutSec"`
+	EnableDiff bool `json:"enableDiff"`
 }
 
 // Load picks the configuration source: a JSON file when one is pointed at,
@@ -41,6 +43,7 @@ func LoadFromEnv() *Config {
 		Base:       config.LoadBase(DefaultListenAddr),
 		MaxBytes:   config.EnvInt(DefaultMaxBytes, "GORGE_RENDER_MAX_BYTES", "MAX_BYTES"),
 		TimeoutSec: config.EnvInt(DefaultTimeoutSec, "GORGE_RENDER_TIMEOUT_SEC", "TIMEOUT_SEC"),
+		EnableDiff: config.EnvBool(DefaultEnableDiff, "GORGE_RENDER_ENABLE_DIFF"),
 	}
 }
 
@@ -55,6 +58,7 @@ func LoadFromFile(path string) (*Config, error) {
 		},
 		MaxBytes:   DefaultMaxBytes,
 		TimeoutSec: DefaultTimeoutSec,
+		EnableDiff: DefaultEnableDiff,
 	}
 	if err := config.LoadJSONFile(path, cfg); err != nil {
 		return nil, err

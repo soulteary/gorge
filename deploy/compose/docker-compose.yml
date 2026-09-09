@@ -39,6 +39,7 @@ services:
       GORGE_RENDER_MAX_BYTES: ${GORGE_RENDER_MAX_BYTES:-1048576}
       GORGE_DIFF_MAX_BYTES: ${GORGE_DIFF_MAX_BYTES:-1048576}
       GORGE_RENDER_TIMEOUT_SEC: ${GORGE_RENDER_TIMEOUT_SEC:-15}
+      GORGE_RENDER_ENABLE_DIFF: ${GORGE_RENDER_ENABLE_DIFF:-true}
     ports:
       - "${GORGE_RENDER_PORT:-8140}:8140"
     healthcheck:
@@ -585,6 +586,42 @@ services:
       # service_healthy) until `bin/storage upgrade` runs in the Phorge
       # container that starts after this one. See compat/phorge/README.md 8.7.
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+  # --- gitea: signed, one-way Gitea events into Maniphest ---
+  #
+  # Gitea calls /webhooks/gitea directly with its HMAC signature. The bridge
+  # extracts T123 references and appends one idempotent comment through the
+  # Conduit gateway. It never provisions or impersonates users; Stargate owns
+  # account identity and this service always writes as one Conduit bot.
+  gitea:
+    <<: *service-defaults
+    profiles: ["gitea"]
+    build:
+      context: ../../go
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gorge-gitea
+        PORT: 8180
+    image: ghcr.io/soulteary/gorge:gitea-${GORGE_IMAGE_TAG:-latest}
+    environment:
+      GORGE_LISTEN_ADDR: ":8180"
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+      GORGE_GITEA_BASE_URL: ${GORGE_GITEA_BASE_URL:-}
+      GORGE_GITEA_WEBHOOK_SECRET: ${GORGE_GITEA_WEBHOOK_SECRET:-}
+      GORGE_GITEA_CONDUIT_URL: ${GORGE_GITEA_CONDUIT_URL:-http://conduit:8150}
+      GORGE_GITEA_CONDUIT_TOKEN: ${GORGE_GITEA_CONDUIT_TOKEN:-}
+      GORGE_GITEA_GATEWAY_TOKEN: ${GORGE_GITEA_GATEWAY_TOKEN:-${GORGE_SERVICE_TOKEN:-}}
+      GORGE_GITEA_TIMEOUT_SEC: ${GORGE_GITEA_TIMEOUT_SEC:-15}
+    ports:
+      - "${GORGE_GITEA_PORT:-8180}:8180"
+    depends_on:
+      - conduit
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8180/healthz"]
       interval: 10s
       timeout: 3s
       start_period: 5s
