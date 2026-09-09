@@ -1,0 +1,11 @@
+[
+  {
+    "refKey": "db1:3306",
+    "charsetDefault": "utf8mb4",
+    "charsetSort": "utf8mb4",
+    "charsetFulltext": "utf8mb4",
+    "collateText": "utf8mb4_bin",
+    "collateSort": "utf8mb4_bin",
+    "collateFulltext": "utf8mb4_unicode_ci"
+  }
+]

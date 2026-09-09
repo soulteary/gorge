@@ -1,0 +1,17 @@
+[
+  {
+    "issueKey": "mysql.innodb",
+    "name": "MySQL InnoDB Engine Not Available",
+    "summary": "InnoDB is required.",
+    "message": "The \"InnoDB\" engine is not available in MySQL.",
+    "isFatal": true,
+    "refKey": "db1:3306"
+  },
+  {
+    "issueKey": "mysql.max_allowed_packet",
+    "name": "Small MySQL \"max_allowed_packet\"",
+    "message": "max_allowed_packet is smaller than recommended.",
+    "isFatal": false,
+    "refKey": "db1:3306"
+  }
+]

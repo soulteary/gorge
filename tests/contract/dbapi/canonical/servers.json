@@ -1,0 +1,30 @@
+[
+  {
+    "refKey": "db1:3306",
+    "host": "db1",
+    "port": 3306,
+    "user": "gorge_ro",
+    "isMaster": true,
+    "disabled": false,
+    "isIndividual": true,
+    "isDefaultPartition": true,
+    "connectionStatus": "okay",
+    "connectionLatencySec": 0.004,
+    "replicationStatus": "okay"
+  },
+  {
+    "refKey": "db2:3306",
+    "host": "db2",
+    "port": 3306,
+    "user": "gorge_ro",
+    "isMaster": false,
+    "disabled": false,
+    "isIndividual": false,
+    "isDefaultPartition": false,
+    "connectionStatus": "okay",
+    "connectionLatencySec": 0.006,
+    "replicationStatus": "replica-slow",
+    "replicaMessage": "replica is behind",
+    "secondsBehindMaster": 12
+  }
+]

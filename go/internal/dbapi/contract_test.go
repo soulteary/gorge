@@ -65,8 +65,11 @@ func seedHealthyNode(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}).
 			AddRow("patch_status", "utf8mb4_bin", "InnoDB"))
 	mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
-			AddRow("patch", "varchar(255)", "NO", "utf8mb4", "utf8mb4_bin"))
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME", "EXTRA"}).
+			AddRow("patch_status", "patch", "varchar(255)", "NO", "utf8mb4", "utf8mb4_bin", ""))
+	mock.ExpectQuery("INFORMATION_SCHEMA.STATISTICS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "INDEX_NAME", "SEQ_IN_INDEX", "COLUMN_NAME", "SUB_PART", "NON_UNIQUE", "INDEX_TYPE"}).
+			AddRow("patch_status", "PRIMARY", 1, "patch", nil, 0, "BTREE"))
 
 	// Charset-info: utf8mb4 is present.
 	mock.ExpectQuery("INFORMATION_SCHEMA.CHARACTER_SETS").
@@ -92,7 +95,7 @@ func seedHealthyNode(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(time.Now().Unix()))
 
 	// Migration: the meta_data patch_status table with one applied patch, and
-	// the hoststate read the service discards.
+	// the hoststate read whose digest becomes clusterStateDigest.
 	mock.ExpectQuery("SELECT patch FROM patch_status").
 		WillReturnRows(sqlmock.NewRows([]string{"patch"}).AddRow("phabricator:0001.legacy.sql"))
 	mock.ExpectQuery("SELECT stateValue FROM hoststate").
@@ -105,7 +108,7 @@ func seedHealthyNode(mock sqlmock.Sqlmock) {
 // backend it injects differs.
 func newContractServer(t *testing.T, seed func(sqlmock.Sqlmock)) *fiber.App {
 	t.Helper()
-	deps := NewDeps(contractCluster(), "secret", contracttest.Token)
+	deps := NewDeps(contractCluster(), "secret", contracttest.Token, TopologySourceFile)
 	setConnFactory(deps, mockFactory(t, seed))
 	srv := httpx.New(httpx.Config{Ready: deps.Ready})
 	RegisterRoutes(srv.App(), deps)
@@ -127,7 +130,7 @@ func TestContractFixtures(t *testing.T) {
 // caller past the token check still gets no host, database name or SQL.
 func TestContractFixturesWithAnUnreachableDatabase(t *testing.T) {
 	quietLogs(t)
-	deps := NewDeps(contractCluster(), "secret", contracttest.Token)
+	deps := NewDeps(contractCluster(), "secret", contracttest.Token, TopologySourceFile)
 	setConnFactory(deps, unreachableFactory())
 	srv := httpx.New(httpx.Config{Ready: deps.Ready})
 	RegisterRoutes(srv.App(), deps)

@@ -1,0 +1,11 @@
+[
+  {
+    "refKey": "db1:3306",
+    "initialized": true,
+    "appliedPatches": [
+      "phabricator:0001.legacy.sql",
+      "phabricator:daemonstatus.sql"
+    ],
+    "clusterStateDigest": "b0f3c2b0a1d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e"
+  }
+]

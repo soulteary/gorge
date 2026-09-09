@@ -1,0 +1,248 @@
+name: db-api cross-repo contract
+
+# The third layer of the db-api contract test: it proves the Go producer and
+# the PHP consumer agree about the wire contract, end to end, against a real
+# MySQL. The first two layers each live in one repository and run on every push
+# there (the Go canonical-fixture guard in ci.yml's `test` job, the PHP
+# PhabricatorGorgeDBContractTestCase in phorge-fork's arc unit run). This
+# workflow is the join: it checks out BOTH repositories at chosen refs, brings
+# up MySQL + Phorge + gorge-db-api, collects Phorge's own observations twice
+# against one database (native, then through the service), and asserts they
+# agree on every stable field.
+#
+# Cross-repo refs are inputs, not implied by the trigger, because the two
+# branches under test are chosen per change and recorded in the PR (see
+# .github/PULL_REQUEST_TEMPLATE — the "paired change" section). Defaults are the
+# mainlines so a manual run with no inputs still does something useful.
+
+on:
+  workflow_dispatch:
+    inputs:
+      gorge_ref:
+        description: 'gorge branch/tag/SHA to test'
+        required: false
+        default: 'main'
+      phorge_ref:
+        description: 'phorge-fork branch/tag/SHA to test'
+        required: false
+        default: 'main'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'go/internal/contracts/**'
+      - 'go/internal/dbapi/**'
+      - 'tests/contract/dbapi/**'
+      - '.github/scripts/dbapi/**'
+      - '.github/workflows/db-api-cross-repo.yml'
+
+env:
+  # The paired phorge-fork ref. On workflow_dispatch it is the input; on a
+  # pull_request it falls back to main, since a PR here can not name a branch in
+  # the other repository. A real paired change is verified by dispatching this
+  # workflow with both refs set (and the PR body records the pair).
+  PHORGE_REF: ${{ github.event.inputs.phorge_ref || 'main' }}
+  GORGE_REF: ${{ github.event.inputs.gorge_ref || github.sha }}
+  PHORGE_REPO: soulteary/phorge
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Layer 1 + 2 join that needs no database: the fixtures are identical across
+  # the two repos, the Go types still marshal to them, and (best effort, when a
+  # PHP CLI is present) the PHP round-trips them. This is cheap and always runs.
+  # ---------------------------------------------------------------------------
+  fixtures:
+    name: Canonical fixtures agree across repos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gorge
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.GORGE_REF }}
+          path: gorge
+
+      - name: Checkout phorge-fork
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.PHORGE_REPO }}
+          ref: ${{ env.PHORGE_REF }}
+          path: phorge-fork
+
+      - name: Record refs under test
+        run: |
+          echo "gorge:       $(git -C gorge rev-parse HEAD)"
+          echo "phorge-fork: $(git -C phorge-fork rev-parse HEAD)"
+
+      - name: Fixtures are byte-identical in both repos
+        run: |
+          bash gorge/.github/scripts/dbapi/check-contract-fixtures.sh \
+            gorge phorge-fork
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+          cache-dependency-path: gorge/go/go.sum
+
+      - name: Go canonical guard (types still match the fixtures)
+        working-directory: gorge/go
+        run: go test ./internal/dbapi -run Canonical -count=1 -v
+
+  # ---------------------------------------------------------------------------
+  # The full integration: one database, observed by Phorge two ways, compared.
+  #
+  # This is the heavy job. It stands up MySQL, initializes Phorge's schema with
+  # `bin/storage upgrade`, builds and runs gorge-db-api against that same MySQL,
+  # then runs the dump script twice — once with gorge.db.uri unset (native
+  # direct-SQL reflection) and once with it set to the service — and diffs the
+  # two normalized observations. Every step is real: the second dump is a
+  # genuine PHP consumption of the live service through this repo's adapter, not
+  # a curl of the endpoint.
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Native vs Gorge observations agree
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: gorge-ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pgorge-ci"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+    env:
+      # A single-node cluster: the db-api single-node fallback and Phorge's
+      # scalar mysql.* config point at the same MySQL service above.
+      DB_HOST: 127.0.0.1
+      DB_PORT: '3306'
+      DB_USER: root
+      DB_PASS: gorge-ci
+      DB_NAMESPACE: phorge
+      DBAPI_PORT: '8080'
+      DBAPI_TOKEN: cross-repo-ci-token
+    steps:
+      - name: Checkout gorge
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.GORGE_REF }}
+          path: gorge
+
+      - name: Checkout phorge-fork
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.PHORGE_REPO }}
+          ref: ${{ env.PHORGE_REF }}
+          path: phorge-fork
+
+      # arcanist is Phorge's runtime dependency for the CLI scripts; it sits
+      # beside the install the way a normal deployment lays it out.
+      - name: Checkout arcanist
+        uses: actions/checkout@v6
+        with:
+          repository: phacility/arcanist
+          path: arcanist
+
+      - name: Record refs under test
+        run: |
+          {
+            echo "### db-api cross-repo refs"
+            echo "- gorge:       \`$(git -C gorge rev-parse HEAD)\`"
+            echo "- phorge-fork: \`$(git -C phorge-fork rev-parse HEAD)\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, mbstring, curl, iconv
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+          cache-dependency-path: gorge/go/go.sum
+
+      - name: Configure Phorge for the CI MySQL
+        working-directory: phorge-fork
+        run: |
+          set -euo pipefail
+          PATH="$PWD/../arcanist/bin:$PATH"
+          ./bin/config set mysql.host "$DB_HOST"
+          ./bin/config set mysql.port "$DB_PORT"
+          ./bin/config set mysql.user "$DB_USER"
+          ./bin/config set mysql.pass "$DB_PASS"
+          ./bin/config set storage.default-namespace "$DB_NAMESPACE"
+          # Native path: the service is not configured, so every consumer runs
+          # its direct-SQL fallback.
+          ./bin/config set gorge.db.uri ''
+
+      - name: Initialize Phorge schema (bin/storage upgrade)
+        working-directory: phorge-fork
+        run: |
+          set -euo pipefail
+          PATH="$PWD/../arcanist/bin:$PATH"
+          ./bin/storage upgrade --force
+
+      - name: Build and start gorge-db-api against the same MySQL
+        working-directory: gorge/go
+        run: |
+          set -euo pipefail
+          go build -o /tmp/gorge-db-api ./cmd/gorge-db-api
+          GORGE_LISTEN_ADDR=":${DBAPI_PORT}" \
+          GORGE_SERVICE_TOKEN="${DBAPI_TOKEN}" \
+          GORGE_DB_MYSQL_HOST="${DB_HOST}" \
+          GORGE_DB_MYSQL_PORT="${DB_PORT}" \
+          GORGE_DB_MYSQL_USER="${DB_USER}" \
+          GORGE_DB_MYSQL_PASS="${DB_PASS}" \
+          GORGE_DB_NAMESPACE="${DB_NAMESPACE}" \
+            /tmp/gorge-db-api &
+          echo $! >/tmp/gorge-db-api.pid
+          # Wait for liveness (not readiness: /readyz would dial a DB, which is
+          # fine here, but /healthz is the process-liveness probe).
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${DBAPI_PORT}/healthz" >/dev/null; then
+              echo "db-api is up"; break
+            fi
+            sleep 1
+          done
+
+      - name: Stage the dump script into the Phorge tree
+        run: |
+          mkdir -p phorge-fork/scripts/dbapi
+          cp gorge/.github/scripts/dbapi/dump_observations.php \
+            phorge-fork/scripts/dbapi/dump_observations.php
+
+      - name: Collect native-path observations
+        working-directory: phorge-fork
+        run: |
+          set -euo pipefail
+          PATH="$PWD/../arcanist/bin:$PATH"
+          php scripts/dbapi/dump_observations.php >/tmp/native.json
+          echo "native observations:"; cat /tmp/native.json
+
+      - name: Switch Phorge to the Gorge path and re-collect
+        working-directory: phorge-fork
+        run: |
+          set -euo pipefail
+          PATH="$PWD/../arcanist/bin:$PATH"
+          ./bin/config set gorge.db.uri "http://127.0.0.1:${DBAPI_PORT}"
+          ./bin/config set gorge.db.token "${DBAPI_TOKEN}"
+          # This dump is the real PHP consumption of the live service: the same
+          # script, now reading gorge-db-api through PhabricatorGorgeDBClient.
+          php scripts/dbapi/dump_observations.php >/tmp/gorge.json
+          echo "gorge observations:"; cat /tmp/gorge.json
+
+      - name: Compare (stable fields exact, volatile by type/range)
+        run: |
+          python3 gorge/.github/scripts/dbapi/compare_native_vs_gorge.py \
+            /tmp/native.json /tmp/gorge.json
+
+      - name: Stop gorge-db-api
+        if: always()
+        run: |
+          if [ -f /tmp/gorge-db-api.pid ]; then
+            kill "$(cat /tmp/gorge-db-api.pid)" 2>/dev/null || true
+          fi

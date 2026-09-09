@@ -1,0 +1,68 @@
+[
+  {
+    "refKey": "db1:3306",
+    "status": "ok",
+    "children": [
+      {
+        "refKey": "db1:3306",
+        "databaseName": "phorge_meta_data",
+        "characterSet": "utf8mb4",
+        "collation": "utf8mb4_bin",
+        "status": "ok",
+        "children": [
+          {
+            "refKey": "db1:3306",
+            "databaseName": "phorge_meta_data",
+            "tableName": "patch_status",
+            "collation": "utf8mb4_bin",
+            "engine": "InnoDB",
+            "keys": [
+              {
+                "name": "PRIMARY",
+                "columnNames": [
+                  "id"
+                ],
+                "unique": true,
+                "indexType": "BTREE"
+              },
+              {
+                "name": "key_patch",
+                "columnNames": [
+                  "patch(64)",
+                  "kind"
+                ],
+                "unique": true,
+                "indexType": "BTREE"
+              }
+            ],
+            "status": "ok",
+            "children": [
+              {
+                "refKey": "db1:3306",
+                "databaseName": "phorge_meta_data",
+                "tableName": "patch_status",
+                "columnName": "id",
+                "columnType": "int(10) unsigned",
+                "nullable": false,
+                "autoIncrement": true,
+                "status": "ok"
+              },
+              {
+                "refKey": "db1:3306",
+                "databaseName": "phorge_meta_data",
+                "tableName": "patch_status",
+                "columnName": "patch",
+                "characterSet": "utf8mb4",
+                "collation": "utf8mb4_bin",
+                "columnType": "varchar(255)",
+                "nullable": false,
+                "autoIncrement": false,
+                "status": "ok"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
