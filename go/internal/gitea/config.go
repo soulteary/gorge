@@ -39,7 +39,7 @@ func LoadFromEnv() *Config {
 
 func (c *Config) Ready() error {
 	if c.BaseURL == "" || c.WebhookSecret == "" || c.ConduitURL == "" || c.ConduitToken == "" {
-		return errors.New("Gitea bridge configuration is incomplete")
+		return errors.New("gitea bridge configuration is incomplete")
 	}
 	return nil
 }
