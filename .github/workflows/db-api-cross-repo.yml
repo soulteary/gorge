@@ -155,7 +155,11 @@ jobs:
       - name: Checkout arcanist
         uses: actions/checkout@v6
         with:
-          repository: phacility/arcanist
+          # Current Phorge uses traits and enums in its library map. The
+          # archived phacility fork only recognizes classes/interfaces and
+          # fails to load these symbols during `bin/config` and `bin/storage`.
+          repository: phorgeit/arcanist
+          ref: 6f3726694752fb9cb08207070a4d7f68163784e1
           path: arcanist
 
       - name: Record refs under test
