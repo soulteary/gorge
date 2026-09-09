@@ -5,7 +5,8 @@ name: db-api cross-repo contract
 # MySQL. The first two layers each live in one repository and run on every push
 # there (the Go canonical-fixture guard in ci.yml's `test` job, the PHP
 # PhabricatorGorgeDBContractTestCase in phorge-fork's arc unit run). This
-# workflow is the join: it checks out BOTH repositories at chosen refs, brings
+# workflow is the join: it checks out BOTH repositories at chosen refs, runs
+# the PHP consumer contract test against the phorge-fork ref under test, brings
 # up MySQL + Phorge + gorge-db-api, collects Phorge's own observations twice
 # against one database (native, then through the service), and asserts they
 # agree on every stable field.
@@ -34,12 +35,24 @@ on:
       - 'tests/contract/dbapi/**'
       - '.github/scripts/dbapi/**'
       - '.github/workflows/db-api-cross-repo.yml'
+  # A visible success record after merge. Same paths as the pull_request
+  # trigger; on push the ref inputs are empty, so GORGE_REF falls back to the
+  # pushed commit (github.sha) and PHORGE_REF to phorge-fork's mainline.
+  push:
+    branches: [ main ]
+    paths:
+      - 'go/internal/contracts/**'
+      - 'go/internal/dbapi/**'
+      - 'tests/contract/dbapi/**'
+      - '.github/scripts/dbapi/**'
+      - '.github/workflows/db-api-cross-repo.yml'
 
 env:
   # The paired phorge-fork ref. On workflow_dispatch it is the input; on a
-  # pull_request it falls back to main, since a PR here can not name a branch in
-  # the other repository. A real paired change is verified by dispatching this
-  # workflow with both refs set (and the PR body records the pair).
+  # pull_request or push it falls back to main, since a PR/push here can not
+  # name a branch in the other repository. A real paired change is verified by
+  # dispatching this workflow with both refs set (and the PR body records the
+  # pair).
   PHORGE_REF: ${{ github.event.inputs.phorge_ref || 'main' }}
   GORGE_REF: ${{ github.event.inputs.gorge_ref || github.sha }}
   PHORGE_REPO: soulteary/phorge
@@ -164,6 +177,21 @@ jobs:
         with:
           go-version: '1.27'
           cache-dependency-path: gorge/go/go.sum
+
+      # Layer 2, executed here against the phorge-fork ref under test: run the
+      # PHP consumer contract test for real. PhabricatorGorgeDBContractTestCase
+      # extends PhabricatorTestCase with Lisk isolation on, so it drives the
+      # pure translation/validation helpers off the canonical fixtures without a
+      # database. `arc unit <module>` runs exactly the tests in that module's
+      # __tests__/ directory; arcanist is already checked out beside the tree
+      # and bundles libphutil, and phorge's .arcconfig loads its own src/
+      # library, so the class and its parent resolve. A failure fails the job.
+      - name: Run PHP contract test (arc unit)
+        working-directory: phorge-fork
+        run: |
+          set -euo pipefail
+          PATH="$PWD/../arcanist/bin:$PATH"
+          arc unit --no-coverage src/infrastructure/cluster/
 
       - name: Configure Phorge for the CI MySQL
         working-directory: phorge-fork

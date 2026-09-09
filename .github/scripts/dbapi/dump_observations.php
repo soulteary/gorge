@@ -13,6 +13,17 @@
  *     database/table/column/index attributes;
  *   - `setupIssues`: the DB/MySQL setup checks' issue keys and fatality.
  *
+ * Deliberately NOT observed here: the migrations-status `clusterStatePresent`
+ * / `clusterStateDigest` pair. Unlike the fields above, there is no native
+ * direct-SQL consumer in Phorge that reconstructs the same presence/digest for
+ * a byte-comparable diff, and a single-node CI MySQL has no multi-master
+ * cluster state to make the value meaningful. Surfacing it here would either
+ * force a real replicated topology or risk leaking cluster.databases internals
+ * for no added signal. That pair is instead pinned where it belongs — off the
+ * canonical fixtures in PhabricatorGorgeDBContractTestCase (validateContractMeta
+ * and isClusterStateStatusSynchronized), which the cross-repo workflow now runs
+ * via `arc unit` against the phorge-fork ref under test.
+ *
  * The trick is that this script does NOT know or care which path produced the
  * data. When `gorge.db.uri` is unset, every call above runs Phorge's native
  * direct-SQL reflection; when it is set to the service, the very same calls
