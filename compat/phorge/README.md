@@ -20,6 +20,35 @@
 
 改动其中任何一项，都必须同步改动 PHP 侧并在这里更新说明。
 
+## 自动防漂移：清单 + 校验器（第六、七、九、十、十一节各守住了一部分）
+
+上表中**字段名、HTTP 路由、错误码**这一类「改名即静默失效」的条目，现在不再只靠人记得同步——它们被一份机器可读的清单和一个 CI 校验器锁住了，破坏之后从「静默失效」升级为「CI 报错」。
+
+- **清单（单一真源）**：[`go/internal/contracts/manifest.go`](../../go/internal/contracts/manifest.go) 枚举 mailer / search / webhook / taskqueue / db-api 五域的 wire 字段名、HTTP 路由与错误码，并为每一项标注它在 phorge-fork 侧应当作为字符串字面量出现的具体 PHP 文件。数据源就是现有的结构体 json tag、`http.go` 路由注册与 `ERR_*` 常量，不臆造字段。当前登记 **180 项**，其中 **163 个「项×文件」对**真的与 phorge-fork 比对。
+- **校验器**：[`go/internal/doccheck/contractsync_test.go`](../../go/internal/doccheck/contractsync_test.go)，三个测试：
+  - `TestManifestMatchesGoContracts` 每次 `go test` 都跑，无外部依赖，断言清单里的每个名字都真实存在于 Go 侧（json tag、注册路由或常量值），使清单**无法**偏离它所描述的 Go 源码。
+  - `TestManifestMatchesPhorgeFork` 是真正的跨仓校验：读环境变量 `PHORGE_FORK_DIR` 指向的 phorge-fork 树，逐项断言同名字面量确实出现在清单指定的 PHP 文件里，缺失即 `t.Error` 并**指出具体是哪个字段、应改哪个 PHP 文件**；`PHORGE_FORK_DIR` 未设置时 `t.Skip`，所以 gorge 单独 clone 时 CI 不会因缺少 phorge-fork 而变红。
+  - `TestManifestMatchesPhorgeForkInReverse` 是反方向：正向只能查出「登记了的名字还在不在」，查不出「PHP 侧多出一个 Go 侧没有的键」——而后者同样是漂移（一次拼错的重命名看起来就像「清单还没跟上」）。它扫十个线边界 PHP 文件，把出现在三种 wire-key 位置（`idx($x,'k')` / `'k' =>` / `$x['k']`）上的 lowerCamelCase 键逐个对清单查，查不到即报错。范围与例外的划法写在 `contracts.ReverseScanFiles` 的注释里。
+- **挂载点**：`make docs-check`（即 `go test ./internal/doccheck`）自动带起这三个测试；单仓 CI 见 [`.github/workflows/docs.yml`](../../.github/workflows/docs.yml)（跨仓那两个在此 skip）。跨仓那两个在 [`.github/workflows/contract-drift.yml`](../../.github/workflows/contract-drift.yml) 里真正执行——它同时 checkout gorge 与 phorge-fork 并把 `PHORGE_FORK_DIR` 指向后者。
+
+**改共享字段名的正确顺序**（顺序是有意义的，反着来会让清单变陈旧而校验器对着错误的真源亮绿灯）：
+
+1. 先改 **Go 侧**（结构体 tag / 路由 / 常量）**以及** `manifest.go` 里对应的那一项，两者一起改；
+2. 跑 `make docs-check`（或带 `PHORGE_FORK_DIR` 跑 `contractsync_test.go`）——它会 fail 并点名要改的那个 phorge-fork 文件；
+3. 按提示改那个 PHP 字面量使其一致，重跑直到通过。
+
+**覆盖面不是整节，读标记要读到限定词。**下文五节的标题带 **[CI 已守：…]** 标记，冒号后面那句就是覆盖面的**全部**——没写进去的东西没有被守住。逐节的缺口与理由：
+
+| 节 | 守住了 | 没守住，以及为什么 |
+|---|---|---|
+| 六、mailer | 2 条路由、`ERR_PERMANENT_FAILURE`、请求侧 17 个字段名（含最外层信封键 `message`） | `ERR_SEND_FAILED`（PHP 不按字面量分支）、应答的 `mailerKey` / `messageId`（适配器把 `data` 段整个交给调用方，一个键都不点名） |
+| 七、search | 7 条路由、16 个四字符常量、7.2 的 31 个文档／查询／统计字段名、4 个信封字段名 | 5 个域级错误码（PHP 无消费者）、应答的 `count` / `status`（PHP 侧从不点名） |
+| 九、webhook | 9.8 的 2 条路由、9.1 payload 的 10 个键 | 9.4–9.6 的回写列（是 `herald_webhookrequest` 的列名、两侧都走 SQL，Go 侧没有 json tag 可锚）、9.8 的 5 个统计字段（客户端一个键都不点名）。**9.1 的字节序与键顺序也不在此校验之内**，那是 `TestPayloadIsByteExact` 的事 |
+| 十、taskqueue | 9 条路由、13 个 API 字段名、4 个 `worker_activetask` 列名 | `dataID`——`PhabricatorWorkerTask` 把它写成属性声明（`protected $dataID;`）而不是 `CONFIG_COLUMN_SCHEMA` 里的带引号键，没有字面量可比 |
+| 十一、db-api | 7 条路由、PHP 侧真的按键读取的 38 个字段名 | 3 个域级错误码（只作为文本活在异常消息里）、PHP 侧从不按名读取的那些字段（`isMaster` / `expected` / `actual` / `clusterStateDigest` 等） |
+
+清单头部注释逐项写明了每一项为何在／不在校验范围内。**注意「不在范围内」是一句关于事实的陈述而不是一个类别**——它说的是「今天的 phorge-fork 里没有这个拼法的带引号字面量」，理由写在那一项的 `Note` 里。这份注释此前有四处与事实不符（声称 §9.1、§7.2、§10.1 的名字「不作为字面量出现」，而它们都出现了），那比没有注释更危险：它给出的是一个看起来充分、实则错误的不比对理由。改动清单时，如果要给某一项留空 `PHPFiles`，先去那棵树里 grep 一遍。
+
 ---
 
 ## 一、Pygments 语言别名表：PHP 表是下界，Go 表可以是超集
@@ -478,7 +507,7 @@ curl -s http://127.0.0.1:22281/status/
 
 ---
 
-## 六、mailer 服务的四条约定
+## 六、mailer 服务的四条约定 [CI 已守：路由、请求侧字段名与 ERR_PERMANENT_FAILURE；应答的 mailerKey / messageId 未守]
 
 **Go 侧**：`go/internal/mailer/`、`go/internal/contracts/mailer.go`
 **PHP 侧**：`PhabricatorMailGorgeAdapter` 与 `PhabricatorGorgeMailerClient`
@@ -536,7 +565,7 @@ curl -s http://127.0.0.1:22281/status/
 
 ---
 
-## 七、search 的字段名与分析器链：五条约定
+## 七、search 的字段名与分析器链：五条约定 [CI 已守：路由、16 个四字符常量与 7.2 的字段名；应答的 count / status 未守]
 
 **Go 侧**：`go/internal/search/http.go`（七条路由）、`go/internal/search/esquery/builder.go`（16 个四字符常量与 `cjk` 子字段名）、`go/internal/search/engine/backend.go`（默认索引名）、`go/internal/search/engine/elasticsearch/backend.go`（`buildIndexConfig()` 与 `buildSearchSpec()`）、`go/internal/contracts/search.go`
 **PHP 侧**：`PhabricatorGorgeFulltextStorageEngine`、`PhabricatorGorgeSearchClient`、`PhabricatorSearchDocumentFieldType`、`PhabricatorSearchRelationship`
@@ -837,7 +866,7 @@ GET /readyz  → 503
 
 还有一个方向的推论仍然成立：**不要在启动时 ping**。`OpenDB` 用 `sql.Open` 而它是惰性的，所以数据库还没起来时服务照常启动、照常答 `/healthz`，由 `/readyz` 去报告连不上——这正是编排区分「正在启动」与「坏了」所需要的。在启动路径上 ping 只会让一个「慢」的依赖把容器打进重启循环。这一条不受上面的修正影响，因为它说的是「别把探针的判据搬到启动路径上」，而不是「那个判据是安全的」。
 
-## 九、webhook 投递：出站的字节与回写的字段
+## 九、webhook 投递：出站的字节与回写的字段 [CI 已守：9.8 的路由与 9.1 payload 的 10 个键；9.4–9.6 的回写列与 9.8 的统计字段未守]
 
 **Go 侧**：`go/internal/webhook/`（`dispatcher.go` 的 `buildPayload` / `signPayload` / `phidType`、`model.go` 的全部常量、`store.go` 的 `UpdateResult`）、`go/internal/contracts/webhook.go`
 **PHP 侧**：`HeraldWebhookRequest`、`HeraldWebhookWorker`、`HeraldWebhook`、`PhabricatorGorgeWebhookClient`
@@ -1054,7 +1083,7 @@ SELECT status, lastRequestResult, lastRequestEpoch, properties
 
 ---
 
-## 十、task queue 与 worker：任务字段名与租约语义
+## 十、task queue 与 worker：任务字段名与租约语义 [CI 已守：路由、API 字段名与 4 个 worker_activetask 列名；dataID 未守]
 
 **Go 侧**：`go/internal/taskqueue/`（`mysql_store.go` / `redis_store.go` 的 SQL 与键结构、`http.go` 的路由）、`go/internal/worker/`（`consumer.go` 的回报分岔、`handlers/` 的 Conduit 委派）、`go/internal/contracts/taskqueue.go`（全部字段名与常量）
 **PHP 侧**：`PhabricatorWorkerActiveTask`、`PhabricatorWorkerArchiveTask`、`PhabricatorWorker`、`PhabricatorWorkerLeaseQuery`、`PhabricatorTaskmasterDaemon`
@@ -1131,7 +1160,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 ---
 
-## 十一、db-api：字段名、错误码与库/表名
+## 十一、db-api：字段名、错误码与库/表名 [CI 已守：路由与 PHP 侧按键读取的 38 个字段名；PHP 未按名读取的字段与三个错误码未守]
 
 **Go 侧**：`go/internal/dbapi/`（`health.go` / `diff.go` / `setup.go` / `migration.go` 的探测逻辑、`router.go` 的分区路由、`errors.go` 与 `mysqlerr.go` 的错误分类、`config.go` 的 DSN 与库名拼接）、`go/internal/contracts/dbapi.go`（全部字段名）
 **PHP 侧**：`PhabricatorDatabaseRef`、`PhabricatorDatabaseSetupCheck`、`PhabricatorMySQLSetupCheck`、`PhabricatorConfigSchemaQuery`、`PhabricatorGorgeDBClient`

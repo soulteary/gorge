@@ -1,0 +1,109 @@
+name: Contract drift (gorge ↔ phorge-fork)
+
+# The anti-drift guard for the whole glue layer. go/internal/contracts/manifest.go
+# is the machine-readable register of every wire field, HTTP route and error code
+# that gorge (Go structs/routes/constants) and phorge-fork (PHP string literals)
+# must spell identically; go/internal/doccheck/contractsync_test.go proves the two
+# sides still agree. Rename one spelling on either side and nothing errors at
+# runtime — a field just quietly goes empty or a document becomes unfindable
+# (compat/phorge/README.md calls this "静默失效"). This job turns that silent
+# drift into a red check.
+#
+# The same test also runs single-repo in the Documentation Consistency workflow
+# (go test ./internal/doccheck), where PHORGE_FORK_DIR is unset and the
+# cross-repo half t.Skip()s — so a lone gorge clone stays green. This workflow is
+# where the cross-repo half actually executes, because only here is phorge-fork
+# checked out and PHORGE_FORK_DIR pointed at it.
+#
+# Cross-repo refs are inputs (mirroring db-api-cross-repo.yml): a change here or
+# in phorge-fork can not name a branch in the other repo, so defaults are the
+# mainlines and a real paired rename is verified by dispatching with both refs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      gorge_ref:
+        description: 'gorge branch/tag/SHA to test'
+        required: false
+        default: 'main'
+      phorge_ref:
+        description: 'phorge-fork branch/tag/SHA to test'
+        required: false
+        default: 'main'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'go/internal/contracts/**'
+      - 'go/internal/doccheck/**'
+      - 'go/internal/mailer/**'
+      - 'go/internal/search/**'
+      - 'go/internal/webhook/**'
+      - 'go/internal/taskqueue/**'
+      - 'go/internal/dbapi/**'
+      - 'compat/phorge/**'
+      - '.github/workflows/contract-drift.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'go/internal/contracts/**'
+      - 'go/internal/doccheck/**'
+      - 'go/internal/mailer/**'
+      - 'go/internal/search/**'
+      - 'go/internal/webhook/**'
+      - 'go/internal/taskqueue/**'
+      - 'go/internal/dbapi/**'
+      - 'compat/phorge/**'
+      - '.github/workflows/contract-drift.yml'
+
+permissions:
+  contents: read
+
+env:
+  # The paired phorge-fork ref: the input on dispatch, else main (a PR/push here
+  # can not name a branch in phorge-fork). GORGE_REF falls back to the pushed
+  # commit on push and the input otherwise.
+  PHORGE_REF: ${{ github.event.inputs.phorge_ref || 'main' }}
+  GORGE_REF: ${{ github.event.inputs.gorge_ref || github.sha }}
+  PHORGE_REPO: soulteary/phorge
+
+jobs:
+  drift:
+    name: Manifest agrees with phorge-fork literals
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gorge
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.GORGE_REF }}
+          path: gorge
+
+      - name: Checkout phorge-fork
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.PHORGE_REPO }}
+          ref: ${{ env.PHORGE_REF }}
+          path: phorge-fork
+
+      - name: Record refs under test
+        run: |
+          {
+            echo "### contract-drift refs"
+            echo "- gorge:       \`$(git -C gorge rev-parse HEAD)\`"
+            echo "- phorge-fork: \`$(git -C phorge-fork rev-parse HEAD)\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: gorge/go/go.mod
+          cache-dependency-path: gorge/go/go.sum
+
+      # PHORGE_FORK_DIR is an absolute path into the sibling checkout above. With
+      # it set, TestManifestMatchesPhorgeFork runs (instead of skipping) and
+      # fails, naming the exact PHP file to edit, if any manifested field/route/
+      # error code has drifted from its phorge-fork literal.
+      - name: Contract drift check (manifest ↔ phorge-fork)
+        working-directory: gorge/go
+        env:
+          PHORGE_FORK_DIR: ${{ github.workspace }}/phorge-fork
+        run: go test ./internal/doccheck -run 'TestManifestMatches' -count=1 -v

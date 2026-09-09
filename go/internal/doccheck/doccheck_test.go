@@ -19,7 +19,12 @@ func TestDocumentationIndexesEveryBinary(t *testing.T) {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() && !binaries[entry.Name()] {
+		// The Go tool ignores directories whose name starts with "_", so they
+		// hold no buildable binary and the index has nothing to list. Skipping
+		// them here matches that convention — and keeps a leftover scratch
+		// directory, which git does not track when it is empty and so will not
+		// show up in `git status`, from failing this test for no reason.
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), "_") && !binaries[entry.Name()] {
 			t.Errorf("docs/README.md does not list go/cmd/%s", entry.Name())
 		}
 	}
