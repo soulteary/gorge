@@ -21,8 +21,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "gorge-render: failed to load config: %v\n", err)
 		os.Exit(1)
 	}
-	diffCfg := diff.LoadFromEnv()
-
 	srv := httpx.New(httpx.Config{
 		ListenAddr:      cfg.ListenAddr,
 		ShutdownTimeout: time.Duration(cfg.TimeoutSec) * time.Second,
@@ -37,12 +35,15 @@ func main() {
 		MaxBytes:    cfg.MaxBytes,
 	})
 
-	// One token guards both domains: it authenticates the caller to this
-	// process, not to a particular route group.
-	diff.RegisterRoutes(srv.App(), &diff.Deps{
-		Token:    cfg.ServiceToken,
-		MaxBytes: diffCfg.MaxBytes,
-	})
+	if cfg.EnableDiff {
+		diffCfg := diff.LoadFromEnv()
+		// One token guards both domains: it authenticates the caller to this
+		// process, not to a particular route group.
+		diff.RegisterRoutes(srv.App(), &diff.Deps{
+			Token:    cfg.ServiceToken,
+			MaxBytes: diffCfg.MaxBytes,
+		})
+	}
 
 	if err := srv.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "gorge-render: %v\n", err)

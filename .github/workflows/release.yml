@@ -79,6 +79,11 @@ jobs:
           - service: gorge-db-api
             tag_prefix: db-api
             port: 8080
+          # Signed Gitea webhooks are translated into Maniphest comments. The
+          # bridge is one-way and does not own user identities.
+          - service: gorge-gitea
+            tag_prefix: gitea
+            port: 8180
 
     steps:
       - name: Checkout code

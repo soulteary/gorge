@@ -33,6 +33,7 @@
 | worker | `gorge-worker` | `:8170` | [`modules/taskqueue.md`](modules/taskqueue.md) | 已迁入 |
 | db-api | `gorge-db-api` | `:8080` | [`modules/dbapi.md`](modules/dbapi.md) | 已迁入 |
 | conduit | `gorge-conduit` | `:8150` | [`modules/conduit.md`](modules/conduit.md) | 已迁入 |
+| gitea | `gorge-gitea` | `:8180` | [`modules/gitea.md`](modules/gitea.md) | 已迁入 |
 
 render 与 diff 共用一个二进制与一个端口：都是无外部依赖的纯计算，拆进程换不来隔离收益。路径按域命名（`/api/highlight/*`、`/api/diff/*`）正是为了让这种合并不需要改动任何一侧。
 

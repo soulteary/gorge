@@ -13,6 +13,7 @@ var renderEnvKeys = []string{
 	"GORGE_CONFIG_FILE", "HIGHLIGHT_CONFIG_FILE",
 	"GORGE_RENDER_MAX_BYTES", "MAX_BYTES",
 	"GORGE_RENDER_TIMEOUT_SEC", "TIMEOUT_SEC",
+	"GORGE_RENDER_ENABLE_DIFF",
 }
 
 func clearRenderEnv(t *testing.T) {
@@ -38,6 +39,9 @@ func TestRenderConfigDefaults(t *testing.T) {
 	if cfg.ServiceToken != "" {
 		t.Errorf("expected an empty token, got %s", cfg.ServiceToken)
 	}
+	if !cfg.EnableDiff {
+		t.Error("expected diff routes enabled by default")
+	}
 }
 
 func TestRenderConfigFromEnv(t *testing.T) {
@@ -46,6 +50,7 @@ func TestRenderConfigFromEnv(t *testing.T) {
 	t.Setenv("GORGE_SERVICE_TOKEN", "tok123")
 	t.Setenv("GORGE_RENDER_MAX_BYTES", "2048")
 	t.Setenv("GORGE_RENDER_TIMEOUT_SEC", "30")
+	t.Setenv("GORGE_RENDER_ENABLE_DIFF", "false")
 
 	cfg := LoadFromEnv()
 	if cfg.ListenAddr != ":9999" {
@@ -59,6 +64,9 @@ func TestRenderConfigFromEnv(t *testing.T) {
 	}
 	if cfg.TimeoutSec != 30 {
 		t.Errorf("expected 30, got %d", cfg.TimeoutSec)
+	}
+	if cfg.EnableDiff {
+		t.Error("expected diff routes disabled")
 	}
 }
 
@@ -89,7 +97,7 @@ func TestRenderConfigLegacyEnv(t *testing.T) {
 func TestRenderConfigFromFile(t *testing.T) {
 	clearRenderEnv(t)
 
-	content := `{"listenAddr":":7777","maxBytes":512,"timeoutSec":5}`
+	content := `{"listenAddr":":7777","maxBytes":512,"timeoutSec":5,"enableDiff":false}`
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
@@ -108,6 +116,9 @@ func TestRenderConfigFromFile(t *testing.T) {
 	}
 	if cfg.TimeoutSec != 5 {
 		t.Errorf("expected 5, got %d", cfg.TimeoutSec)
+	}
+	if cfg.EnableDiff {
+		t.Error("expected diff routes disabled")
 	}
 }
 

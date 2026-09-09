@@ -87,6 +87,7 @@ TOKEN=dev-token make e2e
 | `GORGE_CONFIG_FILE` | `HIGHLIGHT_CONFIG_FILE` | 无 | JSON 配置文件路径 |
 | `GORGE_RENDER_MAX_BYTES` | `MAX_BYTES` | `1048576` | 单次请求源码上限（字节） |
 | `GORGE_RENDER_TIMEOUT_SEC` | `TIMEOUT_SEC` | `15` | 请求超时（秒） |
+| `GORGE_RENDER_ENABLE_DIFF` | 无 | `true` | 是否注册 `/api/diff/*` 路由 |
 
 `GORGE_RENDER_MAX_BYTES` 之外还有一道 `platform/httpx` 的传输层上限，固定 2M，不走环境变量。默认配置下前者（1MiB）更小，所以超限请求先被域级检查挡下；把它调到 2M 以上，挡下请求的就换成传输层中间件了。两条路径都返回 `413` + `ERR_TOO_LARGE`，只有 `message` 文案不同，客户端不必区分。
 

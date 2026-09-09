@@ -17,6 +17,11 @@
 
 **不负责**：读文件、解析 diff、渲染 HTML。两个引擎都是纯函数,不碰 I/O。
 
+部署只使用 Gitea 承载代码时，可设置 `GORGE_RENDER_ENABLE_DIFF=false`，让
+`gorge-render` 不注册 `/api/diff/*`。默认值仍为 `true`，因此升级不会改变已有
+调用方；Phorge 侧的 `gorge.diff.enabled=false` 则关闭 PHP 客户端切流。两端都
+关闭可以缩小接口面，但不会删除 diff 实现，恢复时无需迁移数据。
+
 **为什么没有独立进程。** 迁入前 `gorge-diff` 是自己的二进制,监听 `:8130`。合并进 `gorge-render` 是因为两个域都是无外部依赖的纯计算:没有数据库、没有缓存、没有下游服务,拆成两个容器只多一样要部署的东西,换不来任何隔离收益。路径按域命名(`/api/diff/*` 而非 `/api/render/*`)本来就是为了让这种合并不需要改动任何一侧,理由见 [`../architecture.md`](../architecture.md) 第 4.3 节。
 
 一个 token 同时守两个域:它认证的是**调用方对这个进程**的身份,不是对某个路由分组的身份。

@@ -1,0 +1,63 @@
+openapi: 3.1.0
+info:
+  title: Gorge Gitea Bridge API
+  version: 1.0.0
+  description: Signed, one-way Gitea events into linked Phorge tasks.
+paths:
+  /webhooks/gitea:
+    post:
+      summary: Receive one signed Gitea event
+      parameters:
+        - in: header
+          name: X-Gitea-Event
+          required: true
+          schema: {type: string, enum: [issues, pull_request, push, release]}
+        - in: header
+          name: X-Gitea-Delivery
+          required: true
+          schema: {type: string, maxLength: 128}
+        - in: header
+          name: X-Gitea-Signature
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200':
+          description: Delivery accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryEnvelope'
+        '400': {description: Invalid or unsupported delivery}
+        '401': {description: Invalid signature}
+        '502': {description: Phorge rejected the event}
+  /api/gitea/meta:
+    get:
+      summary: Describe the integration boundary
+      security: [{serviceToken: []}]
+      responses:
+        '200': {description: Bridge metadata}
+        '401': {description: Invalid service token}
+components:
+  securitySchemes:
+    serviceToken:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+  schemas:
+    DeliveryEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [deliveryId, event, linkedTasks, skippedTasks]
+          properties:
+            deliveryId: {type: string}
+            event: {type: string}
+            linkedTasks: {type: array, items: {type: string}}
+            skippedTasks: {type: array, items: {type: string}}
