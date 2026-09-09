@@ -20,8 +20,10 @@
 | `GET` | `/api/gitea/meta` | `X-Service-Token`，不接受查询参数 token |
 
 事件 URL 只有与 `GORGE_GITEA_BASE_URL` 同源时才会进入评论，避免用合法 webhook
-把任意外链注入任务。Gitea delivery ID 同时写入稳定的文本标记；重投前先查
-任务最近的 transactions，已经出现该标记就跳过，因而进程重启后仍可幂等。
+把任意外链注入任务。Gitea delivery ID 同时写入稳定的文本标记；重投前遍历
+任务的 transactions，已经出现该标记就跳过，因而进程重启后仍可幂等。同一进程
+还会按任务和 delivery 串行化“查标记 + 写评论”；当前支持的部署拓扑是单副本，若要
+横向扩展 `gorge-gitea`，必须先增加共享 delivery 锁或唯一性存储。
 
 ## 3. 配置
 
@@ -49,4 +51,5 @@ Compose 中该服务位于可选的 `gitea` profile，使用
 
 签名或请求错误返回 4xx；Phorge/Conduit 失败返回 502 +
 `ERR_GITEA_DELIVERY_FAILED`。Gitea 应按非 2xx 重试，相同 delivery ID 不会重复写入
-已经成功的任务。
+已经成功的任务。一次事件引用多个任务时，某个任务失败不会阻止后续任务；服务会完成
+其余任务后汇总返回 502，下一次重试会跳过已成功项。

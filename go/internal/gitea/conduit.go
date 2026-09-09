@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 type Sink interface {
@@ -19,6 +20,42 @@ type ConduitSink struct {
 	conduitToken string
 	gatewayToken string
 	client       *http.Client
+	locks        deliveryLockSet
+}
+
+type deliveryLockSet struct {
+	mu      sync.Mutex
+	entries map[string]*deliveryLock
+}
+
+type deliveryLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (s *deliveryLockSet) lock(key string) func() {
+	s.mu.Lock()
+	if s.entries == nil {
+		s.entries = make(map[string]*deliveryLock)
+	}
+	entry := s.entries[key]
+	if entry == nil {
+		entry = &deliveryLock{}
+		s.entries[key] = entry
+	}
+	entry.refs++
+	s.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		s.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(s.entries, key)
+		}
+		s.mu.Unlock()
+	}
 }
 
 func NewConduitSink(baseURL, conduitToken, gatewayToken string, client *http.Client) *ConduitSink {
@@ -45,6 +82,12 @@ type transactionSearch struct {
 }
 
 func (s *ConduitSink) Append(ctx context.Context, task string, event Event) (bool, error) {
+	// A delivery can be retried while its first request is still running. Keep
+	// the marker lookup and append atomic within this service instance, whose
+	// supported deployment topology is a single replica.
+	unlock := s.locks.lock(task + "\x00" + event.DeliveryID)
+	defer unlock()
+
 	after := ""
 	seenCursors := make(map[string]struct{})
 	for {

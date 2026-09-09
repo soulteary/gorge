@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -98,17 +100,23 @@ func receive(deps *Deps) fiber.Handler {
 		}
 		event := Event{DeliveryID: delivery, Kind: kind, Action: payload.Action, Repository: payload.Repository.FullName, Actor: payload.Sender.Login, URL: trustedURL(deps.BaseURL, candidateURL), Text: text}
 		result := contracts.GiteaDeliveryResult{DeliveryID: delivery, Event: kind, Linked: []string{}, Skipped: []string{}}
+		var deliveryErrors []error
 		for _, task := range event.TaskIDs() {
 			posted, err := deps.Sink.Append(c.Context(), task, event)
 			if err != nil {
 				slog.Error("GITEA_DELIVERY_FAILED", "delivery_id", delivery, "event", kind, "task", task, "error", err)
-				return httpx.Fail(c, http.StatusBadGateway, CodeDeliveryFailed, "Phorge rejected the Gitea event")
+				deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", task, err))
+				continue
 			}
 			if posted {
 				result.Linked = append(result.Linked, task)
 			} else {
 				result.Skipped = append(result.Skipped, task)
 			}
+		}
+		if err := errors.Join(deliveryErrors...); err != nil {
+			slog.Error("GITEA_DELIVERY_INCOMPLETE", "delivery_id", delivery, "event", kind, "error", err)
+			return httpx.Fail(c, http.StatusBadGateway, CodeDeliveryFailed, "Phorge rejected one or more Gitea task links")
 		}
 		return httpx.OK(c, result)
 	}

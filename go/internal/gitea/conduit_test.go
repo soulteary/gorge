@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestConduitSinkSkipsDeliveredEvent(t *testing.T) {
@@ -131,6 +133,91 @@ func TestConduitSinkRejectsRepeatedCursor(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests=%d", requests)
+	}
+}
+
+func TestConduitSinkSerializesDuplicateDelivery(t *testing.T) {
+	var mu sync.Mutex
+	posted := false
+	searches := 0
+	edits := 0
+	firstSearchStarted := make(chan struct{})
+	releaseFirstSearch := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/api/transaction.search"):
+			mu.Lock()
+			searches++
+			searchNumber := searches
+			alreadyPosted := posted
+			mu.Unlock()
+			if searchNumber == 1 {
+				close(firstSearchStarted)
+				<-releaseFirstSearch
+			}
+			if alreadyPosted {
+				_, _ = w.Write([]byte(`{"result":{"data":[{"comments":[{"content":{"raw":"Gitea-Delivery: delivery-concurrent"}}]}]},"error_code":null,"error_info":null}`))
+			} else {
+				_, _ = w.Write([]byte(`{"result":{"data":[]},"error_code":null,"error_info":null}`))
+			}
+		case strings.HasSuffix(r.URL.Path, "/api/maniphest.edit"):
+			mu.Lock()
+			posted = true
+			edits++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"result":{"object":{"id":1}},"error_code":null,"error_info":null}`))
+		default:
+			t.Errorf("unexpected method path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	sink := NewConduitSink(server.URL, "api-token", "", server.Client())
+	type result struct {
+		posted bool
+		err    error
+	}
+	results := make(chan result, 2)
+	secondStarted := make(chan struct{})
+	appendEvent := func() {
+		ok, err := sink.Append(context.Background(), "T1", Event{DeliveryID: "delivery-concurrent"})
+		results <- result{posted: ok, err: err}
+	}
+
+	go appendEvent()
+	<-firstSearchStarted
+	go func() {
+		close(secondStarted)
+		appendEvent()
+	}()
+	<-secondStarted
+	<-time.After(50 * time.Millisecond)
+	mu.Lock()
+	concurrentSearches := searches
+	mu.Unlock()
+	close(releaseFirstSearch)
+	if concurrentSearches != 1 {
+		t.Fatalf("concurrent searches=%d", concurrentSearches)
+	}
+
+	linked := 0
+	skipped := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.posted {
+			linked++
+		} else {
+			skipped++
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if linked != 1 || skipped != 1 || searches != 2 || edits != 1 {
+		t.Fatalf("linked=%d skipped=%d searches=%d edits=%d", linked, skipped, searches, edits)
 	}
 }
 
