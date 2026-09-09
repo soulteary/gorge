@@ -59,7 +59,12 @@ func (s *deliveryLockSet) lock(key string) func() {
 }
 
 func NewConduitSink(baseURL, conduitToken, gatewayToken string, client *http.Client) *ConduitSink {
-	return &ConduitSink{strings.TrimRight(baseURL, "/"), conduitToken, gatewayToken, client}
+	return &ConduitSink{
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		conduitToken: conduitToken,
+		gatewayToken: gatewayToken,
+		client:       client,
+	}
 }
 
 type conduitEnvelope struct {
