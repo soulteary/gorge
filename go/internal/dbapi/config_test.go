@@ -176,29 +176,69 @@ func TestBuildClusterFromFile(t *testing.T) {
 	}
 }
 
+// TestBuildClusterFromFileMissing pins the fail-closed contract: when
+// GORGE_DB_CONFIG_FILE names a file that does not exist, the operator is
+// describing a cluster that could not be loaded, so the boot must stop rather
+// than silently degrade to the scalar single node. The scalar fallbacks are
+// present precisely to prove they are NOT used on this path.
 func TestBuildClusterFromFileMissing(t *testing.T) {
 	cfg := &Config{
 		ConfigFile: "/nonexistent/path/config.json",
 		MySQLHost:  "fallback", MySQLPort: 3307, MySQLUser: "app", Namespace: "fallback_ns",
 	}
 	cc, err := cfg.BuildCluster()
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatalf("missing config file must fail the boot, got cluster %+v", cc)
 	}
-	if len(cc.Refs) != 1 || cc.Refs[0].Host != "fallback" || cc.Refs[0].Port != 3307 {
-		t.Fatalf("missing config did not fall back to scalar node: %+v", cc.Refs)
+	if cc != nil {
+		t.Fatalf("expected nil cluster on failure, got %+v", cc)
 	}
 }
 
+// TestBuildClusterFromFileInvalidJSON: malformed JSON in an explicitly named
+// config file is a misconfiguration the operator must see, not a reason to
+// fall back to a scalar single node.
 func TestBuildClusterFromFileInvalidJSON(t *testing.T) {
 	path := writeConfigFile(t, "{invalid")
 	cfg := &Config{ConfigFile: path, MySQLHost: "fallback", Namespace: "fallback_ns"}
 	cc, err := cfg.BuildCluster()
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatalf("invalid config JSON must fail the boot, got cluster %+v", cc)
 	}
-	if len(cc.Refs) != 1 || cc.Refs[0].Host != "fallback" || cc.Namespace != "fallback_ns" {
-		t.Fatalf("invalid config did not fall back to scalar node: refs=%+v namespace=%q", cc.Refs, cc.Namespace)
+	if cc != nil {
+		t.Fatalf("expected nil cluster on failure, got %+v", cc)
+	}
+}
+
+// TestBuildClusterFromFileWrongType: a field with the wrong JSON type is a
+// malformed description and must fail the boot as well.
+func TestBuildClusterFromFileWrongType(t *testing.T) {
+	path := writeConfigFile(t, `{"mysql.port": "not-a-number"}`)
+	cc, err := (&Config{ConfigFile: path}).BuildCluster()
+	if err == nil {
+		t.Fatalf("wrong field type must fail the boot, got cluster %+v", cc)
+	}
+	if cc != nil {
+		t.Fatalf("expected nil cluster on failure, got %+v", cc)
+	}
+}
+
+// TestBuildClusterFromFileNoMaster: a file that parses but declares only
+// replicas has no node the router can send a query to, so it is unusable and
+// must fail the boot rather than boot a masterless cluster.
+func TestBuildClusterFromFileNoMaster(t *testing.T) {
+	path := writeConfigFile(t, `{
+		"cluster.databases": [
+			{"host": "replica1", "role": "replica"},
+			{"host": "replica2", "role": "replica"}
+		]
+	}`)
+	cc, err := (&Config{ConfigFile: path}).BuildCluster()
+	if err == nil {
+		t.Fatalf("a masterless cluster must fail the boot, got cluster %+v", cc)
+	}
+	if cc != nil {
+		t.Fatalf("expected nil cluster on failure, got %+v", cc)
 	}
 }
 
@@ -288,9 +328,6 @@ func TestClusterNodePasswordOverridesGlobalPassword(t *testing.T) {
 	if got := NewHealthService(cc).buildDSN(ref, cc.MySQLPass).Password; got != "node-secret" {
 		t.Errorf("health DSN password = %q", got)
 	}
-	if got := NewRouter(cc, cc.MySQLPass).buildDSN(ref, "config").Password; got != "node-secret" {
-		t.Errorf("router DSN password = %q", got)
-	}
 }
 
 func TestClusterScalarExplicitEmptyPasswordOverridesEnvironment(t *testing.T) {
@@ -305,7 +342,7 @@ func TestClusterScalarExplicitEmptyPasswordOverridesEnvironment(t *testing.T) {
 	if cc.MySQLPass != "" {
 		t.Fatalf("cluster password = %q, want explicit empty password", cc.MySQLPass)
 	}
-	if got := cc.Refs[0].passwordOr("wrong-fallback"); got != "" {
+	if got := cc.Refs[0].PasswordOr("wrong-fallback"); got != "" {
 		t.Fatalf("single-node password = %q, want explicit empty password", got)
 	}
 }
@@ -330,7 +367,6 @@ func TestClusterNodeExplicitEmptyPasswordOverridesGlobalPassword(t *testing.T) {
 		"setup":     NewSetupService(cc, cc.MySQLPass).buildDSN(ref).Password,
 		"migration": NewMigrationService(cc, cc.MySQLPass).buildDSN(ref).Password,
 		"health":    NewHealthService(cc).buildDSN(ref, cc.MySQLPass).Password,
-		"router":    NewRouter(cc, cc.MySQLPass).buildDSN(ref, "config").Password,
 	} {
 		if got != "" {
 			t.Errorf("%s DSN password = %q, want explicit empty password", name, got)

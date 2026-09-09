@@ -81,20 +81,24 @@ func TestTokenGuardInterceptsEveryRoute(t *testing.T) {
 	}
 }
 
-// TestTokenAcceptedInHeaderAndQuery pins the two ways a caller authenticates:
-// the header the PHP client uses and the query-param fallback for a browser or
-// a runbook's curl.
-func TestTokenAcceptedInHeaderAndQuery(t *testing.T) {
+// TestTokenAcceptedInHeaderOnly pins how a caller authenticates against db-api:
+// the X-Service-Token header only. Unlike the other services, db-api disables
+// the `?token=` query fallback (RegisterRoutes passes auth.WithQueryToken(false))
+// because nothing links to /api/db/** from a browser and a token in a URL lands
+// in access logs and history — so a query token must be rejected as 401.
+func TestTokenAcceptedInHeaderOnly(t *testing.T) {
 	app := newTestServer(t, func(d *Deps) { setConnFactory(d, unreachableFactory()) })
 
 	// /api/db/servers never fails on a dead database — it reports the node as
-	// unreachable in-band — so it is a 200 with either form of the token.
+	// unreachable in-band — so the header token yields a 200.
 	if resp, body := do(t, app, http.MethodGet, "/api/db/servers"); resp.StatusCode != http.StatusOK {
 		t.Errorf("header token: expected 200, got %d: %s", resp.StatusCode, body)
 	}
+	// The same token in the query string must NOT authenticate: db-api opts out
+	// of the URL fallback, so this is 401 ERR_UNAUTHORIZED.
 	req := httptest.NewRequest(http.MethodGet, "/api/db/servers?token="+testToken, nil)
-	if resp, body := dispatch(t, app, req); resp.StatusCode != http.StatusOK {
-		t.Errorf("query token: expected 200, got %d: %s", resp.StatusCode, body)
+	if resp, body := dispatch(t, app, req); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("query token must be rejected: expected 401, got %d: %s", resp.StatusCode, body)
 	}
 }
 

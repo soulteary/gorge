@@ -1,0 +1,21 @@
+{
+  "name": "the capability metadata is reported",
+  "description": "GET /api/db/meta reports the small, cheap description the PHP consumer reads before it routes the database console through the service: the wire-contract version it must understand, the namespace it must match against storage.default-namespace, where the topology came from, and the capability endpoints this build serves. It runs no query and names no host or credential, so it is the one /api/db route that can not fail on the cluster. The contract server configures a file-based topology in the 'phorge' namespace.",
+  "request": {
+    "method": "GET",
+    "path": "/api/db/meta",
+    "headers": {
+      "X-Service-Token": "contract-token"
+    }
+  },
+  "expect": {
+    "status": 200,
+    "jsonHas": ["data.contractVersion", "data.capabilities.0"],
+    "jsonEquals": {
+      "data.contractVersion": "1.0",
+      "data.namespace": "phorge",
+      "data.topologySource": "file"
+    },
+    "jsonAbsent": ["error"]
+  }
+}

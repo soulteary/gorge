@@ -1,13 +1,15 @@
 {
-  "name": "the token is accepted as a query parameter",
-  "description": "?token= is accepted alongside the X-Service-Token header, and checked only when the header is absent. The PHP client (PhabricatorGorgeDBClient) uses the header; this fallback is for a browser or a runbook's curl reaching the read-only endpoints. It answers the same 200 the header form does.",
+  "name": "a token in the query string is rejected",
+  "description": "db-api accepts the service token only in the X-Service-Token header, never in a ?token= query string. A token in a URL lands in access logs, browser history and Referer headers, and nothing links to /api/db/** from a browser, so the query fallback is pure risk here and is turned off (auth.WithQueryToken(false)). A correct token presented only in the query string authenticates nothing: the request is rejected with the same ERR_UNAUTHORIZED envelope a missing token gets. The PHP client (PhabricatorGorgeDBClient) always uses the header, so this does not affect it.",
   "request": {
     "method": "GET",
     "path": "/api/db/servers?token=contract-token"
   },
   "expect": {
-    "status": 200,
-    "jsonHas": ["data.0.refKey"],
-    "jsonAbsent": ["error"]
+    "status": 401,
+    "jsonEquals": {
+      "error.code": "ERR_UNAUTHORIZED"
+    },
+    "jsonAbsent": ["data"]
   }
 }

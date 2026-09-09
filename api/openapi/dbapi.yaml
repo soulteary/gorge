@@ -71,7 +71,6 @@ paths:
       operationId: listServers
       security:
         - ServiceTokenHeader: []
-        - ServiceTokenQuery: []
       responses:
         '200':
           description: The configured servers, each with its probe result
@@ -95,7 +94,6 @@ paths:
       operationId: serverHealth
       security:
         - ServiceTokenHeader: []
-        - ServiceTokenQuery: []
       parameters:
         - name: ref
           in: path
@@ -130,7 +128,18 @@ paths:
       operationId: schemaDiff
       security:
         - ServiceTokenHeader: []
-        - ServiceTokenQuery: []
+      parameters:
+        - name: databases
+          in: query
+          required: false
+          description: |
+            Optional comma-separated list of expected database names. Names
+            that exist but the configured user cannot inspect are reported as a
+            database node with `accessDenied: true`, which the visible set alone
+            cannot distinguish from an absent database. Bounded in count and
+            length; supplied by Phorge from its own validated expected schema.
+          schema:
+            type: string
       responses:
         '200':
           description: One schema tree per server
@@ -161,7 +170,6 @@ paths:
       operationId: schemaIssues
       security:
         - ServiceTokenHeader: []
-        - ServiceTokenQuery: []
       responses:
         '200':
           description: The flattened schema issues
@@ -192,7 +200,6 @@ paths:
       operationId: setupIssues
       security:
         - ServiceTokenHeader: []
-        - ServiceTokenQuery: []
       responses:
         '200':
           description: The setup issues
@@ -217,7 +224,6 @@ paths:
       operationId: charsetInfo
       security:
         - ServiceTokenHeader: []
-        - ServiceTokenQuery: []
       responses:
         '200':
           description: One charset info per server
@@ -252,7 +258,6 @@ paths:
       operationId: migrationStatus
       security:
         - ServiceTokenHeader: []
-        - ServiceTokenQuery: []
       responses:
         '200':
           description: Migration status for the master serving meta_data
@@ -268,6 +273,38 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/DBUnreachable'
+
+  /api/db/meta:
+    get:
+      tags: [db]
+      summary: Capability and contract metadata
+      description: |
+        Reports the small, cheap description the PHP consumer reads before it
+        routes the database console through the service: the wire-contract
+        version it must understand, the namespace it must match against
+        `storage.default-namespace`, where the topology came from, and the
+        capability endpoints this build serves.
+
+        It runs no query and names no host, credential or database — every
+        value is known at boot — so it is the one `/api/db` route that can not
+        fail on the cluster. The consumer refuses to switch the console over to
+        a service whose `contractVersion` it does not understand or whose
+        `namespace` does not match, and reports the mismatch as a setup issue
+        rather than silently reading fields that may have moved.
+      operationId: meta
+      security:
+        - ServiceTokenHeader: []
+      responses:
+        '200':
+          description: The service's contract version, namespace, topology source and capabilities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /healthz:
     get:
@@ -330,13 +367,16 @@ components:
       in: header
       name: X-Service-Token
       description: |
-        Preferred form, and what the PHP client uses. When the server's
-        configured token is empty, all requests pass unauthenticated.
-    ServiceTokenQuery:
-      type: apiKey
-      in: query
-      name: token
-      description: Fallback for callers that cannot set headers. Checked only when the header is absent.
+        The only accepted form. The PHP client (PhabricatorGorgeDBClient)
+        always sends it. When the server's configured token is empty, all
+        requests pass unauthenticated.
+
+        Unlike other gorge domains, db-api does NOT accept the token in a
+        `?token=` query string (auth.WithQueryToken(false)): a token in a URL
+        lands in access logs, browser history and Referer headers, and nothing
+        links to `/api/db/**` from a browser, so the query fallback is pure
+        risk here. A correct token presented only in the query string is
+        rejected with `ERR_UNAUTHORIZED`, exactly as a missing token is.
 
   schemas:
 
@@ -428,6 +468,21 @@ components:
         nullable:
           type: boolean
           description: Whether the actual column accepts NULL; present on column nodes.
+        autoIncrement:
+          type: boolean
+          description: Whether the actual column is AUTO_INCREMENT; present on column nodes.
+        accessDenied:
+          type: boolean
+          description: |
+            Present on a database node that exists but the configured user is
+            not permitted to inspect. Only set when an explicit `databases`
+            request parameter named the expected database, since the visible
+            set alone cannot distinguish "restricted" from "absent".
+        keys:
+          type: array
+          description: The table's indexes; present on table nodes.
+          items:
+            $ref: '#/components/schemas/SchemaKey'
         expected:
           type: string
         actual:
@@ -443,6 +498,28 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SchemaNode'
+
+    SchemaKey:
+      type: object
+      required: [name, columnNames, unique]
+      properties:
+        name:
+          type: string
+          description: The index name, e.g. `PRIMARY`.
+        columnNames:
+          type: array
+          description: |
+            The index columns ordered by SEQ_IN_INDEX, each carrying a
+            `(prefix)` suffix when the index covers only a leading Sub_part of
+            the column, matching Phorge's `SHOW INDEXES` reflection.
+          items:
+            type: string
+        unique:
+          type: boolean
+          description: The inverse of NON_UNIQUE.
+        indexType:
+          type: string
+          description: INDEX_TYPE, such as `BTREE` or `FULLTEXT`.
 
     SchemaIssue:
       type: object
@@ -523,23 +600,66 @@ components:
 
     MigrationStatus:
       type: object
-      required: [refKey, initialized, patch, totalExpected]
+      required: [refKey, initialized, appliedPatches]
       properties:
         refKey:
           type: string
         initialized:
           type: boolean
           description: False means the `meta_data` database does not exist yet.
-        patch:
+        appliedPatches:
           type: array
+          description: |
+            The observed patch keys from `patch_status`, and nothing more. The
+            service owns no expected patch list, so it reports neither a total
+            nor a missing set: Phorge holds the canonical list
+            (`PhabricatorSQLPatchList`) and diffs it against this array.
           items:
             type: string
-        missingPatches:
+        clusterStateDigest:
+          type: string
+          description: |
+            The SHA-256 of the raw `cluster.databases` state this master holds
+            in its `hoststate` table, or absent when that row is missing. The
+            raw state names hosts and is never returned; the digest lets Phorge
+            detect that two masters disagree on the committed topology
+            (`db.state.desync`) by comparing it against its own local state's
+            digest.
+
+    Capabilities:
+      type: object
+      required: [contractVersion, namespace, topologySource, capabilities]
+      properties:
+        contractVersion:
+          type: string
+          description: |
+            The `major.minor` wire-contract version this build implements. The
+            consumer compares it against the version it was written for and
+            refuses to switch over on a major it does not understand. Bump the
+            major when a field is removed or its type/meaning changes; bump the
+            minor for additive changes a current consumer can ignore.
+          example: "1.0"
+        namespace:
+          type: string
+          description: |
+            The configured namespace the service names databases with
+            (`{namespace}_meta_data`, …). It must equal Phorge's
+            `storage.default-namespace`, or the service is reporting on
+            databases named with a different prefix than Phorge reads.
+          example: phorge
+        topologySource:
+          type: string
+          enum: [file, single-node]
+          description: |
+            `file` when the cluster was read from a `GORGE_DB_CONFIG_FILE`
+            local.json, `single-node` when it was built from the scalar
+            `GORGE_DB_MYSQL_*` settings.
+        capabilities:
           type: array
+          description: The `/api/db` routes this build serves.
           items:
             type: string
-        totalExpected:
-          type: integer
+          example: [servers, server-health, schema-diff, schema-issues, setup-issues, charset-info, migrations-status]
 
     ServersResponse:
       type: object
@@ -606,6 +726,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MigrationStatus'
+        error:
+          $ref: '#/components/schemas/Error'
+
+    CapabilitiesResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Capabilities'
         error:
           $ref: '#/components/schemas/Error'
 

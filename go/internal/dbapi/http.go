@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/platform/auth"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 )
@@ -18,32 +20,43 @@ import (
 const readyTimeout = 5 * time.Second
 
 // Deps is everything the db-api routes need. The four services share the same
-// cluster and password; Router is here so it can be closed on shutdown, and
-// Password so the read endpoints can probe with it.
+// cluster and password, and each opens its own short-lived connection per
+// request or probe (through ConnFactory) and closes it within that scope.
+// Password is here so the read endpoints can probe with it.
 type Deps struct {
-	Cluster   *ClusterConfig
-	Router    *Router
-	Health    *HealthService
-	Schema    *DiffService
-	Setup     *SetupService
-	Migration *MigrationService
-	Password  string
-	Token     string
+	Cluster        *ClusterConfig
+	Health         *HealthService
+	Schema         *DiffService
+	Setup          *SetupService
+	Migration      *MigrationService
+	Password       string
+	Token          string
+	TopologySource string
 }
+
+// TopologySourceFile marks a cluster read from a GORGE_DB_CONFIG_FILE
+// local.json; TopologySourceSingleNode marks one built from the scalar
+// GORGE_DB_MYSQL_* settings. They are the values the capability endpoint
+// reports so a consumer can tell a real cluster report from a single node.
+const (
+	TopologySourceFile       = "file"
+	TopologySourceSingleNode = "single-node"
+)
 
 // NewDeps wires the services over a cluster. It opens no connection: like the
 // file-storage and taskqueue services, the pools are lazy so the process can
-// start before MySQL is up.
-func NewDeps(cluster *ClusterConfig, password, token string) *Deps {
+// start before MySQL is up. topologySource records how the cluster was
+// described (see TopologySource*), which the capability endpoint reports.
+func NewDeps(cluster *ClusterConfig, password, token, topologySource string) *Deps {
 	return &Deps{
-		Cluster:   cluster,
-		Router:    NewRouter(cluster, password),
-		Health:    NewHealthService(cluster),
-		Schema:    NewDiffService(cluster, password),
-		Setup:     NewSetupService(cluster, password),
-		Migration: NewMigrationService(cluster, password),
-		Password:  password,
-		Token:     token,
+		Cluster:        cluster,
+		Health:         NewHealthService(cluster),
+		Schema:         NewDiffService(cluster, password),
+		Setup:          NewSetupService(cluster, password),
+		Migration:      NewMigrationService(cluster, password),
+		Password:       password,
+		Token:          token,
+		TopologySource: topologySource,
 	}
 }
 
@@ -65,10 +78,16 @@ func (d *Deps) Ready() error {
 	return errors.New("no configured database server is reachable")
 }
 
-// Close releases the router's connection pools. The probe and per-request
-// connections are opened and closed within their own scope, so the router is
-// the only long-lived pool to release.
-func (d *Deps) Close() error { return d.Router.Close() }
+// Close releases any long-lived connection pools. There are none: unlike
+// file-storage, whose Router owns a pool for the life of the process, every
+// db-api answer is a live query on a connection the owning service opens and
+// closes within the request or probe scope (see the ConnFactory each service
+// holds). The one long-lived pool this package used to carry lived on a
+// master/replica Router that no read endpoint ever drove; that write-path
+// abstraction now lives in internal/dbproxy (see docs/adr/0001-isolate-db-proxy.md),
+// so there is nothing here to release. Close is kept so main.go's shutdown
+// contract is stable and a future pool has an obvious home to be released from.
+func (d *Deps) Close() error { return nil }
 
 // RegisterRoutes mounts the db-api endpoints. The seven /api/db/* routes are
 // named after the domain and must not change: PhabricatorGorgeDBClient calls
@@ -77,7 +96,12 @@ func (d *Deps) Close() error { return d.Router.Close() }
 // unauthenticated so container probes reach them.
 func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g := app.Group("/api/db")
-	g.Use(auth.Token(deps.Token))
+	// db-api accepts the token only in the X-Service-Token header, never in a
+	// `?token=` query string. Nothing links to /api/db/** from a browser, so
+	// the URL fallback the shared middleware allows by default is pure risk
+	// here — a token in a URL lands in access logs and history. See
+	// auth.WithQueryToken.
+	g.Use(auth.Token(deps.Token, auth.WithQueryToken(false)))
 
 	g.Get("/servers", listServers(deps))
 	g.Get("/servers/:ref/health", serverHealth(deps))
@@ -86,6 +110,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g.Get("/setup-issues", setupIssues(deps))
 	g.Get("/charset-info", charsetInfo(deps))
 	g.Get("/migrations/status", migrationStatus(deps))
+	g.Get("/meta", meta(deps))
 }
 
 // fail turns a domain error into the platform envelope. A DBError with a
@@ -148,9 +173,10 @@ func serverHealth(deps *Deps) fiber.Handler {
 func schemaDiff(deps *Deps) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		ctx := c.Context()
+		requested := parseRequestedDatabases(c.Query("databases"))
 		nodes := make([]any, 0)
 		for _, ref := range deps.Schema.CollectRefs() {
-			tree, err := deps.Schema.LoadActualSchema(ctx, ref)
+			tree, err := deps.Schema.LoadActualSchema(ctx, ref, requested...)
 			if err != nil {
 				return fail(c, err)
 			}
@@ -158,6 +184,31 @@ func schemaDiff(deps *Deps) fiber.Handler {
 		}
 		return httpx.OK(c, nodes)
 	}
+}
+
+// parseRequestedDatabases turns the optional `databases` query parameter into a
+// bounded, sanitized list of expected database names. It caps both the count
+// and each name's length so a caller cannot turn the accessDenied probe into an
+// unbounded fan-out of SHOW TABLES statements, and drops empty or over-long
+// entries rather than erroring, since the parameter is an optional hint.
+func parseRequestedDatabases(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	const maxNames = 64
+	const maxNameLen = 128
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" || len(name) > maxNameLen {
+			continue
+		}
+		out = append(out, name)
+		if len(out) >= maxNames {
+			break
+		}
+	}
+	return out
 }
 
 func schemaIssues(deps *Deps) fiber.Handler {
@@ -197,5 +248,32 @@ func migrationStatus(deps *Deps) fiber.Handler {
 			return fail(c, err)
 		}
 		return httpx.OK(c, statuses)
+	}
+}
+
+// meta backs GET /api/db/meta. It answers the capability description the PHP
+// consumer reads before it routes the database console through this service:
+// the wire-contract version, the configured namespace, where the topology came
+// from, and the capability endpoints this build serves. It runs no query and
+// touches no host — every value is known at boot — so it is the one /api/db
+// route that can not fail on the cluster.
+func meta(deps *Deps) fiber.Handler {
+	// Built once: the answer is fixed for the life of the process.
+	caps := contracts.Capabilities{
+		ContractVersion: contracts.ContractVersion,
+		Namespace:       deps.Cluster.Namespace,
+		TopologySource:  deps.TopologySource,
+		Capabilities: []string{
+			"servers",
+			"server-health",
+			"schema-diff",
+			"schema-issues",
+			"setup-issues",
+			"charset-info",
+			"migrations-status",
+		},
+	}
+	return func(c fiber.Ctx) error {
+		return httpx.OK(c, caps)
 	}
 }

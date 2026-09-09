@@ -43,7 +43,7 @@ func setConnFactory(deps *Deps, f ConnFactory) {
 // lets a test swap in a connection factory before issuing a request.
 func newTestServer(t *testing.T, configure func(*Deps)) *fiber.App {
 	t.Helper()
-	deps := NewDeps(testCluster(), "secret", testToken)
+	deps := NewDeps(testCluster(), "secret", testToken, TopologySourceSingleNode)
 	if configure != nil {
 		configure(deps)
 	}

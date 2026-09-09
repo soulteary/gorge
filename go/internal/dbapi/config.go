@@ -12,6 +12,8 @@
 package dbapi
 
 import (
+	"fmt"
+
 	"github.com/soulteary/gorge/go/internal/platform/config"
 )
 
@@ -79,14 +81,35 @@ type ClusterConfig struct {
 
 // BuildCluster turns a Config into a ClusterConfig. When ConfigFile is set it
 // parses the Phorge local.json; otherwise it builds a single-node master from
-// the scalar settings. A parse failure falls back to the single node so a bad
-// file degrades to "one server" rather than a failed boot — the health probe
-// then surfaces the real state.
+// the scalar settings.
+//
+// The two paths fail differently on purpose. The single-node path is the
+// stock deployment and always succeeds: a scalar host is all it needs, and an
+// unreachable host is a readiness problem, not a boot one. But when
+// GORGE_DB_CONFIG_FILE names a file, the operator is describing a real
+// cluster, and every failure mode of that description — the file is missing,
+// its JSON is malformed, a field has the wrong type, or it parses but names no
+// usable master — is a misconfiguration the operator must see, not something
+// to paper over. Silently degrading such a deployment to a single node built
+// from the scalar fallbacks would route every application at one host, hide
+// the replicas from every report, and read as healthy while doing it. So the
+// file path fails closed: BuildCluster returns a configuration error and
+// main.go stops the boot. The single-node fallback is reachable only when the
+// variable is unset.
 func (c *Config) BuildCluster() (*ClusterConfig, error) {
 	if c.ConfigFile != "" {
 		cc, err := loadClusterFromFile(c.ConfigFile, c)
 		if err != nil {
-			return c.singleNodeCluster(), nil
+			// The path is included because it is operator-supplied
+			// configuration, not cluster data: naming which file failed to
+			// load is exactly what the operator needs, and it exposes no host,
+			// database or credential.
+			return nil, fmt.Errorf("load cluster configuration from %q: %w", c.ConfigFile, err)
+		}
+		if len(cc.masters) == 0 {
+			return nil, fmt.Errorf(
+				"cluster configuration %q defines no usable master; every deployment needs at least one node with the master role",
+				c.ConfigFile)
 		}
 		return cc, nil
 	}

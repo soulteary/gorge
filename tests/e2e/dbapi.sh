@@ -273,17 +273,20 @@ else
   fail 'GET /api/db/servers/{unknown}/health' "status=${RESP_STATUS} body=${RESP_BODY}"
 fi
 
-# --- 9. token via query param -----------------------------------------------
+# --- 9. token via query param is rejected -----------------------------------
 #
-# The fallback for callers that cannot set headers, checked only when the
-# header is absent. The PHP client uses the header; this is for a browser or a
-# runbook's curl.
+# Unlike the other services, db-api accepts the token only in the
+# X-Service-Token header, never in a ?token= query string: RegisterRoutes
+# passes auth.WithQueryToken(false). A token in a URL lands in access logs,
+# browser history and Referer headers, and nothing links to /api/db/** from a
+# browser, so the query fallback is pure risk here. A correct token presented
+# only in the query string must authenticate nothing — same 401 as no token.
 if [ -n "$TOKEN" ]; then
   request GET "/api/db/servers?token=${TOKEN}"
-  if [ "$RESP_STATUS" = '200' ] && [[ "$RESP_BODY" == *'"data"'* ]]; then
-    pass 'GET /api/db/servers?token= is accepted'
+  if [ "$RESP_STATUS" = '401' ] && [[ "$RESP_BODY" == *'ERR_UNAUTHORIZED'* ]]; then
+    pass 'GET /api/db/servers?token= is rejected 401 (header-only auth)'
   else
-    fail 'GET /api/db/servers?token=' "status=${RESP_STATUS} body=${RESP_BODY}"
+    fail 'GET /api/db/servers?token=' "expected 401 ERR_UNAUTHORIZED, got status=${RESP_STATUS} body=${RESP_BODY}"
   fi
 else
   skip 'GET /api/db/servers?token=' 'set TOKEN to exercise auth'

@@ -52,5 +52,9 @@ func main() {
 }
 
 func buildDeps(cfg *dbapi.Config, cluster *dbapi.ClusterConfig) *dbapi.Deps {
-	return dbapi.NewDeps(cluster, cluster.MySQLPass, cfg.ServiceToken)
+	topology := dbapi.TopologySourceSingleNode
+	if cfg.ConfigFile != "" {
+		topology = dbapi.TopologySourceFile
+	}
+	return dbapi.NewDeps(cluster, cluster.MySQLPass, cfg.ServiceToken, topology)
 }
