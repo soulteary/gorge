@@ -2,12 +2,14 @@ package dbapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
 
 // MigrationService reports how far Phorge's `bin/storage upgrade` has run by
-// reading `{namespace}_meta_data.patch_status` on the master that owns the
+// reading `{namespace}_meta_data.patch_status` on the masters that own the
 // metadata partition. A replica receives the same rows through replication.
 type MigrationService struct {
 	config      *ClusterConfig
@@ -26,26 +28,41 @@ func (m *MigrationService) buildDSN(ref *DatabaseRef) DSN {
 		Host:            ref.Host,
 		Port:            ref.Port,
 		User:            ref.User,
-		Password:        ref.passwordOr(m.password),
+		Password:        ref.PasswordOr(m.password),
 		Database:        m.config.DatabaseName("meta_data"),
 		ConnTimeoutSec:  2,
 		QueryTimeoutSec: 10,
 	}
 }
 
-// Status returns the migration status of the enabled master that serves the
-// meta_data application. Other application partitions do not carry this
-// database and must not be reported as uninitialized.
+// Status returns the migration status of every enabled master that serves the
+// meta_data application. Reporting all such masters (not only the first one
+// the router would pick) lets Phorge compare their committed cluster state and
+// catch a master that started with an out-of-date configuration; masters for
+// other application partitions do not carry this database and are not reported.
 func (m *MigrationService) Status(ctx context.Context) ([]contracts.MigrationStatus, error) {
-	ref := m.config.GetMasterForApplication("meta_data")
-	if ref == nil {
-		return []contracts.MigrationStatus{}, nil
+	statuses := make([]contracts.MigrationStatus, 0)
+	seen := make(map[string]bool)
+	for _, ref := range m.config.Masters() {
+		if ref.Disabled {
+			continue
+		}
+		if !m.config.ServesApplication(ref, "meta_data") {
+			continue
+		}
+		key := ref.RefKey()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		status, err := m.checkRef(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, status)
 	}
-	status, err := m.checkRef(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	return []contracts.MigrationStatus{status}, nil
+	return statuses, nil
 }
 
 // checkRef reads one master. A connection or ping failure leaves Initialized
@@ -73,26 +90,29 @@ func (m *MigrationService) checkRef(ctx context.Context, ref *DatabaseRef) (cont
 	}
 	defer func() { _ = rows.Close() }()
 
-	applied := make(map[string]bool)
 	for rows.Next() {
 		var patch string
 		if err := rows.Scan(&patch); err != nil {
 			return st, err
 		}
-		applied[patch] = true
 		st.AppliedPatches = append(st.AppliedPatches, patch)
 	}
 	if err := rows.Err(); err != nil {
 		return st, classifyMySQLError(err)
 	}
-	st.TotalExpected = len(applied)
 
-	// hoststate carries the cluster.databases state Phorge syncs between
-	// masters. It is read and discarded here, kept as the interface point for
-	// the multi-master sync the standalone service reserved it for.
+	// hoststate carries the raw cluster.databases state Phorge commits between
+	// masters. The raw value names hosts, so it is never returned; its SHA-256
+	// digest is, which lets Phorge detect that two masters disagree on the
+	// committed topology (db.state.desync) without this service holding it. A
+	// missing row leaves the digest empty.
 	var stateValue *string
 	_ = conn.QueryRowContext(ctx,
 		"SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'").Scan(&stateValue)
+	if stateValue != nil {
+		sum := sha256.Sum256([]byte(*stateValue))
+		st.ClusterStateDigest = hex.EncodeToString(sum[:])
+	}
 
 	return st, nil
 }

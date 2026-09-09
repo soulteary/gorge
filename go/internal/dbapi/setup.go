@@ -32,7 +32,7 @@ func (s *SetupService) buildDSN(ref *DatabaseRef) DSN {
 		Host:            ref.Host,
 		Port:            ref.Port,
 		User:            ref.User,
-		Password:        ref.passwordOr(s.password),
+		Password:        ref.PasswordOr(s.password),
 		ConnTimeoutSec:  2,
 		QueryTimeoutSec: 10,
 	}

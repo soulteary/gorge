@@ -38,10 +38,12 @@ type DatabaseRef struct {
 	ReplicaDelay   *int
 }
 
-// passwordOr returns this node's credential when cluster.databases defines
+// PasswordOr returns this node's credential when cluster.databases defines
 // one, otherwise the cluster-wide mysql.pass fallback. Password is deliberately
-// internal and is never projected by toContract.
-func (r *DatabaseRef) passwordOr(fallback string) string {
+// unexported as a field and is never projected by toContract; this accessor is
+// exported so the migrated internal/dbproxy write-path package can build a DSN
+// with the same per-node precedence the read services use.
+func (r *DatabaseRef) PasswordOr(fallback string) string {
 	if r.PasswordSet || r.Password != "" {
 		return r.Password
 	}

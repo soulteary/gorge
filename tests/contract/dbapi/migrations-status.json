@@ -1,6 +1,6 @@
 {
   "name": "each master's migration status is reported",
-  "description": "GET /api/db/migrations/status reads {namespace}_meta_data.patch_status on the master selected for the meta_data partition and reports how far bin/storage upgrade has run: Initialized true once the meta_data database answers, the applied patches, and their count. A replica gets the same rows through replication, while masters for other application partitions do not host this database. The seeded metadata master is initialized with one applied patch. Initialized false would mean the database does not exist yet, which is the honest pre-upgrade state rather than an error.",
+  "description": "GET /api/db/migrations/status reads {namespace}_meta_data.patch_status on every enabled master that serves the meta_data partition and reports how far bin/storage upgrade has run: Initialized true once the meta_data database answers, and the applied patch keys. A replica gets the same rows through replication, while masters for other application partitions do not host this database. The service owns no expected patch list, so it reports only the observed appliedPatches; Phorge diffs them against PhabricatorSQLPatchList on its side. The seeded metadata master is initialized with one applied patch. Initialized false would mean the database does not exist yet, which is the honest pre-upgrade state rather than an error.",
   "request": {
     "method": "GET",
     "path": "/api/db/migrations/status",
@@ -10,12 +10,12 @@
   },
   "expect": {
     "status": 200,
-    "jsonHas": ["data.0.refKey", "data.0.patch"],
+    "jsonHas": ["data.0.refKey", "data.0.appliedPatches"],
     "jsonEquals": {
       "data.0.refKey": "db1:3306",
       "data.0.initialized": true,
-      "data.0.totalExpected": 1
+      "data.0.appliedPatches.0": "phabricator:0001.legacy.sql"
     },
-    "jsonAbsent": ["error", "data.0.appliedPatches"]
+    "jsonAbsent": ["error", "data.0.patch", "data.0.totalExpected", "data.0.missingPatches"]
   }
 }

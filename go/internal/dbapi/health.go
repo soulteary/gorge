@@ -158,7 +158,7 @@ func (s *HealthService) buildDSN(ref *DatabaseRef, password string) DSN {
 		Host:            ref.Host,
 		Port:            ref.Port,
 		User:            ref.User,
-		Password:        ref.passwordOr(password),
+		Password:        ref.PasswordOr(password),
 		MaxRetries:      0,
 		ConnTimeoutSec:  2,
 		QueryTimeoutSec: 2,
