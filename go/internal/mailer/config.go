@@ -10,32 +10,32 @@ import (
 )
 
 const (
-	DefaultListenAddr = ":8110"
-	DefaultMaxRetries = 2
+	DefaultListenAddr   = ":8110"
+	DefaultMaxRetries   = 2
 	DefaultRetryWaitSec = 2
-	DefaultBodyLimit = 524288
-	TransportBodyLimit = "10M"
+	DefaultBodyLimit    = 524288
+	TransportBodyLimit  = "10M"
 )
 
 type MailerSpec struct {
-	Key string `json:"key"`
-	Type string `json:"type"`
-	Priority int `json:"priority,omitempty"`
-	Options map[string]string `json:"options,omitempty"`
+	Key      string            `json:"key"`
+	Type     string            `json:"type"`
+	Priority int               `json:"priority,omitempty"`
+	Options  map[string]string `json:"options,omitempty"`
 }
 
 type Config struct {
 	config.Base
-	Mailers []MailerSpec `json:"mailers"`
-	MaxRetries int `json:"maxRetries"`
-	RetryWaitSec int `json:"retryWaitSec"`
-	BodyLimit int `json:"bodyLimit"`
+	Mailers      []MailerSpec `json:"mailers"`
+	MaxRetries   int          `json:"maxRetries"`
+	RetryWaitSec int          `json:"retryWaitSec"`
+	BodyLimit    int          `json:"bodyLimit"`
 }
 
 func (c *Config) RetryPolicy() RetryPolicy {
 	return RetryPolicy{
 		MaxRetries: c.MaxRetries,
-		RetryWait: time.Duration(c.RetryWaitSec) * time.Second,
+		RetryWait:  time.Duration(c.RetryWaitSec) * time.Second,
 	}
 }
 
@@ -55,10 +55,10 @@ func ConfigFilePath() string {
 // contract and intentionally keep their provider-native names.
 func LoadFromEnv() *Config {
 	cfg := &Config{
-		Base: config.LoadBase(DefaultListenAddr),
-		MaxRetries: config.EnvInt(DefaultMaxRetries, "GORGE_MAILER_MAX_RETRIES"),
+		Base:         config.LoadBase(DefaultListenAddr),
+		MaxRetries:   config.EnvInt(DefaultMaxRetries, "GORGE_MAILER_MAX_RETRIES"),
 		RetryWaitSec: config.EnvInt(DefaultRetryWaitSec, "GORGE_MAILER_RETRY_WAIT"),
-		BodyLimit: config.EnvInt(DefaultBodyLimit, "GORGE_MAILER_BODY_LIMIT"),
+		BodyLimit:    config.EnvInt(DefaultBodyLimit, "GORGE_MAILER_BODY_LIMIT"),
 	}
 
 	if raw := config.EnvStr("", "GORGE_MAILER_CONFIG"); raw != "" {
@@ -77,12 +77,12 @@ func LoadFromEnv() *Config {
 func LoadFromFile(path string) (*Config, error) {
 	cfg := &Config{
 		Base: config.Base{
-			ListenAddr: DefaultListenAddr,
+			ListenAddr:   DefaultListenAddr,
 			ServiceToken: config.EnvStr("", "GORGE_SERVICE_TOKEN"),
 		},
-		MaxRetries: DefaultMaxRetries,
+		MaxRetries:   DefaultMaxRetries,
 		RetryWaitSec: DefaultRetryWaitSec,
-		BodyLimit: DefaultBodyLimit,
+		BodyLimit:    DefaultBodyLimit,
 	}
 	if err := config.LoadJSONFile(path, cfg); err != nil {
 		return nil, err
@@ -100,8 +100,8 @@ func specFromEnv() []MailerSpec {
 	}
 
 	spec := MailerSpec{
-		Key: config.EnvStr("default", "GORGE_MAILER_KEY", "MAILER_KEY"),
-		Type: t,
+		Key:     config.EnvStr("default", "GORGE_MAILER_KEY", "MAILER_KEY"),
+		Type:    t,
 		Options: make(map[string]string),
 	}
 	for _, kv := range [][2]string{
