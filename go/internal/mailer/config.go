@@ -90,17 +90,16 @@ func LoadFromFile(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// specFromEnv assembles one backend. MAILER_TYPE/MAILER_KEY and provider
-// variables are not legacy aliases: they describe the selected provider and
-// are shared with deployment secrets independently of the Gorge process shell.
+// specFromEnv assembles one backend. Selection uses Gorge's canonical names;
+// provider-native variables remain shared with deployment secrets.
 func specFromEnv() []MailerSpec {
-	t := config.EnvStr("", "GORGE_MAILER_TYPE", "MAILER_TYPE")
+	t := config.EnvStr("", "GORGE_MAILER_TYPE")
 	if t == "" {
 		return nil
 	}
 
 	spec := MailerSpec{
-		Key:     config.EnvStr("default", "GORGE_MAILER_KEY", "MAILER_KEY"),
+		Key:     config.EnvStr("default", "GORGE_MAILER_KEY"),
 		Type:    t,
 		Options: make(map[string]string),
 	}

@@ -99,6 +99,8 @@ func TestMailerConfigIgnoresRetiredServiceAliases(t *testing.T) {
 	t.Setenv("MAX_RETRIES", "9")
 	t.Setenv("RETRY_WAIT", "11")
 	t.Setenv("BODY_LIMIT", "2048")
+	t.Setenv("MAILER_TYPE", "smtp")
+	t.Setenv("MAILER_KEY", "legacy")
 
 	cfg := LoadFromEnv()
 	if cfg.ListenAddr != DefaultListenAddr {
@@ -120,7 +122,7 @@ func TestMailerConfigIgnoresRetiredServiceAliases(t *testing.T) {
 
 func TestMailerConfigSMTPFromEnv(t *testing.T) {
 	clearMailerEnv(t)
-	t.Setenv("MAILER_TYPE", "smtp")
+	t.Setenv("GORGE_MAILER_TYPE", "smtp")
 	t.Setenv("SMTP_HOST", "mail.example.com")
 	t.Setenv("SMTP_PORT", "587")
 	t.Setenv("SMTP_USER", "alice")
@@ -148,7 +150,7 @@ func TestMailerConfigSMTPFromEnv(t *testing.T) {
 // nothing, and it should not look as though it might.
 func TestMailerConfigDropsTwilioOptions(t *testing.T) {
 	clearMailerEnv(t)
-	t.Setenv("MAILER_TYPE", "smtp")
+	t.Setenv("GORGE_MAILER_TYPE", "smtp")
 	t.Setenv("MAILER_FROM_NUMBER", "+15550100")
 	t.Setenv("MAILER_ACCOUNT_SID", "AC123")
 	t.Setenv("MAILER_AUTH_TOKEN", "secret")

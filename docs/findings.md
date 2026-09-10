@@ -329,7 +329,7 @@ mapper_parsing_exception: Root mapping definition has unsupported parameters: [P
 - `/readyz` 会 ping 它，于是**整个服务**被报成不可用，尽管本地磁盘好端端地配着；
 - 运维看到的是「我明明配了本地磁盘，服务却说自己没就绪」，而配置文件里没有任何一处提到 MySQL。
 
-现在 `MySQLBlobEnabled()` 要求 `MySQLHost != "" && MySQLBlobMaxSize > 0`。加上 host 这一条之后，「什么都没配」与「配了 blob」才成为两个可区分的状态——这正是 mailer 的 `MAILER_TYPE` 在那个域里做的事：**一个后端的存在必须是被声明出来的，不能是被默认值凑出来的。**
+现在 `MySQLBlobEnabled()` 要求 `MySQLHost != "" && MySQLBlobMaxSize > 0`。加上 host 这一条之后，「什么都没配」与「配了 blob」才成为两个可区分的状态——这正是 mailer 的 `GORGE_MAILER_TYPE` 在那个域里做的事：**一个后端的存在必须是被声明出来的，不能是被默认值凑出来的。**
 
 `TestNoBackendIsConfiguredByDefault` 钉住它：清空全部环境变量之后，三个 `*Enabled()` 必须全是 false。**它守的是「零配置等于零后端」这个不变量，不是那几个默认值本身**——`MYSQL_BLOB_MAX_SIZE` 的默认值 `1000000` 至今没变，也不该因为这条改动而变。
 

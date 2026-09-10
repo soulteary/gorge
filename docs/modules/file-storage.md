@@ -216,7 +216,7 @@ S3 要求五个齐全，是因为半套配置会造出一个每次请求都失�
 
 ### blob 后端的开关变了
 
-`MySQLBlobEnabled()` 现在**要求显式给出 host**，这是相对独立服务时期的一次刻意变更：那边 `MYSQL_HOST` 默认 `127.0.0.1`、`MYSQL_BLOB_MAX_SIZE` 默认 1 MB，于是一个只配了本地磁盘的部署**照样会注册一个指向不存在的数据库的 blob 后端**——它优先级 1，接走每一个小文件上传并让它失败，而 `/readyz`（它会 ping）把整个服务报成不可用。要求 host 之后，「什么都没配」与「配了 blob」才区分得开，与 mailer 的 `MAILER_TYPE` 是同一个形状。`TestNoBackendIsConfiguredByDefault` 钉住它，记在 [`../findings.md`](../findings.md) 第 22 条。
+`MySQLBlobEnabled()` 现在**要求显式给出 host**，这是相对独立服务时期的一次刻意变更：那边 `MYSQL_HOST` 默认 `127.0.0.1`、`MYSQL_BLOB_MAX_SIZE` 默认 1 MB，于是一个只配了本地磁盘的部署**照样会注册一个指向不存在的数据库的 blob 后端**——它优先级 1，接走每一个小文件上传并让它失败，而 `/readyz`（它会 ping）把整个服务报成不可用。要求 host 之后，「什么都没配」与「配了 blob」才区分得开，与 mailer 的 `GORGE_MAILER_TYPE` 是同一个形状。`TestNoBackendIsConfiguredByDefault` 钉住它，记在 [`../findings.md`](../findings.md) 第 22 条。
 
 ## 5. 兼容契约
 
