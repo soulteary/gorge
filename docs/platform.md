@@ -126,15 +126,15 @@ if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expec
 - **这不是「可选的探针开关」。** 默认 false，除了 notification 的 client 端口没有第二个地方该设它。设错的后果不对称：该设没设，Phorge 报「Got HTTP 200, but expected HTTP 501」——会报错；不该设却设了，`GET /` 落到 404 或域路由上，而没有任何测试或探针会指向这个改动。
 - **两个容器探针照样注册。** 所以 Docker `HEALTHCHECK` 与 Kubernetes 探针不受影响，这也是豁免只挑根路径而不是整包跳过的原因。`health_test.go` 的 `TestSkipRootLeavesRootToTheCaller` 与 `TestSkipRootKeepsContainerProbes` 分别压这两半。
 
-## 4. config：只接受规范名称
+## 4. config：服务变量只接受规范名称
 
-`EnvStr(fallback, keys...)` 按顺序取第一个非空值。阶段四完成后，调用方只传一个 `GORGE_*` 规范名称：
+`EnvStr(fallback, keys...)` 按顺序取第一个非空值。阶段四完成后，Gorge 服务自身的配置调用只传一个 `GORGE_*` 规范名称：
 
 ```go
 ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR"),
 ```
 
-旧的裸名属于独立服务时期的过渡接口，现已移除。升级时需要同步修改编排，避免服务使用默认地址或在 token 为空时关闭鉴权。
+旧的服务级裸名属于独立服务时期的过渡接口，现已移除。升级时需要同步修改编排，避免服务使用默认地址或在 token 为空时关闭鉴权。外部后端的原生变量不是这类别名，仍按后端契约使用，例如 mailer 的 `SMTP_*` / `MAILER_*` 和 search 的 `ES_*` / `MEILI_*`。
 
 引入 `GORGE_` 前缀的直接原因是：多个域将共用一个进程，`MAX_BYTES`、`TIMEOUT_SEC` 这类裸名会真的撞车。因此约定分两级——服务级用 `GORGE_`，域级再加一段域名（`GORGE_RENDER_MAX_BYTES`）。新模块的域级配置照此命名。
 
