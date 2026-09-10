@@ -104,23 +104,23 @@ handler 把 `*PermanentError` 映射到 422 + `ERR_PERMANENT_FAILURE`，其余�
 
 ## 4. 配置
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8110` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_MAILER_CONFIG` | `MAILER_CONFIG` | 无 | 后端列表，JSON 数组 |
-| `GORGE_MAILER_CONFIG_FILE` | `MAILER_CONFIG_FILE` | 无 | JSON 配置文件路径 |
-| `GORGE_MAILER_MAX_RETRIES` | `MAX_RETRIES` | `2` | 单个适配器内的重试次数 |
-| `GORGE_MAILER_RETRY_WAIT` | `RETRY_WAIT` | `2` | 重试间隔（秒） |
-| `GORGE_MAILER_BODY_LIMIT` | `BODY_LIMIT` | `524288` | 单封信正文截断上限（字节） |
-| `GORGE_MAILER_TYPE` | `MAILER_TYPE` | 无 | 单后端速配：设了它才会从下面那批扁平变量拼出一个后端 |
-| `GORGE_MAILER_KEY` | `MAILER_KEY` | `default` | 同上，该后端的 key |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8110` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_MAILER_CONFIG` | 无 | 后端列表，JSON 数组 |
+| `GORGE_MAILER_CONFIG_FILE` | 无 | JSON 配置文件路径 |
+| `GORGE_MAILER_MAX_RETRIES` | `2` | 单个适配器内的重试次数 |
+| `GORGE_MAILER_RETRY_WAIT` | `2` | 重试间隔（秒） |
+| `GORGE_MAILER_BODY_LIMIT` | `524288` | 单封信正文截断上限（字节） |
+| `GORGE_MAILER_TYPE` | 无 | 单后端速配：设了它才会从下面那批扁平变量拼出一个后端 |
+| `GORGE_MAILER_KEY` | `default` | 同上，该后端的 key |
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
 各后端选项另有一批扁平变量（`SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_PROTOCOL`、`MAILER_ACCESS_KEY` / `MAILER_SECRET_KEY` / `MAILER_REGION` / `MAILER_ENDPOINT`、`MAILER_API_KEY` / `MAILER_DOMAIN` / `MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`），原样保留。**迁入时删掉了 `MAILER_FROM_NUMBER` / `MAILER_ACCOUNT_SID` / `MAILER_AUTH_TOKEN` 三条**：它们没有任何对应适配器，是某个 Twilio 实现的残留，SMS 在 Phorge 侧由原生 `PhabricatorMailTwilioAdapter` 负责。`TestMailerConfigDropsTwilioOptions` 钉住这次删除。
 
-`Load()` 的取值顺序与 render 域一致：指了配置文件就读文件，否则读环境变量；走文件时**仍然从环境变量取 `SERVICE_TOKEN`**。这一条在本域比在别处更要紧——mailer 的配置文件里装着这个部署的全部后端凭据。
+`Load()` 的取值顺序与 render 域一致：指了配置文件就读文件，否则读环境变量；走文件时**仍然从环境变量取 `GORGE_SERVICE_TOKEN`**。这一条在本域比在别处更要紧——mailer 的配置文件里装着这个部署的全部后端凭据。
 
 ### 重试默认值是一次刻意的变更
 

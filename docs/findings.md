@@ -77,7 +77,7 @@ diff.RegisterRoutes(srv.App(), &diff.Deps{
 
 这样接是对的——两个域各自声称拥有 `GORGE_LISTEN_ADDR` 会让「谁说了算」变得含混——但「进程级配置住在某个域的包里」这件事本身摆错了位置。**第三个域进来时这条会开始咬人**：它同样得从 `render.Load()` 借 token，而它和 render 之间并没有任何关系。
 
-**建议**：把 `config.Base` 的加载上提到一个进程级的 `platform/config.LoadProcess()` 或 `cmd/gorge-render` 自己的私有类型里，各域的 `Config` 只留域级字段（diff 已经是这个形状）。这次刻意没做，因为它会动到 render 的配置加载路径与那套「新名优先、旧名兜底」的查找逻辑，不该和迁入混在一个改动里。
+**建议**：把 `config.Base` 的加载上提到一个进程级的 `platform/config.LoadProcess()` 或 `cmd/gorge-render` 自己的私有类型里，各域的 `Config` 只留域级字段（diff 已经是这个形状）。这次刻意没做，因为它会动到 render 的配置加载路径，不该和迁入混在一个改动里。阶段四已经另行移除旧变量别名。
 
 ### 5. LCS 不是 Myers：一处技术债的两个症状
 

@@ -188,24 +188,24 @@ mac.Write([]byte(payload))
 
 ## 4. 配置
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8160` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权。**它只保护那两个诊断端点**——投递走数据库，签名用每个 hook 自己的 HMAC key |
-| `GORGE_WEBHOOK_MYSQL_HOST` | `MYSQL_HOST` | `127.0.0.1` | 见下 |
-| `GORGE_WEBHOOK_MYSQL_PORT` | `MYSQL_PORT` | `3306` | |
-| `GORGE_WEBHOOK_MYSQL_USER` | `MYSQL_USER` | `phorge` | |
-| `GORGE_WEBHOOK_MYSQL_PASS` | `MYSQL_PASS` | 空 | |
-| `GORGE_WEBHOOK_NAMESPACE` | `STORAGE_NAMESPACE` | `phorge` | Phorge 的存储命名空间；DSN 里的库名由它拼成 `{namespace}_herald`，必须与该装置的 `storage.default-namespace` 一致 |
-| `GORGE_WEBHOOK_POLL_INTERVAL_MS` | `POLL_INTERVAL_MS` | `1000` | 轮询间隔，同时也是一次变更的投递延迟 |
-| `GORGE_WEBHOOK_DELIVERY_TIMEOUT` | `DELIVERY_TIMEOUT` | `15` | 单次投递的 HTTP 超时（秒），与 `HeraldWebhookWorker` 给它的 `HTTPSFuture` 的值相同 |
-| `GORGE_WEBHOOK_MAX_CONCURRENT` | `MAX_CONCURRENT` | `8` | 跨全部 hook 的在途投递上限 |
-| `GORGE_WEBHOOK_ERROR_BACKOFF_SEC` | `ERROR_BACKOFF_SEC` | `300` | 熔断窗口（秒） |
-| `GORGE_WEBHOOK_ERROR_THRESHOLD` | `ERROR_THRESHOLD` | `10` | 熔断阈值（次） |
-| `GORGE_WEBHOOK_RETRY_BACKOFF_SEC` | **无** | `60` | 单个失败 request 的重投间隔（秒） |
-| `GORGE_WEBHOOK_CLAIM_LEASE_SEC` | **无** | `30` | claim 的 lease（秒），低于投递超时时自动抬到投递超时 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8160` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权。**它只保护那两个诊断端点**——投递走数据库，签名用每个 hook 自己的 HMAC key |
+| `GORGE_WEBHOOK_MYSQL_HOST` | `127.0.0.1` | 见下 |
+| `GORGE_WEBHOOK_MYSQL_PORT` | `3306` | |
+| `GORGE_WEBHOOK_MYSQL_USER` | `phorge` | |
+| `GORGE_WEBHOOK_MYSQL_PASS` | 空 | |
+| `GORGE_WEBHOOK_NAMESPACE` | `phorge` | Phorge 的存储命名空间；DSN 里的库名由它拼成 `{namespace}_herald`，必须与该装置的 `storage.default-namespace` 一致 |
+| `GORGE_WEBHOOK_POLL_INTERVAL_MS` | `1000` | 轮询间隔，同时也是一次变更的投递延迟 |
+| `GORGE_WEBHOOK_DELIVERY_TIMEOUT` | `15` | 单次投递的 HTTP 超时（秒），与 `HeraldWebhookWorker` 给它的 `HTTPSFuture` 的值相同 |
+| `GORGE_WEBHOOK_MAX_CONCURRENT` | `8` | 跨全部 hook 的在途投递上限 |
+| `GORGE_WEBHOOK_ERROR_BACKOFF_SEC` | `300` | 熔断窗口（秒） |
+| `GORGE_WEBHOOK_ERROR_THRESHOLD` | `10` | 熔断阈值（次） |
+| `GORGE_WEBHOOK_RETRY_BACKOFF_SEC` | `60` | 单个失败 request 的重投间隔（秒） |
+| `GORGE_WEBHOOK_CLAIM_LEASE_SEC` | `30` | claim 的 lease（秒），低于投递超时时自动抬到投递超时 |
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。**最后两项没有旧名兜底，这是刻意的**：两个设置在迁入之前都不存在，所以没有任何旧部署的环境里会出现它们——给它们编一个「旧名」等于替一个不存在的调用方猜测。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。最后两项在迁入前不存在，升级时无需映射旧配置。
 
 **`MYSQL_HOST` 在这里不是开关**，与 file-storage 的同名变量正相反（那边的 blob 后端必须显式给 host，理由见 [`../findings.md`](../findings.md) 第 22 条）。本域没有东西可以关掉：两个端点都读库，循环也是围着库转的一圈，所以「没配」与「连不上」不是两个值得区分的状态——两者 `/readyz` 都报，也都意味着一条都投不出去。留空则落到 `127.0.0.1`，在容器里就是容器自己，于是服务起来、不就绪。这是诚实的。
 

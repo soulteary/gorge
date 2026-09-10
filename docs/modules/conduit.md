@@ -66,22 +66,22 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 ### 3.3 恒定时间鉴权
 
-Token 比较用 `crypto/subtle.ConstantTimeCompare` 而非 `==`，比较耗时与是否匹配无关，消除按响应时间逐字节猜 token 的时序攻击向量。Token 支持两种传递方式：请求头 `X-Service-Token`（优先）与查询参数 `?token=`（兜底）。`SERVICE_TOKEN` 为空时中间件直接放行，方便开发/测试环境零配置运行。
+Token 比较用 `crypto/subtle.ConstantTimeCompare` 而非 `==`，比较耗时与是否匹配无关，消除按响应时间逐字节猜 token 的时序攻击向量。Token 支持两种传递方式：请求头 `X-Service-Token`（优先）与查询参数 `?token=`（兜底）。`GORGE_SERVICE_TOKEN` 为空时中间件直接放行，方便开发/测试环境零配置运行。
 
 ## 4. 配置
 
-域级环境变量用 `GORGE_CONDUIT_` 前缀，进程级的监听地址与 token 沿用平台层的 `GORGE_LISTEN_ADDR` / `GORGE_SERVICE_TOKEN`。命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。
+域级环境变量使用 `GORGE_CONDUIT_` 前缀，进程级监听地址与 token 使用平台层的 `GORGE_LISTEN_ADDR` / `GORGE_SERVICE_TOKEN`。命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8150` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_CONDUIT_UPSTREAM_URL` | `UPSTREAM_URL` | `http://phorge:80` | 上游 Phorge PHP 地址 |
-| `GORGE_CONDUIT_RATE_LIMIT_RPS` | `RATE_LIMIT_RPS` | `0` | 每 IP 每秒请求上限，0 关闭限流 |
-| `GORGE_CONDUIT_RATE_LIMIT_BURST` | `RATE_LIMIT_BURST` | `20` | 令牌桶容量（突发） |
-| `GORGE_CONDUIT_RATE_LIMIT_EXEMPT` | `RATE_LIMIT_EXEMPT` | `conduit.ping,conduit.getcapabilities` | 豁免限流的方法，逗号分隔 |
-| `GORGE_CONDUIT_PROXY_TIMEOUT_SEC` | `PROXY_TIMEOUT_SEC` | `30` | 上游请求超时秒数 |
-| `GORGE_CONDUIT_MAX_BODY_SIZE` | `MAX_BODY_SIZE` | `10M` | 请求体上限 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8150` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_CONDUIT_UPSTREAM_URL` | `http://phorge:80` | 上游 Phorge PHP 地址 |
+| `GORGE_CONDUIT_RATE_LIMIT_RPS` | `0` | 每 IP 每秒请求上限，0 关闭限流 |
+| `GORGE_CONDUIT_RATE_LIMIT_BURST` | `20` | 令牌桶容量（突发） |
+| `GORGE_CONDUIT_RATE_LIMIT_EXEMPT` | `conduit.ping,conduit.getcapabilities` | 豁免限流的方法，逗号分隔 |
+| `GORGE_CONDUIT_PROXY_TIMEOUT_SEC` | `30` | 上游请求超时秒数 |
+| `GORGE_CONDUIT_MAX_BODY_SIZE` | `10M` | 请求体上限 |
 
 ## 5. 与 Phorge 的兼容契约
 

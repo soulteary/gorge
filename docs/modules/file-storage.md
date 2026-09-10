@@ -182,25 +182,25 @@ GET /readyz  → 503
 
 **每个后端由它自己的配置开关决定是否注册，没有一张「要启用哪些后端」的清单。**一个后端都没配是一个可以正常启动的合法状态，`/readyz` 会把它报成不可用。
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8100` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_FILE_MYSQL_HOST` | `MYSQL_HOST` | **空** | **blob 后端的开关**，见下 |
-| `GORGE_FILE_MYSQL_PORT` | `MYSQL_PORT` | `3306` | |
-| `GORGE_FILE_MYSQL_USER` | `MYSQL_USER` | `phorge` | |
-| `GORGE_FILE_MYSQL_PASS` | `MYSQL_PASS` | 空 | |
-| `GORGE_FILE_NAMESPACE` | `STORAGE_NAMESPACE` | `phorge` | Phorge 的存储命名空间；DSN 里的库名由它拼成 `{namespace}_file` |
-| `GORGE_FILE_MYSQL_BLOB_MAX_SIZE` | `MYSQL_BLOB_MAX_SIZE` | `1000000` | 单行 blob 上限（字节）。设成 `0` 是关掉 blob 后端的另一种写法 |
-| `GORGE_FILE_LOCAL_DISK_PATH` | `LOCAL_DISK_PATH` | **空** | **本地磁盘后端的开关**；必须是绝对路径，不存在时会创建 |
-| `GORGE_FILE_S3_BUCKET` | `S3_BUCKET` | 空 | S3 五件套之一 |
-| `GORGE_FILE_S3_ACCESS_KEY` | `S3_ACCESS_KEY` | 空 | |
-| `GORGE_FILE_S3_SECRET_KEY` | `S3_SECRET_KEY` | 空 | |
-| `GORGE_FILE_S3_REGION` | `S3_REGION` | 空 | |
-| `GORGE_FILE_S3_ENDPOINT` | `S3_ENDPOINT` | 空 | 显式端点，且客户端固定走 path-style——MinIO / Ceph 不提供 virtual-hosted 形式 |
-| `GORGE_FILE_INSTANCE_NAME` | `INSTANCE_NAME` | 空 | 多个 Phorge 实例共用一个桶时的 key 前缀段 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8100` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_FILE_MYSQL_HOST` | **空** | **blob 后端的开关**，见下 |
+| `GORGE_FILE_MYSQL_PORT` | `3306` | |
+| `GORGE_FILE_MYSQL_USER` | `phorge` | |
+| `GORGE_FILE_MYSQL_PASS` | 空 | |
+| `GORGE_FILE_NAMESPACE` | `phorge` | Phorge 的存储命名空间；DSN 里的库名由它拼成 `{namespace}_file` |
+| `GORGE_FILE_MYSQL_BLOB_MAX_SIZE` | `1000000` | 单行 blob 上限（字节）。设成 `0` 是关掉 blob 后端的另一种写法 |
+| `GORGE_FILE_LOCAL_DISK_PATH` | **空** | **本地磁盘后端的开关**；必须是绝对路径，不存在时会创建 |
+| `GORGE_FILE_S3_BUCKET` | 空 | S3 五件套之一 |
+| `GORGE_FILE_S3_ACCESS_KEY` | 空 | |
+| `GORGE_FILE_S3_SECRET_KEY` | 空 | |
+| `GORGE_FILE_S3_REGION` | 空 | |
+| `GORGE_FILE_S3_ENDPOINT` | 空 | 显式端点，且客户端固定走 path-style——MinIO / Ceph 不提供 virtual-hosted 形式 |
+| `GORGE_FILE_INSTANCE_NAME` | 空 | 多个 Phorge 实例共用一个桶时的 key 前缀段 |
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
 三个后端的启用条件：
 

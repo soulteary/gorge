@@ -166,42 +166,42 @@ worker 的 `/readyz` 是 `nil`（`httpx.Config{Ready: nil}`）：它没有自持
 
 ### taskqueue（`gorge-taskqueue`，`:8090`）
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8090` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_TASKQUEUE_BACKEND` | `QUEUE_BACKEND` | `mysql` | 后端：`mysql` 或 `redis` |
-| `GORGE_TASKQUEUE_MYSQL_HOST` | `MYSQL_HOST` | `127.0.0.1` | 见下 |
-| `GORGE_TASKQUEUE_MYSQL_PORT` | `MYSQL_PORT` | `3306` | |
-| `GORGE_TASKQUEUE_MYSQL_USER` | `MYSQL_USER` | `phorge` | |
-| `GORGE_TASKQUEUE_MYSQL_PASS` | `MYSQL_PASS` | 空 | |
-| `GORGE_TASKQUEUE_NAMESPACE` | `STORAGE_NAMESPACE` | `phorge` | DSN 里的库名由它拼成 `{namespace}_worker`，必须与该装置的 `storage.default-namespace` 一致 |
-| `GORGE_TASKQUEUE_REDIS_ADDR` | `REDIS_ADDR` | `127.0.0.1:6379` | 仅 `backend=redis` 时读 |
-| `GORGE_TASKQUEUE_REDIS_PASSWORD` | `REDIS_PASSWORD` | 空 | |
-| `GORGE_TASKQUEUE_REDIS_DB` | `REDIS_DB` | `0` | |
-| `GORGE_TASKQUEUE_REDIS_KEY_PREFIX` | `REDIS_KEY_PREFIX` | `gorge:tq:` | 键前缀，两个装置共用一个 Redis 时靠它隔离 |
-| `GORGE_TASKQUEUE_LEASE_DURATION` | `LEASE_DURATION` | `7200` | 租约时长（秒），Phorge 的 `PhabricatorWorkerLeaseQuery` 默认 |
-| `GORGE_TASKQUEUE_RETRY_WAIT` | `RETRY_WAIT` | `300` | 临时失败重试退避（秒），Phorge 的 `getWaitBeforeRetry` |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8090` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_TASKQUEUE_BACKEND` | `mysql` | 后端：`mysql` 或 `redis` |
+| `GORGE_TASKQUEUE_MYSQL_HOST` | `127.0.0.1` | 见下 |
+| `GORGE_TASKQUEUE_MYSQL_PORT` | `3306` | |
+| `GORGE_TASKQUEUE_MYSQL_USER` | `phorge` | |
+| `GORGE_TASKQUEUE_MYSQL_PASS` | 空 | |
+| `GORGE_TASKQUEUE_NAMESPACE` | `phorge` | DSN 里的库名由它拼成 `{namespace}_worker`，必须与该装置的 `storage.default-namespace` 一致 |
+| `GORGE_TASKQUEUE_REDIS_ADDR` | `127.0.0.1:6379` | 仅 `backend=redis` 时读 |
+| `GORGE_TASKQUEUE_REDIS_PASSWORD` | 空 | |
+| `GORGE_TASKQUEUE_REDIS_DB` | `0` | |
+| `GORGE_TASKQUEUE_REDIS_KEY_PREFIX` | `gorge:tq:` | 键前缀，两个装置共用一个 Redis 时靠它隔离 |
+| `GORGE_TASKQUEUE_LEASE_DURATION` | `7200` | 租约时长（秒），Phorge 的 `PhabricatorWorkerLeaseQuery` 默认 |
+| `GORGE_TASKQUEUE_RETRY_WAIT` | `300` | 临时失败重试退避（秒），Phorge 的 `getWaitBeforeRetry` |
 
 **`MYSQL_HOST` 不是开关**，与 webhook 同、与 file-storage 的同名变量相反：本域没东西可关，两个后端都要读库，「没配」与「连不上」不是两个值得区分的状态——留空落到 `127.0.0.1`，服务起来、不就绪。
 
 ### worker（`gorge-worker`，`:8170`）
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8170` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 保护 `/api/worker/stats` |
-| `GORGE_WORKER_TASK_QUEUE_URL` | `TASK_QUEUE_URL` | `http://gorge-taskqueue:8090` | 要租的 taskqueue 地址 |
-| `GORGE_WORKER_TASK_QUEUE_TOKEN` | `TASK_QUEUE_TOKEN` | 空 | 出示给 taskqueue 的 token，须等于对方的 `GORGE_SERVICE_TOKEN` |
-| `GORGE_WORKER_LEASE_LIMIT` | `LEASE_LIMIT` | `4` | 每次轮询租多少 |
-| `GORGE_WORKER_POLL_INTERVAL_MS` | `POLL_INTERVAL_MS` | `1000` | 有活时的轮询间隔 |
-| `GORGE_WORKER_MAX_WORKERS` | `MAX_WORKERS` | `4` | 并发跑多少 |
-| `GORGE_WORKER_IDLE_TIMEOUT_SEC` | `IDLE_TIMEOUT_SEC` | `180` | 队列空后按此频率再等多久才退避 |
-| `GORGE_WORKER_CONDUIT_URL` | `CONDUIT_URL` | 空 | 见 3.6，空 = 只租并运行本地实现的类 |
-| `GORGE_WORKER_CONDUIT_TOKEN` | `CONDUIT_TOKEN` | 空 | Conduit token |
-| `GORGE_WORKER_TASK_CLASS_FILTER` | `TASK_CLASS_FILTER` | 空 | 逗号分隔的类白名单，空 = 全部支持的类 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8170` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 保护 `/api/worker/stats` |
+| `GORGE_WORKER_TASK_QUEUE_URL` | `http://gorge-taskqueue:8090` | 要租的 taskqueue 地址 |
+| `GORGE_WORKER_TASK_QUEUE_TOKEN` | 空 | 出示给 taskqueue 的 token，须等于对方的 `GORGE_SERVICE_TOKEN` |
+| `GORGE_WORKER_LEASE_LIMIT` | `4` | 每次轮询租多少 |
+| `GORGE_WORKER_POLL_INTERVAL_MS` | `1000` | 有活时的轮询间隔 |
+| `GORGE_WORKER_MAX_WORKERS` | `4` | 并发跑多少 |
+| `GORGE_WORKER_IDLE_TIMEOUT_SEC` | `180` | 队列空后按此频率再等多久才退避 |
+| `GORGE_WORKER_CONDUIT_URL` | 空 | 见 3.6，空 = 只租并运行本地实现的类 |
+| `GORGE_WORKER_CONDUIT_TOKEN` | 空 | Conduit token |
+| `GORGE_WORKER_TASK_CLASS_FILTER` | 空 | 逗号分隔的类白名单，空 = 全部支持的类 |
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。taskqueue 的连接池（`maxOpenConns=25` / `maxIdleConns=5` / `connMaxLifetime=5m`）定在 `db.go`，按「池与 Phorge 共用一台库、要留余量」定；**`platform/` 仍然没有数据库设施——三个域（file-storage / webhook / taskqueue）现在共用一个驱动，仍不构成共享关切**，判断同 [`../findings.md`](../findings.md) 第 39 条。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。taskqueue 的连接池（`maxOpenConns=25` / `maxIdleConns=5` / `connMaxLifetime=5m`）定在 `db.go`，按「池与 Phorge 共用一台库、要留余量」定；**`platform/` 仍然没有数据库设施——三个域（file-storage / webhook / taskqueue）现在共用一个驱动，仍不构成共享关切**，判断同 [`../findings.md`](../findings.md) 第 39 条。
 
 ## 5. 兼容契约
 

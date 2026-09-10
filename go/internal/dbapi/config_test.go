@@ -9,8 +9,8 @@ import (
 // The config tests are ported from the standalone service's
 // internal/cluster/config_test.go, rewritten against this package's
 // Config/BuildCluster split. The standalone service parsed a RawConfig; here
-// the single-node path comes from the GORGE_DB_* env (or their legacy
-// fallbacks) and the cluster path from a Phorge local.json, so the tests cover
+// the single-node path comes from the canonical GORGE_DB_* environment and
+// the cluster path from a Phorge local.json, so the tests cover
 // both entry points into the same ClusterConfig.
 
 // clearDBEnv unsets every variable LoadFromEnv reads so a test starts from the
@@ -47,49 +47,44 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 }
 
-// TestLoadFromEnvPrefersNewNames pins the newest-name-first fallback: a
-// GORGE_DB_ variable always wins over the legacy unprefixed one, which is how
-// a pre-monorepo deployment keeps working while a migrated one takes over.
-func TestLoadFromEnvPrefersNewNames(t *testing.T) {
+// TestLoadFromEnvIgnoresRetiredNames ensures the standalone aliases cannot
+// accidentally override the bundled deployment contract.
+func TestLoadFromEnvIgnoresRetiredNames(t *testing.T) {
 	clearDBEnv(t)
 	t.Setenv("MYSQL_HOST", "legacy-host")
-	t.Setenv("GORGE_DB_MYSQL_HOST", "new-host")
 	t.Setenv("STORAGE_NAMESPACE", "legacy-ns")
-	t.Setenv("GORGE_DB_NAMESPACE", "new-ns")
 
 	cfg := LoadFromEnv()
-	if cfg.MySQLHost != "new-host" {
-		t.Errorf("GORGE_DB_MYSQL_HOST should win, got %q", cfg.MySQLHost)
+	if cfg.MySQLHost != DefaultMySQLHost {
+		t.Errorf("retired MYSQL_HOST changed host to %q", cfg.MySQLHost)
 	}
-	if cfg.Namespace != "new-ns" {
-		t.Errorf("GORGE_DB_NAMESPACE should win, got %q", cfg.Namespace)
+	if cfg.Namespace != DefaultNamespace {
+		t.Errorf("retired STORAGE_NAMESPACE changed namespace to %q", cfg.Namespace)
 	}
 }
 
-// TestLoadFromEnvLegacyFallback pins the other half: with only the legacy names
-// set, they are used.
-func TestLoadFromEnvLegacyFallback(t *testing.T) {
+func TestLoadFromEnvCanonicalNames(t *testing.T) {
 	clearDBEnv(t)
-	t.Setenv("MYSQL_HOST", "legacy-host")
-	t.Setenv("MYSQL_PORT", "3307")
-	t.Setenv("MYSQL_USER", "legacy-user")
-	t.Setenv("MYSQL_PASS", "legacy-pass")
-	t.Setenv("STORAGE_NAMESPACE", "legacy-ns")
+	t.Setenv("GORGE_DB_MYSQL_HOST", "db-host")
+	t.Setenv("GORGE_DB_MYSQL_PORT", "3307")
+	t.Setenv("GORGE_DB_MYSQL_USER", "db-user")
+	t.Setenv("GORGE_DB_MYSQL_PASS", "db-pass")
+	t.Setenv("GORGE_DB_NAMESPACE", "db-ns")
 
 	cfg := LoadFromEnv()
-	if cfg.MySQLHost != "legacy-host" {
+	if cfg.MySQLHost != "db-host" {
 		t.Errorf("host = %q", cfg.MySQLHost)
 	}
 	if cfg.MySQLPort != 3307 {
 		t.Errorf("port = %d", cfg.MySQLPort)
 	}
-	if cfg.MySQLUser != "legacy-user" {
+	if cfg.MySQLUser != "db-user" {
 		t.Errorf("user = %q", cfg.MySQLUser)
 	}
-	if cfg.MySQLPass != "legacy-pass" {
+	if cfg.MySQLPass != "db-pass" {
 		t.Errorf("pass = %q", cfg.MySQLPass)
 	}
-	if cfg.Namespace != "legacy-ns" {
+	if cfg.Namespace != "db-ns" {
 		t.Errorf("namespace = %q", cfg.Namespace)
 	}
 }

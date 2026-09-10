@@ -63,7 +63,7 @@ func TestNoBackendIsConfiguredByDefault(t *testing.T) {
 func TestBlobBackendSwitches(t *testing.T) {
 	t.Run("a host turns it on", func(t *testing.T) {
 		clearEnv(t)
-		t.Setenv("MYSQL_HOST", "db")
+		t.Setenv("GORGE_FILE_MYSQL_HOST", "db")
 		if !LoadFromEnv().MySQLBlobEnabled() {
 			t.Error("a configured host should enable the blob backend")
 		}
@@ -73,8 +73,8 @@ func TestBlobBackendSwitches(t *testing.T) {
 		// This is how Phorge's own docs tell an operator to disable the MySQL
 		// engine, so the same value has to work here.
 		clearEnv(t)
-		t.Setenv("MYSQL_HOST", "db")
-		t.Setenv("MYSQL_BLOB_MAX_SIZE", "0")
+		t.Setenv("GORGE_FILE_MYSQL_HOST", "db")
+		t.Setenv("GORGE_FILE_MYSQL_BLOB_MAX_SIZE", "0")
 		if LoadFromEnv().MySQLBlobEnabled() {
 			t.Error("a zero size limit should disable the blob backend")
 		}
@@ -85,32 +85,31 @@ func TestS3RequiresEverySetting(t *testing.T) {
 	clearEnv(t)
 	// A partial configuration builds a client that fails every request, which
 	// is a worse outcome than not registering the backend at all.
-	t.Setenv("S3_BUCKET", "files")
-	t.Setenv("S3_ACCESS_KEY", "AKID")
+	t.Setenv("GORGE_FILE_S3_BUCKET", "files")
+	t.Setenv("GORGE_FILE_S3_ACCESS_KEY", "AKID")
 	if LoadFromEnv().S3Enabled() {
 		t.Fatal("a partial S3 configuration must not enable the backend")
 	}
 
-	t.Setenv("S3_SECRET_KEY", "secret")
-	t.Setenv("S3_REGION", "us-east-1")
-	t.Setenv("S3_ENDPOINT", "https://s3.example.com")
+	t.Setenv("GORGE_FILE_S3_SECRET_KEY", "secret")
+	t.Setenv("GORGE_FILE_S3_REGION", "us-east-1")
+	t.Setenv("GORGE_FILE_S3_ENDPOINT", "https://s3.example.com")
 	if !LoadFromEnv().S3Enabled() {
 		t.Error("a complete S3 configuration should enable the backend")
 	}
 }
 
-// TestPrefixedNamesWinOverLegacyOnes: the unprefixed names are what the
-// standalone deployment used and are kept as a fallback, so both have to work
-// and the new one has to win. See docs/platform.md section 4.
-func TestPrefixedNamesWinOverLegacyOnes(t *testing.T) {
+// TestRetiredNamesAreIgnored prevents the removed standalone aliases from
+// silently reappearing in this security-sensitive storage configuration.
+func TestRetiredNamesAreIgnored(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("LOCAL_DISK_PATH", "/legacy")
 	t.Setenv("MYSQL_HOST", "legacy-db")
 	t.Setenv("MYSQL_BLOB_MAX_SIZE", "111")
 
-	if cfg := LoadFromEnv(); cfg.LocalDiskPath != "/legacy" || cfg.MySQLHost != "legacy-db" ||
-		cfg.MySQLBlobMaxSize != 111 {
-		t.Fatalf("the legacy names must still be read: %+v", cfg)
+	if cfg := LoadFromEnv(); cfg.LocalDiskPath != "" || cfg.MySQLHost != "" ||
+		cfg.MySQLBlobMaxSize != DefaultMySQLBlobMaxSize {
+		t.Fatalf("retired names must be ignored: %+v", cfg)
 	}
 
 	t.Setenv("GORGE_FILE_LOCAL_DISK_PATH", "/current")
@@ -159,7 +158,7 @@ func TestNewRouterFromConfig(t *testing.T) {
 
 	t.Run("a local disk path registers the backend", func(t *testing.T) {
 		clearEnv(t)
-		t.Setenv("LOCAL_DISK_PATH", t.TempDir())
+		t.Setenv("GORGE_FILE_LOCAL_DISK_PATH", t.TempDir())
 
 		router, err := NewRouterFromConfig(LoadFromEnv())
 		if err != nil {
@@ -180,7 +179,7 @@ func TestNewRouterFromConfig(t *testing.T) {
 		clearEnv(t)
 		// A relative path is rejected by the engine. Starting anyway would
 		// leave a service that looks configured and stores nothing.
-		t.Setenv("LOCAL_DISK_PATH", "relative/path")
+		t.Setenv("GORGE_FILE_LOCAL_DISK_PATH", "relative/path")
 
 		if _, err := NewRouterFromConfig(LoadFromEnv()); err == nil {
 			t.Error("expected the start to fail")

@@ -192,11 +192,11 @@ prose 输出没有外部基准可比(Phorge 把这些片段渲染成 markup,不�
 
 ## 6. 配置
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_DIFF_MAX_BYTES` | **无** | `1048576` | `len(old)+len(new)` 上限(字节) |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_DIFF_MAX_BYTES` | `1048576` | `len(old)+len(new)` 上限(字节) |
 
-**这一条没有旧名兜底,是全仓库的例外。** 迁入前的服务读 `MAX_BODY_SIZE`,但那是个 Echo 传输层限制、值是字符串(`"10M"`)、作用于整个请求体;`GORGE_DIFF_MAX_BYTES` 是字节数、作用于 `len(old)+len(new)`。认旧名会**静默地重新解释它的值**,所以这是一次重命名而非兜底。
+迁入前的服务读取 `MAX_BODY_SIZE`，它是作用于整个请求体的 Echo 传输层字符串限制（如 `"10M"`）；`GORGE_DIFF_MAX_BYTES` 则是作用于 `len(old)+len(new)` 的字节数。升级时需要换算数值，不能只改变量名。
 
 `diff.Config` 刻意**不嵌** `config.Base`:监听地址与 service token 属于进程,而进程同时服务 render 域,两个域各自声称拥有 `GORGE_LISTEN_ADDR` 会让「谁说了算」变得含混。当前由 `render.Config` 持有 `config.Base`,这一点记在 [`../findings.md`](../findings.md)。
 
