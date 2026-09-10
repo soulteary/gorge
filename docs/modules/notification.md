@@ -317,7 +317,7 @@ Hub.mu            → instances map 与 history
 | `GORGE_NOTIFICATION_LISTEN_ADDR` | `0.0.0.0` | **绑定主机，不是 `host:port`**，两个端口共用 |
 | `GORGE_NOTIFICATION_CONFIG_FILE` | 无 | Aphlict 格式 JSON |
 
-规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。Aphlict 时代的裸变量已移除，`TestRetiredAliasesAreIgnored` 防止它们意外恢复。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。Aphlict 时代的裸变量已移除，`TestRetiredEnvNamesAreIgnored` 防止它们意外恢复。
 
 两个默认端口沿用 Aphlict 的值，不是随手挑的：Phorge 的 `notification.servers` 里已经写着它们，而 client 那个值还会到达浏览器。
 
