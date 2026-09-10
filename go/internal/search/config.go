@@ -71,31 +71,37 @@ func defFromEnv() []engine.BackendDef {
 
 func elasticsearchFromEnv() []engine.BackendDef {
 	host := config.EnvStr("", "ES_HOST")
-	if host == "" { return nil }
+	if host == "" {
+		return nil
+	}
 	hosts := strings.Split(host, ",")
-	for i := range hosts { hosts[i] = strings.TrimSpace(hosts[i]) }
+	for i := range hosts {
+		hosts[i] = strings.TrimSpace(hosts[i])
+	}
 	return []engine.BackendDef{{
-		Type: "elasticsearch",
-		Hosts: hosts,
-		Index: config.EnvStr(engine.DefaultIndexName, "ES_INDEX"),
-		Version: config.EnvInt(5, "ES_VERSION"),
-		Timeout: config.EnvInt(15, "ES_TIMEOUT"),
+		Type:     "elasticsearch",
+		Hosts:    hosts,
+		Index:    config.EnvStr(engine.DefaultIndexName, "ES_INDEX"),
+		Version:  config.EnvInt(5, "ES_VERSION"),
+		Timeout:  config.EnvInt(15, "ES_TIMEOUT"),
 		Protocol: config.EnvStr("http", "ES_PROTOCOL"),
-		Roles: []string{"read", "write"},
+		Roles:    []string{"read", "write"},
 	}}
 }
 
 func meilisearchFromEnv() []engine.BackendDef {
 	host := config.EnvStr("", "MEILI_HOST")
-	if host == "" { return nil }
+	if host == "" {
+		return nil
+	}
 	return []engine.BackendDef{{
-		Type: "meilisearch",
-		Hosts: []string{host},
-		Index: config.EnvStr(engine.DefaultIndexName, "MEILI_INDEX"),
-		APIKey: config.EnvStr("", "MEILI_MASTER_KEY"),
-		Timeout: config.EnvInt(15, "MEILI_TIMEOUT"),
+		Type:     "meilisearch",
+		Hosts:    []string{host},
+		Index:    config.EnvStr(engine.DefaultIndexName, "MEILI_INDEX"),
+		APIKey:   config.EnvStr("", "MEILI_MASTER_KEY"),
+		Timeout:  config.EnvInt(15, "MEILI_TIMEOUT"),
 		Protocol: config.EnvStr("http", "MEILI_PROTOCOL"),
-		Roles: []string{"read", "write"},
+		Roles:    []string{"read", "write"},
 	}}
 }
 
@@ -107,7 +113,9 @@ func NewEngine(defs []engine.BackendDef) (*engine.SearchEngine, error) {
 			backends = append(backends, meilisearch.New(d))
 		case "test":
 			b, err := engine.NewTestBackend(d)
-			if err != nil { return nil, err }
+			if err != nil {
+				return nil, err
+			}
 			backends = append(backends, b)
 		default:
 			backends = append(backends, elasticsearch.New(d))
