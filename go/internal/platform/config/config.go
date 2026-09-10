@@ -15,19 +15,23 @@ type Base struct {
 	ServiceToken string `json:"serviceToken"`
 }
 
-// LoadBase reads the shared settings, honouring the GORGE_ prefixed names and
-// falling back to the unprefixed ones used by the pre-monorepo deployments.
+// LoadBase reads the shared settings from the canonical GORGE_ names.
+//
+// Pre-monorepo LISTEN_ADDR / SERVICE_TOKEN aliases were removed after Phorge
+// made Gorge part of the default deployment stack. Keeping two spellings here
+// would let a stale standalone environment silently override the deployment
+// contract we now publish and test as one unit.
 func LoadBase(defaultListenAddr string) Base {
 	return Base{
-		ListenAddr:   EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR", "LISTEN_ADDR"),
-		ServiceToken: EnvStr("", "GORGE_SERVICE_TOKEN", "SERVICE_TOKEN"),
+		ListenAddr:   EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR"),
+		ServiceToken: EnvStr("", "GORGE_SERVICE_TOKEN"),
 	}
 }
 
 // EnvStr returns the value of the first key that is set to a non-empty string,
-// or fallback when none is. Callers pass keys newest-name-first so that a
-// GORGE_ prefixed variable always wins over the legacy unprefixed one it
-// replaced; this is what lets old compose files keep working unchanged.
+// or fallback when none is. The helper remains variadic for callers which have
+// multiple current sources, but legacy aliases are no longer part of the
+// monorepo service configuration contract.
 func EnvStr(fallback string, keys ...string) string {
 	for _, key := range keys {
 		if v := os.Getenv(key); v != "" {
@@ -38,8 +42,7 @@ func EnvStr(fallback string, keys ...string) string {
 }
 
 // EnvInt behaves like EnvStr but parses the value as an integer. A key set to
-// an unparseable value is skipped, so a typo degrades to the next key rather
-// than to a zero-valued limit.
+// an unparseable value is skipped instead of becoming a zero-valued limit.
 func EnvInt(fallback int, keys ...string) int {
 	for _, key := range keys {
 		v := os.Getenv(key)
