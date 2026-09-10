@@ -134,7 +134,7 @@ if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expec
 ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR"),
 ```
 
-旧的服务级裸名属于独立服务时期的过渡接口，现已移除。升级时需要同步修改编排，避免服务使用默认地址或在 token 为空时关闭鉴权。外部后端的原生变量不是这类别名，仍按后端契约使用，例如 mailer 的 `SMTP_*` / `MAILER_*` 和 search 的 `ES_*` / `MEILI_*`。
+旧的服务级裸名属于独立服务时期的过渡接口，现已移除。升级时需要同步修改编排，避免服务使用默认地址或在 token 为空时关闭鉴权。外部后端的原生变量不是这类别名，仍按后端契约使用，例如 mailer 的 `SMTP_*` 以及 `MAILER_ACCESS_KEY`、`MAILER_SECRET_KEY`、`MAILER_REGION`、`MAILER_ENDPOINT`、`MAILER_API_KEY`、`MAILER_DOMAIN`、`MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`，还有 search 的 `ES_*` / `MEILI_*`。`MAILER_CONFIG`、`MAILER_TYPE` 与 `MAILER_KEY` 已退休，不属于后端原生变量。
 
 引入 `GORGE_` 前缀的直接原因是：多个域将共用一个进程，`MAX_BYTES`、`TIMEOUT_SEC` 这类裸名会真的撞车。因此约定分两级——服务级用 `GORGE_`，域级再加一段域名（`GORGE_RENDER_MAX_BYTES`）。新模块的域级配置照此命名。
 
