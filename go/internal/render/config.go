@@ -14,8 +14,7 @@ const (
 )
 
 // Config is the render service configuration. The domain-specific limits carry
-// a GORGE_RENDER_ prefix because bare MAX_BYTES / TIMEOUT_SEC would collide as
-// soon as a second domain shares this process.
+// a GORGE_RENDER_ prefix because bare names collide once domains share a process.
 type Config struct {
 	config.Base
 	MaxBytes   int  `json:"maxBytes"`
@@ -34,15 +33,15 @@ func Load() (*Config, error) {
 
 // ConfigFilePath returns the JSON config file to read, or "" for env-only.
 func ConfigFilePath() string {
-	return config.EnvStr("", "GORGE_CONFIG_FILE", "HIGHLIGHT_CONFIG_FILE")
+	return config.EnvStr("", "GORGE_CONFIG_FILE")
 }
 
-// LoadFromEnv reads the configuration from the environment.
+// LoadFromEnv reads the configuration from the canonical monorepo variables.
 func LoadFromEnv() *Config {
 	return &Config{
 		Base:       config.LoadBase(DefaultListenAddr),
-		MaxBytes:   config.EnvInt(DefaultMaxBytes, "GORGE_RENDER_MAX_BYTES", "MAX_BYTES"),
-		TimeoutSec: config.EnvInt(DefaultTimeoutSec, "GORGE_RENDER_TIMEOUT_SEC", "TIMEOUT_SEC"),
+		MaxBytes:   config.EnvInt(DefaultMaxBytes, "GORGE_RENDER_MAX_BYTES"),
+		TimeoutSec: config.EnvInt(DefaultTimeoutSec, "GORGE_RENDER_TIMEOUT_SEC"),
 		EnableDiff: config.EnvBool(DefaultEnableDiff, "GORGE_RENDER_ENABLE_DIFF"),
 	}
 }
@@ -54,7 +53,7 @@ func LoadFromFile(path string) (*Config, error) {
 	cfg := &Config{
 		Base: config.Base{
 			ListenAddr:   DefaultListenAddr,
-			ServiceToken: config.EnvStr("", "GORGE_SERVICE_TOKEN", "SERVICE_TOKEN"),
+			ServiceToken: config.EnvStr("", "GORGE_SERVICE_TOKEN"),
 		},
 		MaxBytes:   DefaultMaxBytes,
 		TimeoutSec: DefaultTimeoutSec,
