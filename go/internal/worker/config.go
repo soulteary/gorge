@@ -21,14 +21,14 @@ const (
 
 type Config struct {
 	config.Base
-	TaskQueueURL   string
-	TaskQueueToken string
-	LeaseLimit     int
-	PollIntervalMs int
-	MaxWorkers     int
-	IdleTimeoutSec int
-	ConduitURL     string
-	ConduitToken   string
+	TaskQueueURL    string
+	TaskQueueToken  string
+	LeaseLimit      int
+	PollIntervalMs  int
+	MaxWorkers      int
+	IdleTimeoutSec  int
+	ConduitURL      string
+	ConduitToken    string
 	TaskClassFilter []string
 }
 
