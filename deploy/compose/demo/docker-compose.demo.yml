@@ -205,7 +205,7 @@ services:
       retries: 3
     networks: [gorge-demo]
 
-  # gorge-mailer 投递到 OwlMail 的 SMTP。用扁平的 MAILER_TYPE + SMTP_* 即可，
+  # gorge-mailer 投递到 OwlMail 的 SMTP。用 GORGE_MAILER_TYPE + SMTP_* 即可，
   # OwlMail 不需要认证，protocol 留空（明文）。
   gorge-mailer:
     build:
@@ -220,8 +220,8 @@ services:
     environment:
       GORGE_LISTEN_ADDR: ":8110"
       GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
-      MAILER_TYPE: smtp
-      MAILER_KEY: owlmail
+      GORGE_MAILER_TYPE: smtp
+      GORGE_MAILER_KEY: owlmail
       SMTP_HOST: owlmail
       SMTP_PORT: "1025"
     ports:

@@ -76,18 +76,18 @@ TOKEN=dev-token make e2e
 
 ## 配置
 
-环境变量按「新名优先、旧名兜底」查找，取第一个非空值。旧名保留是为了让既有的 Phorge 编排文件不改也能起来，新编排请只用新名。
+Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已经移除独立服务时期的裸变量别名；升级部署时必须同步更新编排文件。外部后端的原生变量仍受支持，例如 mailer 的 `SMTP_*` 以及 `MAILER_ACCESS_KEY`、`MAILER_SECRET_KEY`、`MAILER_REGION`、`MAILER_ENDPOINT`、`MAILER_API_KEY`、`MAILER_DOMAIN`、`MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`，还有 search 的 `ES_*` / `MEILI_*`；不要把这些名称改写成不存在的 `GORGE_*` 形式。`MAILER_CONFIG`、`MAILER_TYPE` 与 `MAILER_KEY` 不在例外范围内。
 
 下表是 `gorge-render` 的。**每个二进制有自己的一张表**，在 [`docs/modules/`](docs/modules/) 下各自的第 4 节；`GORGE_LISTEN_ADDR` 与 `GORGE_SERVICE_TOKEN` 是所有服务共有的两个，只有默认端口不同。
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8140` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_CONFIG_FILE` | `HIGHLIGHT_CONFIG_FILE` | 无 | JSON 配置文件路径 |
-| `GORGE_RENDER_MAX_BYTES` | `MAX_BYTES` | `1048576` | 单次请求源码上限（字节） |
-| `GORGE_RENDER_TIMEOUT_SEC` | `TIMEOUT_SEC` | `15` | 请求超时（秒） |
-| `GORGE_RENDER_ENABLE_DIFF` | 无 | `true` | 是否注册 `/api/diff/*` 路由 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8140` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_CONFIG_FILE` | 无 | JSON 配置文件路径 |
+| `GORGE_RENDER_MAX_BYTES` | `1048576` | 单次请求源码上限（字节） |
+| `GORGE_RENDER_TIMEOUT_SEC` | `15` | 请求超时（秒） |
+| `GORGE_RENDER_ENABLE_DIFF` | `true` | 是否注册 `/api/diff/*` 路由 |
 
 `GORGE_RENDER_MAX_BYTES` 之外还有一道 `platform/httpx` 的传输层上限，固定 2M，不走环境变量。默认配置下前者（1MiB）更小，所以超限请求先被域级检查挡下；把它调到 2M 以上，挡下请求的就换成传输层中间件了。两条路径都返回 `413` + `ERR_TOO_LARGE`，只有 `message` 文案不同，客户端不必区分。
 

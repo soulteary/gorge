@@ -182,25 +182,25 @@ GET /readyz  → 503
 
 **每个后端由它自己的配置开关决定是否注册，没有一张「要启用哪些后端」的清单。**一个后端都没配是一个可以正常启动的合法状态，`/readyz` 会把它报成不可用。
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8100` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_FILE_MYSQL_HOST` | `MYSQL_HOST` | **空** | **blob 后端的开关**，见下 |
-| `GORGE_FILE_MYSQL_PORT` | `MYSQL_PORT` | `3306` | |
-| `GORGE_FILE_MYSQL_USER` | `MYSQL_USER` | `phorge` | |
-| `GORGE_FILE_MYSQL_PASS` | `MYSQL_PASS` | 空 | |
-| `GORGE_FILE_NAMESPACE` | `STORAGE_NAMESPACE` | `phorge` | Phorge 的存储命名空间；DSN 里的库名由它拼成 `{namespace}_file` |
-| `GORGE_FILE_MYSQL_BLOB_MAX_SIZE` | `MYSQL_BLOB_MAX_SIZE` | `1000000` | 单行 blob 上限（字节）。设成 `0` 是关掉 blob 后端的另一种写法 |
-| `GORGE_FILE_LOCAL_DISK_PATH` | `LOCAL_DISK_PATH` | **空** | **本地磁盘后端的开关**；必须是绝对路径，不存在时会创建 |
-| `GORGE_FILE_S3_BUCKET` | `S3_BUCKET` | 空 | S3 五件套之一 |
-| `GORGE_FILE_S3_ACCESS_KEY` | `S3_ACCESS_KEY` | 空 | |
-| `GORGE_FILE_S3_SECRET_KEY` | `S3_SECRET_KEY` | 空 | |
-| `GORGE_FILE_S3_REGION` | `S3_REGION` | 空 | |
-| `GORGE_FILE_S3_ENDPOINT` | `S3_ENDPOINT` | 空 | 显式端点，且客户端固定走 path-style——MinIO / Ceph 不提供 virtual-hosted 形式 |
-| `GORGE_FILE_INSTANCE_NAME` | `INSTANCE_NAME` | 空 | 多个 Phorge 实例共用一个桶时的 key 前缀段 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8100` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_FILE_MYSQL_HOST` | **空** | **blob 后端的开关**，见下 |
+| `GORGE_FILE_MYSQL_PORT` | `3306` | |
+| `GORGE_FILE_MYSQL_USER` | `phorge` | |
+| `GORGE_FILE_MYSQL_PASS` | 空 | |
+| `GORGE_FILE_NAMESPACE` | `phorge` | Phorge 的存储命名空间；DSN 里的库名由它拼成 `{namespace}_file` |
+| `GORGE_FILE_MYSQL_BLOB_MAX_SIZE` | `1000000` | 单行 blob 上限（字节）。设成 `0` 是关掉 blob 后端的另一种写法 |
+| `GORGE_FILE_LOCAL_DISK_PATH` | **空** | **本地磁盘后端的开关**；必须是绝对路径，不存在时会创建 |
+| `GORGE_FILE_S3_BUCKET` | 空 | S3 五件套之一 |
+| `GORGE_FILE_S3_ACCESS_KEY` | 空 | |
+| `GORGE_FILE_S3_SECRET_KEY` | 空 | |
+| `GORGE_FILE_S3_REGION` | 空 | |
+| `GORGE_FILE_S3_ENDPOINT` | 空 | 显式端点，且客户端固定走 path-style——MinIO / Ceph 不提供 virtual-hosted 形式 |
+| `GORGE_FILE_INSTANCE_NAME` | 空 | 多个 Phorge 实例共用一个桶时的 key 前缀段 |
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
 三个后端的启用条件：
 
@@ -216,7 +216,7 @@ S3 要求五个齐全，是因为半套配置会造出一个每次请求都失�
 
 ### blob 后端的开关变了
 
-`MySQLBlobEnabled()` 现在**要求显式给出 host**，这是相对独立服务时期的一次刻意变更：那边 `MYSQL_HOST` 默认 `127.0.0.1`、`MYSQL_BLOB_MAX_SIZE` 默认 1 MB，于是一个只配了本地磁盘的部署**照样会注册一个指向不存在的数据库的 blob 后端**——它优先级 1，接走每一个小文件上传并让它失败，而 `/readyz`（它会 ping）把整个服务报成不可用。要求 host 之后，「什么都没配」与「配了 blob」才区分得开，与 mailer 的 `MAILER_TYPE` 是同一个形状。`TestNoBackendIsConfiguredByDefault` 钉住它，记在 [`../findings.md`](../findings.md) 第 22 条。
+`MySQLBlobEnabled()` 现在**要求显式给出 host**，这是相对独立服务时期的一次刻意变更：那边 `MYSQL_HOST` 默认 `127.0.0.1`、`MYSQL_BLOB_MAX_SIZE` 默认 1 MB，于是一个只配了本地磁盘的部署**照样会注册一个指向不存在的数据库的 blob 后端**——它优先级 1，接走每一个小文件上传并让它失败，而 `/readyz`（它会 ping）把整个服务报成不可用。要求 host 之后，「什么都没配」与「配了 blob」才区分得开，与 mailer 的 `GORGE_MAILER_TYPE` 是同一个形状。`TestNoBackendIsConfiguredByDefault` 钉住它，记在 [`../findings.md`](../findings.md) 第 22 条。
 
 ## 5. 兼容契约
 

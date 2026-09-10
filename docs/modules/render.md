@@ -190,17 +190,17 @@ if mapped, ok := h.lexerMap[lang]; ok {
 
 ## 6. 配置
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8140` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_CONFIG_FILE` | `HIGHLIGHT_CONFIG_FILE` | 无 | JSON 配置文件路径 |
-| `GORGE_RENDER_MAX_BYTES` | `MAX_BYTES` | `1048576` | 单次请求源码上限（字节） |
-| `GORGE_RENDER_TIMEOUT_SEC` | `TIMEOUT_SEC` | `15` | ⚠️ 名不副实，见 [`../findings.md`](../findings.md) 第 1 条 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8140` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_CONFIG_FILE` | 无 | JSON 配置文件路径 |
+| `GORGE_RENDER_MAX_BYTES` | `1048576` | 单次请求源码上限（字节） |
+| `GORGE_RENDER_TIMEOUT_SEC` | `15` | ⚠️ 名不副实，见 [`../findings.md`](../findings.md) 第 1 条 |
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
-`Load()` 的取值顺序：指了 `GORGE_CONFIG_FILE` 就读 JSON 文件，否则读环境变量。走文件时**仍然从环境变量取 `SERVICE_TOKEN`**，其余字段先填默认值再由文件覆盖，这样密钥可以单独注入而不进配置文件。
+`Load()` 的取值顺序：指了 `GORGE_CONFIG_FILE` 就读 JSON 文件，否则读环境变量。走文件时**仍然从环境变量取 `GORGE_SERVICE_TOKEN`**，其余字段先填默认值再由文件覆盖，这样密钥可以单独注入而不进配置文件。
 
 ## 7. 域级错误码
 

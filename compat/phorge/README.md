@@ -165,24 +165,22 @@ diff 域的两条路径同样属于契约：
 
 一个 token 同时守两个域：它认证的是调用方对这个**进程**的身份，不是对某个路由分组的身份，所以 PHP 侧不需要第二个 token 配置项。
 
-### 环境变量：新名优先，旧名兜底
+### 环境变量：统一使用规范名称
 
-因为 highlight 与 diff 共用一个进程，`MAX_BYTES`、`TIMEOUT_SEC` 这类裸名会真的撞车。新配置引入 `GORGE_` 前缀，服务级知识再加域名段；`platform/config` 按顺序查找，取第一个非空值，所以旧编排文件里的裸名仍然能跑。
+因为 highlight 与 diff 共用一个进程，`MAX_BYTES`、`TIMEOUT_SEC` 这类裸名会发生冲突。配置统一使用 `GORGE_` 前缀，域级配置再加入域名段。独立服务时期的裸变量已移除。
 
-| 新名 | 旧名（兜底） | 默认值 |
-|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8140` |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空（空则不鉴权） |
-| `GORGE_CONFIG_FILE` | `HIGHLIGHT_CONFIG_FILE` | 无 |
-| `GORGE_RENDER_MAX_BYTES` | `MAX_BYTES` | `1048576` |
-| `GORGE_RENDER_TIMEOUT_SEC` | `TIMEOUT_SEC` | `15` |
-| `GORGE_DIFF_MAX_BYTES` | **无**（见下） | `1048576` |
+| 新名 | 默认值 |
+|---|---|
+| `GORGE_LISTEN_ADDR` | `:8140` |
+| `GORGE_SERVICE_TOKEN` | 空（空则不鉴权） |
+| `GORGE_CONFIG_FILE` | 无 |
+| `GORGE_RENDER_MAX_BYTES` | `1048576` |
+| `GORGE_RENDER_TIMEOUT_SEC` | `15` |
+| `GORGE_DIFF_MAX_BYTES` | `1048576` |
 
-旧名保留是为了让 `phorge/docker/services/docker-compose.yml` 不改也能起来，属于过渡措施，不要在新编排里使用。
+升级旧编排时必须显式改用上述名称。`GORGE_DIFF_MAX_BYTES` 对应的旧 `MAX_BODY_SIZE` 是 Echo 传输层字符串限制（如 `"10M"`），而新变量是作用于 `len(old)+len(new)` 的字节数；两者不能机械映射。
 
-`GORGE_DIFF_MAX_BYTES` 是唯一**没有**旧名兜底的一条，这是刻意的。`gorge-diff` 原先读 `MAX_BODY_SIZE`，但那是个 Echo 传输层限制、值是字符串（`"10M"`）、作用于整个请求体；而 `GORGE_DIFF_MAX_BYTES` 是字节数、作用于 `len(old)+len(new)`。两者的**单位、语法和作用对象都不同**，认旧名等于静默地重新解释它的值，所以这是一次重命名而不是兜底。
-
-（`config.EnvInt` 用 `strconv.Atoi`，解析失败就跳过该键回落到默认值。所以真去兜底 `MAX_BODY_SIZE`，`"10M"` 会被静默丢弃、悄悄降到默认的 1 MiB，而运维以为设的是 10 MB。不报错的收紧比报错更难查，这也是不做兜底的理由。）
+（`config.EnvInt` 用 `strconv.Atoi`，解析失败时回落到默认值。因此把 `MAX_BODY_SIZE=10M` 直接改名也会静默降到默认 1 MiB，迁移时应换算为明确的字节数。）
 
 旧编排里的 `MAX_BODY_SIZE` 现在直接被忽略，迁移编排时要显式设新名。
 
@@ -1222,7 +1220,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 ### 11.4 库名与表名约定：都是 Phorge 的，不能顺手现代化
 
-- **库名按 Phorge 的方式拼成 `{namespace}_meta_data`**（以及其它 `{namespace}_<app>`），`{namespace}` 来自 `GORGE_DB_NAMESPACE`（旧名 `STORAGE_NAMESPACE`，默认 `phorge`），**必须与该装置的 `storage.default-namespace` 一致**。拼法在 `config.go` 的 `DatabaseName`。它选错的表现是探测连到一个不存在的库，`MigrationStatus.initialized` 留 `false`，看起来像「Phorge 还没建好」而不是「namespace 配错了」。
+- **库名按 Phorge 的方式拼成 `{namespace}_meta_data`**（以及其它 `{namespace}_<app>`），`{namespace}` 来自 `GORGE_DB_NAMESPACE`（默认 `phorge`），**必须与该装置的 `storage.default-namespace` 一致**。已移除的 `STORAGE_NAMESPACE` 不再生效。拼法在 `config.go` 的 `DatabaseName`。它选错的表现是探测连到一个不存在的库，`MigrationStatus.initialized` 留 `false`，看起来像「Phorge 还没建好」而不是「namespace 配错了」。
 - **迁移状态读 `patch_status` 表**：`MigrationService.Status` 按 Phorge 分区路由选出承载 `meta_data` 的 enabled master，再由 `checkRef` 对它的 `{namespace}_meta_data` 跑 `SELECT patch FROM patch_status`，对齐 Phorge 的 `bin/storage` 写进这张表的账本；其它应用的专属 master 不承载这个库，不能被误报成未初始化。响应字段名是 Phorge 所读的 `patch`。表名和字段名都是兼容契约，改了就读不到迁移进度。replica 的 `patch_status` 通过复制到达，不是它自己迁出来的。建连或 Ping 失败仍表示尚未初始化；一旦 Ping 成功，账本查询失败必须显式报错，不能返回一个看似成功的空 patch 列表。
 - **多 master 同步状态读 `hoststate` 表**：额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，这是 Phorge 在多 master 之间同步 `cluster.databases` 的表。**读到的值会被消费**：对原始串算 SHA-256 作为 `clusterStateDigest` 返回，并用 `clusterStatePresent` 标记该行是否存在（行缺失 → `present=false`、摘要省略；查询失败按域错误显式返回，绝不伪装成缺失）。原始值含主机名故绝不外泄，只回摘要 + presence——Phorge 侧据此比对多个 master 的已提交拓扑并检测 `db.state.desync`（见第 3.4 节，与本节口径一致）。表名同样是 Phorge 的。契约版本为 `1.1`。
 

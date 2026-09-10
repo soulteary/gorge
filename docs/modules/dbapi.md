@@ -105,18 +105,18 @@ schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性—�
 
 ## 4. 配置
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8080` | 监听地址，沿用迁入前的端口 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_DB_MYSQL_HOST` | `MYSQL_HOST` | `127.0.0.1` | 单节点模式下的库主机。不是开关（与 webhook / taskqueue 同、与 file-storage 相反）：本域没东西可关，留空落到 `127.0.0.1`、服务起来、不就绪 |
-| `GORGE_DB_MYSQL_PORT` | `MYSQL_PORT` | `3306` | |
-| `GORGE_DB_MYSQL_USER` | `MYSQL_USER` | `root` | |
-| `GORGE_DB_MYSQL_PASS` | `MYSQL_PASS` | 空 | |
-| `GORGE_DB_NAMESPACE` | `STORAGE_NAMESPACE` | `phorge` | 库名由它拼成 `{namespace}_meta_data` 等，必须与该装置的 `storage.default-namespace` 一致 |
-| `GORGE_DB_CONFIG_FILE` | `PHORGE_CONFIG` | 空 | Phorge local.json 路径。非空则读它的 `cluster.databases` 拓扑，标量退化为每节点兜底；空 = 用标量描述的单节点。**非空时 fail closed**：文件缺失/JSON 非法/类型错/无可用 master 会让启动失败，而不是降级成单节点 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8080` | 监听地址，沿用迁入前的端口 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_DB_MYSQL_HOST` | `127.0.0.1` | 单节点模式下的库主机。不是开关（与 webhook / taskqueue 同、与 file-storage 相反）：本域没东西可关，留空落到 `127.0.0.1`、服务起来、不就绪 |
+| `GORGE_DB_MYSQL_PORT` | `3306` | |
+| `GORGE_DB_MYSQL_USER` | `root` | |
+| `GORGE_DB_MYSQL_PASS` | 空 | |
+| `GORGE_DB_NAMESPACE` | `phorge` | 库名由它拼成 `{namespace}_meta_data` 等，必须与该装置的 `storage.default-namespace` 一致 |
+| `GORGE_DB_CONFIG_FILE` | 空 | Phorge local.json 路径。非空则读它的 `cluster.databases` 拓扑，标量退化为每节点兜底；空 = 用标量描述的单节点。**非空时 fail closed**：文件缺失/JSON 非法/类型错/无可用 master 会让启动失败，而不是降级成单节点 |
 
 ## 5. 兼容契约
 

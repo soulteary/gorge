@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// mailerEnvKeys is every variable Load consults, new names and legacy ones.
+// mailerEnvKeys includes canonical service variables, retired standalone
+// aliases used by negative regression tests, and provider-native variables.
 var mailerEnvKeys = []string{
 	"GORGE_LISTEN_ADDR", "LISTEN_ADDR",
 	"GORGE_SERVICE_TOKEN", "SERVICE_TOKEN",
@@ -90,34 +91,38 @@ func TestMailerConfigFromEnv(t *testing.T) {
 	}
 }
 
-// TestMailerConfigLegacyEnv covers the variables the pre-monorepo compose file
-// sets. They must keep working until every deployment has been migrated.
-func TestMailerConfigLegacyEnv(t *testing.T) {
+func TestMailerConfigIgnoresRetiredServiceAliases(t *testing.T) {
 	clearMailerEnv(t)
 	t.Setenv("LISTEN_ADDR", ":8888")
 	t.Setenv("SERVICE_TOKEN", "legacy-tok")
+	t.Setenv("MAILER_CONFIG", `[{"key":"legacy","type":"test"}]`)
 	t.Setenv("MAX_RETRIES", "9")
 	t.Setenv("RETRY_WAIT", "11")
 	t.Setenv("BODY_LIMIT", "2048")
+	t.Setenv("MAILER_TYPE", "smtp")
+	t.Setenv("MAILER_KEY", "legacy")
 
 	cfg := LoadFromEnv()
-	if cfg.ListenAddr != ":8888" {
-		t.Errorf("expected :8888, got %s", cfg.ListenAddr)
+	if cfg.ListenAddr != DefaultListenAddr {
+		t.Errorf("retired LISTEN_ADDR must be ignored, got %s", cfg.ListenAddr)
 	}
-	if cfg.ServiceToken != "legacy-tok" {
-		t.Errorf("expected legacy-tok, got %s", cfg.ServiceToken)
+	if cfg.ServiceToken != "" {
+		t.Errorf("retired SERVICE_TOKEN must be ignored, got %s", cfg.ServiceToken)
 	}
-	if cfg.MaxRetries != 9 || cfg.RetryWaitSec != 11 {
-		t.Errorf("expected 9 retries / 11s, got %d / %ds", cfg.MaxRetries, cfg.RetryWaitSec)
+	if cfg.MaxRetries != DefaultMaxRetries || cfg.RetryWaitSec != DefaultRetryWaitSec {
+		t.Errorf("retired retry aliases must be ignored, got %d / %ds", cfg.MaxRetries, cfg.RetryWaitSec)
 	}
-	if cfg.BodyLimit != 2048 {
-		t.Errorf("expected 2048, got %d", cfg.BodyLimit)
+	if cfg.BodyLimit != DefaultBodyLimit {
+		t.Errorf("retired BODY_LIMIT must be ignored, got %d", cfg.BodyLimit)
+	}
+	if len(cfg.Mailers) != 0 {
+		t.Errorf("retired MAILER_CONFIG must be ignored, got %+v", cfg.Mailers)
 	}
 }
 
 func TestMailerConfigSMTPFromEnv(t *testing.T) {
 	clearMailerEnv(t)
-	t.Setenv("MAILER_TYPE", "smtp")
+	t.Setenv("GORGE_MAILER_TYPE", "smtp")
 	t.Setenv("SMTP_HOST", "mail.example.com")
 	t.Setenv("SMTP_PORT", "587")
 	t.Setenv("SMTP_USER", "alice")
@@ -145,7 +150,7 @@ func TestMailerConfigSMTPFromEnv(t *testing.T) {
 // nothing, and it should not look as though it might.
 func TestMailerConfigDropsTwilioOptions(t *testing.T) {
 	clearMailerEnv(t)
-	t.Setenv("MAILER_TYPE", "smtp")
+	t.Setenv("GORGE_MAILER_TYPE", "smtp")
 	t.Setenv("MAILER_FROM_NUMBER", "+15550100")
 	t.Setenv("MAILER_ACCOUNT_SID", "AC123")
 	t.Setenv("MAILER_AUTH_TOKEN", "secret")
@@ -181,7 +186,7 @@ func TestMailerConfigJSONList(t *testing.T) {
 // service accepting mail it cannot deliver.
 func TestMailerConfigMalformedJSONLeavesNoMailers(t *testing.T) {
 	clearMailerEnv(t)
-	t.Setenv("MAILER_CONFIG", `[{"key":"sg","type":`)
+	t.Setenv("GORGE_MAILER_CONFIG", `[{"key":"sg","type":`)
 
 	cfg := LoadFromEnv()
 	if len(cfg.Mailers) != 0 {
@@ -245,7 +250,7 @@ func TestMailerLoadPrefersConfigFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"listenAddr":":7777"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MAILER_CONFIG_FILE", path)
+	t.Setenv("GORGE_MAILER_CONFIG_FILE", path)
 
 	cfg, err := Load()
 	if err != nil {

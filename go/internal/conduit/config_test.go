@@ -6,7 +6,6 @@ import (
 )
 
 func TestLoadFromEnvDefaults(t *testing.T) {
-	// A clean environment yields the documented defaults.
 	for _, k := range allConduitEnvKeys() {
 		t.Setenv(k, "")
 	}
@@ -36,51 +35,52 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvPrefixedWins(t *testing.T) {
-	t.Setenv("GORGE_CONDUIT_UPSTREAM_URL", "http://prefixed:80")
-	t.Setenv("UPSTREAM_URL", "http://legacy:80")
+func TestLoadFromEnvCanonicalNamesWin(t *testing.T) {
+	t.Setenv("GORGE_CONDUIT_UPSTREAM_URL", "http://canonical:80")
+	t.Setenv("UPSTREAM_URL", "http://retired:80")
 	t.Setenv("GORGE_CONDUIT_RATE_LIMIT_RPS", "50")
 	t.Setenv("RATE_LIMIT_RPS", "5")
 
 	cfg := LoadFromEnv()
-	if cfg.UpstreamURL != "http://prefixed:80" {
-		t.Errorf("UpstreamURL = %q, want prefixed value", cfg.UpstreamURL)
+	if cfg.UpstreamURL != "http://canonical:80" {
+		t.Errorf("UpstreamURL = %q, want canonical value", cfg.UpstreamURL)
 	}
 	if cfg.RateLimitRPS != 50 {
 		t.Errorf("RateLimitRPS = %d, want 50", cfg.RateLimitRPS)
 	}
 }
 
-func TestLoadFromEnvLegacyFallback(t *testing.T) {
-	// With no GORGE_CONDUIT_* set, the bare legacy names are honoured so a
-	// pre-monorepo compose file keeps working.
+func TestLoadFromEnvIgnoresRetiredAliases(t *testing.T) {
 	for _, k := range allConduitEnvKeys() {
 		t.Setenv(k, "")
 	}
-	t.Setenv("UPSTREAM_URL", "http://legacy:80")
+	t.Setenv("UPSTREAM_URL", "http://retired:80")
 	t.Setenv("RATE_LIMIT_RPS", "7")
 	t.Setenv("RATE_LIMIT_BURST", "13")
 	t.Setenv("PROXY_TIMEOUT_SEC", "11")
 	t.Setenv("MAX_BODY_SIZE", "3M")
-	t.Setenv("RATE_LIMIT_EXEMPT", "a.b , c.d")
-	t.Setenv("SERVICE_TOKEN", "legacy-secret")
+	t.Setenv("RATE_LIMIT_EXEMPT", "a.b,c.d")
+	t.Setenv("SERVICE_TOKEN", "retired-secret")
 
 	cfg := LoadFromEnv()
-	if cfg.UpstreamURL != "http://legacy:80" {
-		t.Errorf("UpstreamURL = %q", cfg.UpstreamURL)
+	if cfg.UpstreamURL != DefaultUpstreamURL {
+		t.Errorf("retired UPSTREAM_URL changed config: %q", cfg.UpstreamURL)
 	}
-	if cfg.RateLimitRPS != 7 || cfg.RateLimitBurst != 13 || cfg.ProxyTimeoutSec != 11 {
-		t.Errorf("limits = rps %d burst %d timeout %d", cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.ProxyTimeoutSec)
+	if cfg.RateLimitRPS != DefaultRateLimitRPS ||
+		cfg.RateLimitBurst != DefaultRateLimitBurst ||
+		cfg.ProxyTimeoutSec != DefaultProxyTimeoutSec {
+		t.Errorf("retired limit aliases changed config: rps %d burst %d timeout %d",
+			cfg.RateLimitRPS, cfg.RateLimitBurst, cfg.ProxyTimeoutSec)
 	}
-	if cfg.MaxBodySize != "3M" {
-		t.Errorf("MaxBodySize = %q", cfg.MaxBodySize)
+	if cfg.MaxBodySize != DefaultMaxBodySize {
+		t.Errorf("retired MAX_BODY_SIZE changed config: %q", cfg.MaxBodySize)
 	}
-	if cfg.ServiceToken != "legacy-secret" {
-		t.Errorf("ServiceToken = %q", cfg.ServiceToken)
+	if cfg.ServiceToken != "" {
+		t.Errorf("retired SERVICE_TOKEN changed config: %q", cfg.ServiceToken)
 	}
-	want := []string{"a.b", "c.d"}
+	want := []string{"conduit.ping", "conduit.getcapabilities"}
 	if !reflect.DeepEqual(cfg.RateLimitExempt, want) {
-		t.Errorf("RateLimitExempt = %v, want %v (blanks trimmed)", cfg.RateLimitExempt, want)
+		t.Errorf("retired RATE_LIMIT_EXEMPT changed config: %v", cfg.RateLimitExempt)
 	}
 }
 
@@ -109,8 +109,6 @@ func TestSplitCSV(t *testing.T) {
 	}
 }
 
-// allConduitEnvKeys lists every key LoadFromEnv reads, so a test can clear the
-// ambient environment before asserting defaults.
 func allConduitEnvKeys() []string {
 	return []string{
 		"GORGE_LISTEN_ADDR", "LISTEN_ADDR",

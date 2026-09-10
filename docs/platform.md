@@ -126,19 +126,19 @@ if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expec
 - **这不是「可选的探针开关」。** 默认 false，除了 notification 的 client 端口没有第二个地方该设它。设错的后果不对称：该设没设，Phorge 报「Got HTTP 200, but expected HTTP 501」——会报错；不该设却设了，`GET /` 落到 404 或域路由上，而没有任何测试或探针会指向这个改动。
 - **两个容器探针照样注册。** 所以 Docker `HEALTHCHECK` 与 Kubernetes 探针不受影响，这也是豁免只挑根路径而不是整包跳过的原因。`health_test.go` 的 `TestSkipRootLeavesRootToTheCaller` 与 `TestSkipRootKeepsContainerProbes` 分别压这两半。
 
-## 4. config：新名优先、旧名兜底
+## 4. config：服务变量只接受规范名称
 
-`EnvStr(fallback, keys...)` 按顺序取第一个非空值，调用方把新名写在前面：
+`EnvStr(fallback, keys...)` 按顺序取第一个非空值。阶段四完成后，Gorge 服务自身的配置调用只传一个 `GORGE_*` 规范名称：
 
 ```go
-ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR", "LISTEN_ADDR"),
+ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR"),
 ```
 
-旧的裸名保留，是为了让既有的 `phorge/docker/services/docker-compose.yml` 不改也能起来，属于**过渡措施，新编排请只用新名**。
+旧的服务级裸名属于独立服务时期的过渡接口，现已移除。升级时需要同步修改编排，避免服务使用默认地址或在 token 为空时关闭鉴权。外部后端的原生变量不是这类别名，仍按后端契约使用，例如 mailer 的 `SMTP_*` 以及 `MAILER_ACCESS_KEY`、`MAILER_SECRET_KEY`、`MAILER_REGION`、`MAILER_ENDPOINT`、`MAILER_API_KEY`、`MAILER_DOMAIN`、`MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`，还有 search 的 `ES_*` / `MEILI_*`。`MAILER_CONFIG`、`MAILER_TYPE` 与 `MAILER_KEY` 已退休，不属于后端原生变量。
 
 引入 `GORGE_` 前缀的直接原因是：多个域将共用一个进程，`MAX_BYTES`、`TIMEOUT_SEC` 这类裸名会真的撞车。因此约定分两级——服务级用 `GORGE_`，域级再加一段域名（`GORGE_RENDER_MAX_BYTES`）。新模块的域级配置照此命名。
 
-`EnvInt` 有一处细节：值解析失败时**跳到下一个 key** 而不是返回零值。写错一个数字会降级成旧名或默认值，而不是把限额悄悄设成 0。`EnvBool` 同理，走 `strconv.ParseBool`。
+`EnvInt` 在值解析失败时回落到默认值，而不是返回零值。`EnvBool` 同理，使用 `strconv.ParseBool`。
 
 `LoadJSONFile[T any](path, dst *T)` 用泛型解码到调用方预填了默认值的结构体，文件里没提到的字段保持原值——「文件只覆盖它提到的东西」这一语义因此不需要每个服务各写一遍。域侧的用法是：先填默认值，**再从环境变量取 token**，最后让文件覆盖其余字段，这样密钥可以单独通过 Kubernetes Secret 之类注入而不进配置文件。
 

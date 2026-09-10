@@ -168,15 +168,15 @@ Elasticsearch 6 把一个索引收紧到只能有一个 mapping type，7 起把 
 
 ## 4. 配置
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_LISTEN_ADDR` | `LISTEN_ADDR` | `:8120` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | `SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
-| `GORGE_SEARCH_BACKENDS` | `SEARCH_BACKENDS` | 无 | 后端列表，JSON 数组 |
-| `GORGE_SEARCH_CONFIG_FILE` | `SEARCH_CONFIG_FILE` | 无 | JSON 配置文件路径 |
-| `GORGE_SEARCH_ENGINE` | `SEARCH_ENGINE` | `elasticsearch` | 单后端速配时用哪个引擎 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_LISTEN_ADDR` | `:8120` | 监听地址 |
+| `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
+| `GORGE_SEARCH_BACKENDS` | 无 | 后端列表，JSON 数组 |
+| `GORGE_SEARCH_CONFIG_FILE` | 无 | JSON 配置文件路径 |
+| `GORGE_SEARCH_ENGINE` | `elasticsearch` | 单后端速配时用哪个引擎 |
 
-命名规则与「新名优先、旧名兜底」的查找机制见 [`../platform.md`](../platform.md) 第 4 节。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
 各后端选项另有一批扁平变量，**原样保留不加前缀**（与 mailer 保留 `SMTP_HOST` 同理：它们命名的是后端的设置，不是本服务的设置）：
 
@@ -189,7 +189,7 @@ Elasticsearch 6 把一个索引收紧到只能有一个 mapping type，7 起把 
 | `ES_PROTOCOL` | `http` | |
 | `MEILI_HOST` / `MEILI_INDEX` / `MEILI_MASTER_KEY` / `MEILI_TIMEOUT` / `MEILI_PROTOCOL` | 同上 | |
 
-`Load()` 的取值顺序与另外两个域一致：指了配置文件就读文件，否则读环境变量；走文件时**仍然从环境变量取 `SERVICE_TOKEN`**。
+`Load()` 的取值顺序与另外两个域一致：指了配置文件就读文件，否则读环境变量；走文件时**仍然从环境变量取 `GORGE_SERVICE_TOKEN`**。
 
 ### 「没配后端」是一个受支持的状态
 

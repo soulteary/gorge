@@ -310,14 +310,14 @@ Hub.mu            → instances map 与 history
 
 ### 4.2 环境变量
 
-| 变量 | 兜底旧名 | 默认值 | 说明 |
-|---|---|---|---|
-| `GORGE_NOTIFICATION_CLIENT_PORT` | `CLIENT_PORT` | `22280` | client 口，浏览器连的那个 |
-| `GORGE_NOTIFICATION_ADMIN_PORT` | `ADMIN_PORT` | `22281` | admin 口，PHP 打的那个 |
-| `GORGE_NOTIFICATION_LISTEN_ADDR` | `LISTEN_ADDR` | `0.0.0.0` | **绑定主机，不是 `host:port`**，两个端口共用 |
-| `GORGE_NOTIFICATION_CONFIG_FILE` | `APHLICT_CONFIG` | 无 | Aphlict 格式 JSON |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GORGE_NOTIFICATION_CLIENT_PORT` | `22280` | client 口，浏览器连的那个 |
+| `GORGE_NOTIFICATION_ADMIN_PORT` | `22281` | admin 口，PHP 打的那个 |
+| `GORGE_NOTIFICATION_LISTEN_ADDR` | `0.0.0.0` | **绑定主机，不是 `host:port`**，两个端口共用 |
+| `GORGE_NOTIFICATION_CONFIG_FILE` | 无 | Aphlict 格式 JSON |
 
-「新名优先、旧名兜底」的查找规则由 `platform/config` 提供（[`../platform.md`](../platform.md) 第 4 节）；旧的裸名保留是为了让 Aphlict 时代的编排不改也能起来，新编排请只用新名。`TestPrefixedNamesWinOverLegacyOnes` 把优先顺序钉住了，因为半迁移状态下两个名字会同时存在。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。Aphlict 时代的裸变量已移除，`TestRetiredEnvNamesAreIgnored` 防止它们意外恢复。
 
 两个默认端口沿用 Aphlict 的值，不是随手挑的：Phorge 的 `notification.servers` 里已经写着它们，而 client 那个值还会到达浏览器。
 
