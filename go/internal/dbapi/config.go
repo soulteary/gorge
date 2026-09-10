@@ -18,11 +18,11 @@ const (
 
 type Config struct {
 	config.Base
-	MySQLHost string
-	MySQLPort int
-	MySQLUser string
-	MySQLPass string
-	Namespace string
+	MySQLHost  string
+	MySQLPort  int
+	MySQLUser  string
+	MySQLPass  string
+	Namespace  string
 	ConfigFile string
 }
 
@@ -31,12 +31,12 @@ type Config struct {
 // deployment and were removed once Phorge pinned Gorge as part of its stack.
 func LoadFromEnv() *Config {
 	return &Config{
-		Base: config.LoadBase(DefaultListenAddr),
-		MySQLHost: config.EnvStr(DefaultMySQLHost, "GORGE_DB_MYSQL_HOST"),
-		MySQLPort: config.EnvInt(DefaultMySQLPort, "GORGE_DB_MYSQL_PORT"),
-		MySQLUser: config.EnvStr(DefaultMySQLUser, "GORGE_DB_MYSQL_USER"),
-		MySQLPass: config.EnvStr("", "GORGE_DB_MYSQL_PASS"),
-		Namespace: config.EnvStr(DefaultNamespace, "GORGE_DB_NAMESPACE"),
+		Base:       config.LoadBase(DefaultListenAddr),
+		MySQLHost:  config.EnvStr(DefaultMySQLHost, "GORGE_DB_MYSQL_HOST"),
+		MySQLPort:  config.EnvInt(DefaultMySQLPort, "GORGE_DB_MYSQL_PORT"),
+		MySQLUser:  config.EnvStr(DefaultMySQLUser, "GORGE_DB_MYSQL_USER"),
+		MySQLPass:  config.EnvStr("", "GORGE_DB_MYSQL_PASS"),
+		Namespace:  config.EnvStr(DefaultNamespace, "GORGE_DB_NAMESPACE"),
 		ConfigFile: config.EnvStr("", "GORGE_DB_CONFIG_FILE"),
 	}
 }
@@ -90,13 +90,26 @@ func (c *Config) singleNodeCluster() *ClusterConfig {
 func (cc *ClusterConfig) GetMasterForApplication(app string) *DatabaseRef {
 	var appMaster, defaultMaster, unpartitionedMaster *DatabaseRef
 	for _, m := range cc.masters {
-		if m.Disabled { continue }
-		if m.IsApplicationHost(app) { appMaster = m; break }
-		if m.IsDefaultPartition && defaultMaster == nil { defaultMaster = m }
-		if !m.IsDefaultPartition && len(m.ApplicationMap) == 0 && unpartitionedMaster == nil { unpartitionedMaster = m }
+		if m.Disabled {
+			continue
+		}
+		if m.IsApplicationHost(app) {
+			appMaster = m
+			break
+		}
+		if m.IsDefaultPartition && defaultMaster == nil {
+			defaultMaster = m
+		}
+		if !m.IsDefaultPartition && len(m.ApplicationMap) == 0 && unpartitionedMaster == nil {
+			unpartitionedMaster = m
+		}
 	}
-	if appMaster != nil { return appMaster }
-	if defaultMaster != nil { return defaultMaster }
+	if appMaster != nil {
+		return appMaster
+	}
+	if defaultMaster != nil {
+		return defaultMaster
+	}
 	return unpartitionedMaster
 }
 
@@ -104,36 +117,62 @@ func (cc *ClusterConfig) GetReplicaForApplication(app string) *DatabaseRef {
 	var appReplica, defaultReplica, unpartitionedReplica *DatabaseRef
 	master := cc.GetMasterForApplication(app)
 	for _, r := range cc.replicas {
-		if r.Disabled { continue }
-		if r.IsApplicationHost(app) && appReplica == nil { appReplica = r }
-		if r.IsDefaultPartition && defaultReplica == nil { defaultReplica = r }
-		if !r.IsDefaultPartition && len(r.ApplicationMap) == 0 && unpartitionedReplica == nil { unpartitionedReplica = r }
+		if r.Disabled {
+			continue
+		}
+		if r.IsApplicationHost(app) && appReplica == nil {
+			appReplica = r
+		}
+		if r.IsDefaultPartition && defaultReplica == nil {
+			defaultReplica = r
+		}
+		if !r.IsDefaultPartition && len(r.ApplicationMap) == 0 && unpartitionedReplica == nil {
+			unpartitionedReplica = r
+		}
 	}
-	if appReplica != nil { return appReplica }
-	if master != nil && master.IsDefaultPartition && defaultReplica != nil { return defaultReplica }
+	if appReplica != nil {
+		return appReplica
+	}
+	if master != nil && master.IsDefaultPartition && defaultReplica != nil {
+		return defaultReplica
+	}
 	return unpartitionedReplica
 }
 
 func (cc *ClusterConfig) ServesApplication(ref *DatabaseRef, app string) bool {
-	if ref == nil || ref.Disabled { return false }
+	if ref == nil || ref.Disabled {
+		return false
+	}
 	var refs []*DatabaseRef
-	if ref.IsMaster { refs = cc.masters } else { refs = cc.replicas }
+	if ref.IsMaster {
+		refs = cc.masters
+	} else {
+		refs = cc.replicas
+	}
 	hasExplicit := false
 	hasDefault := false
 	for _, candidate := range refs {
-		if candidate.Disabled { continue }
+		if candidate.Disabled {
+			continue
+		}
 		hasExplicit = hasExplicit || candidate.IsApplicationHost(app)
 		hasDefault = hasDefault || candidate.IsDefaultPartition
 	}
-	if hasExplicit { return ref.IsApplicationHost(app) }
-	if ref.IsMaster && hasDefault { return ref.IsDefaultPartition }
+	if hasExplicit {
+		return ref.IsApplicationHost(app)
+	}
+	if ref.IsMaster && hasDefault {
+		return ref.IsDefaultPartition
+	}
 	if !ref.IsMaster {
 		master := cc.GetMasterForApplication(app)
-		if master != nil && master.IsDefaultPartition && hasDefault { return ref.IsDefaultPartition }
+		if master != nil && master.IsDefaultPartition && hasDefault {
+			return ref.IsDefaultPartition
+		}
 	}
 	return !ref.IsDefaultPartition && len(ref.ApplicationMap) == 0
 }
 
-func (cc *ClusterConfig) GetAllRefs() []*DatabaseRef { return cc.Refs }
-func (cc *ClusterConfig) Masters() []*DatabaseRef { return cc.masters }
+func (cc *ClusterConfig) GetAllRefs() []*DatabaseRef     { return cc.Refs }
+func (cc *ClusterConfig) Masters() []*DatabaseRef        { return cc.masters }
 func (cc *ClusterConfig) DatabaseName(app string) string { return cc.Namespace + "_" + app }
