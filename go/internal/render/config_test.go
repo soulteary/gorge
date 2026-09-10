@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// renderEnvKeys is every variable Load consults, new names and legacy ones.
 var renderEnvKeys = []string{
 	"GORGE_LISTEN_ADDR", "LISTEN_ADDR",
 	"GORGE_SERVICE_TOKEN", "SERVICE_TOKEN",
@@ -70,27 +69,25 @@ func TestRenderConfigFromEnv(t *testing.T) {
 	}
 }
 
-// TestRenderConfigLegacyEnv covers the variables the pre-monorepo compose file
-// sets. They must keep working until every deployment has been migrated.
-func TestRenderConfigLegacyEnv(t *testing.T) {
+func TestRenderConfigIgnoresRetiredEnv(t *testing.T) {
 	clearRenderEnv(t)
 	t.Setenv("LISTEN_ADDR", ":8888")
-	t.Setenv("SERVICE_TOKEN", "legacy-tok")
+	t.Setenv("SERVICE_TOKEN", "retired-tok")
 	t.Setenv("MAX_BYTES", "4096")
 	t.Setenv("TIMEOUT_SEC", "45")
 
 	cfg := LoadFromEnv()
-	if cfg.ListenAddr != ":8888" {
-		t.Errorf("expected :8888, got %s", cfg.ListenAddr)
+	if cfg.ListenAddr != DefaultListenAddr {
+		t.Errorf("retired LISTEN_ADDR changed config: %s", cfg.ListenAddr)
 	}
-	if cfg.ServiceToken != "legacy-tok" {
-		t.Errorf("expected legacy-tok, got %s", cfg.ServiceToken)
+	if cfg.ServiceToken != "" {
+		t.Errorf("retired SERVICE_TOKEN changed config: %s", cfg.ServiceToken)
 	}
-	if cfg.MaxBytes != 4096 {
-		t.Errorf("expected 4096, got %d", cfg.MaxBytes)
+	if cfg.MaxBytes != DefaultMaxBytes {
+		t.Errorf("retired MAX_BYTES changed config: %d", cfg.MaxBytes)
 	}
-	if cfg.TimeoutSec != 45 {
-		t.Errorf("expected 45, got %d", cfg.TimeoutSec)
+	if cfg.TimeoutSec != DefaultTimeoutSec {
+		t.Errorf("retired TIMEOUT_SEC changed config: %d", cfg.TimeoutSec)
 	}
 }
 
