@@ -1220,7 +1220,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 ### 11.4 库名与表名约定：都是 Phorge 的，不能顺手现代化
 
-- **库名按 Phorge 的方式拼成 `{namespace}_meta_data`**（以及其它 `{namespace}_<app>`），`{namespace}` 来自 `GORGE_DB_NAMESPACE`（旧名 `STORAGE_NAMESPACE`，默认 `phorge`），**必须与该装置的 `storage.default-namespace` 一致**。拼法在 `config.go` 的 `DatabaseName`。它选错的表现是探测连到一个不存在的库，`MigrationStatus.initialized` 留 `false`，看起来像「Phorge 还没建好」而不是「namespace 配错了」。
+- **库名按 Phorge 的方式拼成 `{namespace}_meta_data`**（以及其它 `{namespace}_<app>`），`{namespace}` 来自 `GORGE_DB_NAMESPACE`（默认 `phorge`），**必须与该装置的 `storage.default-namespace` 一致**。已移除的 `STORAGE_NAMESPACE` 不再生效。拼法在 `config.go` 的 `DatabaseName`。它选错的表现是探测连到一个不存在的库，`MigrationStatus.initialized` 留 `false`，看起来像「Phorge 还没建好」而不是「namespace 配错了」。
 - **迁移状态读 `patch_status` 表**：`MigrationService.Status` 按 Phorge 分区路由选出承载 `meta_data` 的 enabled master，再由 `checkRef` 对它的 `{namespace}_meta_data` 跑 `SELECT patch FROM patch_status`，对齐 Phorge 的 `bin/storage` 写进这张表的账本；其它应用的专属 master 不承载这个库，不能被误报成未初始化。响应字段名是 Phorge 所读的 `patch`。表名和字段名都是兼容契约，改了就读不到迁移进度。replica 的 `patch_status` 通过复制到达，不是它自己迁出来的。建连或 Ping 失败仍表示尚未初始化；一旦 Ping 成功，账本查询失败必须显式报错，不能返回一个看似成功的空 patch 列表。
 - **多 master 同步状态读 `hoststate` 表**：额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，这是 Phorge 在多 master 之间同步 `cluster.databases` 的表。**读到的值会被消费**：对原始串算 SHA-256 作为 `clusterStateDigest` 返回，并用 `clusterStatePresent` 标记该行是否存在（行缺失 → `present=false`、摘要省略；查询失败按域错误显式返回，绝不伪装成缺失）。原始值含主机名故绝不外泄，只回摘要 + presence——Phorge 侧据此比对多个 master 的已提交拓扑并检测 `db.state.desync`（见第 3.4 节，与本节口径一致）。表名同样是 Phorge 的。契约版本为 `1.1`。
 

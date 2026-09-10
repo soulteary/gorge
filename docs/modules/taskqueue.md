@@ -11,7 +11,7 @@
 | 固件 | `tests/contract/taskqueue/`（含 `unavailable/`） |
 | 兼容约束 | [`compat/phorge/README.md`](../../compat/phorge/README.md) 第十节 ← **改动前必读** |
 
-**这是仓库里第一对拆成两个二进制的域，而「为什么是两个」正是本域最该先讲清楚的一件事**——它和 render+diff 合并那段恰好相反。render 与 diff 合并成一个二进制，是因为两者都是无外部依赖的纯计算、拆进程换不来隔离收益。taskqueue 与 worker 不合并，是因为 **worker 是 taskqueue 的 HTTP 客户端，不是它的同进程协程**：worker 通过 `TASK_QUEUE_URL` 拨 taskqueue 的 `/api/queue/**` 租约，两者可以各自独立伸缩（一个 taskqueue 前面挂若干 worker，或给某个重类开一个专用 worker）。把它们塞进一个进程，要么把这层 HTTP 契约降级成进程内调用、要么逼 worker 直接调 `Store` 而绕过契约——两条路都把「可独立部署」这个既有事实弄没了。所以 `cmd/` 下是两个入口、compose 里是两个 service，本文档同时覆盖两个域。
+**这是仓库里第一对拆成两个二进制的域，而「为什么是两个」正是本域最该先讲清楚的一件事**——它和 render+diff 合并那段恰好相反。render 与 diff 合并成一个二进制，是因为两者都是无外部依赖的纯计算、拆进程换不来隔离收益。taskqueue 与 worker 不合并，是因为 **worker 是 taskqueue 的 HTTP 客户端，不是它的同进程协程**：worker 通过 `GORGE_WORKER_TASK_QUEUE_URL` 拨 taskqueue 的 `/api/queue/**` 租约，两者可以各自独立伸缩（一个 taskqueue 前面挂若干 worker，或给某个重类开一个专用 worker）。把它们塞进一个进程，要么把这层 HTTP 契约降级成进程内调用、要么逼 worker 直接调 `Store` 而绕过契约——两条路都把「可独立部署」这个既有事实弄没了。所以 `cmd/` 下是两个入口、compose 里是两个 service，本文档同时覆盖两个域。
 
 taskqueue 本身几乎是 webhook 的翻版（同为「有外部依赖 + 后台性质」），读它之前值得知道的三件事和 webhook 同源：契约固件只覆盖那几个只读/幂等端点、e2e 脚本能跑通完整的 enqueue→lease→complete 但碰不到 worker 侧的真实任务执行、字段名是硬约束。worker 则在一个维度上是本类第一个：**它没有 `db.go`**，不碰任何数据库，唯一的外部依赖是 taskqueue 服务本身，所以它的 `/readyz` 退化为 `/healthz`。
 
@@ -183,7 +183,7 @@ worker 的 `/readyz` 是 `nil`（`httpx.Config{Ready: nil}`）：它没有自持
 | `GORGE_TASKQUEUE_LEASE_DURATION` | `7200` | 租约时长（秒），Phorge 的 `PhabricatorWorkerLeaseQuery` 默认 |
 | `GORGE_TASKQUEUE_RETRY_WAIT` | `300` | 临时失败重试退避（秒），Phorge 的 `getWaitBeforeRetry` |
 
-**`MYSQL_HOST` 不是开关**，与 webhook 同、与 file-storage 的同名变量相反：本域没东西可关，两个后端都要读库，「没配」与「连不上」不是两个值得区分的状态——留空落到 `127.0.0.1`，服务起来、不就绪。
+**`GORGE_TASKQUEUE_MYSQL_HOST` 不是开关**，与 webhook 同、与 file-storage 的对应变量相反：本域没东西可关，两个后端都要读库，「没配」与「连不上」不是两个值得区分的状态——留空落到 `127.0.0.1`，服务起来、不就绪。
 
 ### worker（`gorge-worker`，`:8170`）
 
