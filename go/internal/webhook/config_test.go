@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// clearEnv unsets everything LoadFromEnv reads, so a default is really a
-// default and not whatever the developer's shell happens to export.
+// clearEnv clears canonical variables and retired aliases used by negative
+// regression tests, so a default is independent of the developer's shell.
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
@@ -31,11 +31,6 @@ func clearEnv(t *testing.T) {
 	}
 }
 
-// TestDefaultsMatchPhorge is the point of this test: four of these numbers are
-// not this service's to choose. The delivery timeout, the circuit breaker's
-// window and threshold, and the retry backoff all have counterparts in
-// Phorge's own delivery path, and a deployment that switched between the two
-// implementations would otherwise change behaviour it did not ask to change.
 func TestDefaultsMatchPhorge(t *testing.T) {
 	clearEnv(t)
 	cfg := LoadFromEnv()
@@ -70,10 +65,7 @@ func TestDefaultsMatchPhorge(t *testing.T) {
 	}
 }
 
-// TestPrefixedNamesWinOverLegacyOnes: the unprefixed names are what the
-// standalone deployment used and are kept as a fallback, so both have to work
-// and the new one has to win. See docs/platform.md section 4.
-func TestPrefixedNamesWinOverLegacyOnes(t *testing.T) {
+func TestRetiredWebhookAliasesAreIgnored(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("MYSQL_HOST", "legacy-db")
 	t.Setenv("STORAGE_NAMESPACE", "legacy")
@@ -81,9 +73,17 @@ func TestPrefixedNamesWinOverLegacyOnes(t *testing.T) {
 	t.Setenv("POLL_INTERVAL_MS", "111")
 
 	cfg := LoadFromEnv()
-	if cfg.MySQLHost != "legacy-db" || cfg.Namespace != "legacy" ||
-		cfg.ServiceToken != "legacy-token" || cfg.PollIntervalMs != 111 {
-		t.Fatalf("the legacy names must still be read: %+v", cfg)
+	if cfg.MySQLHost == "legacy-db" {
+		t.Error("retired MYSQL_HOST must be ignored")
+	}
+	if cfg.Namespace == "legacy" {
+		t.Error("retired STORAGE_NAMESPACE must be ignored")
+	}
+	if cfg.ServiceToken != "" {
+		t.Errorf("retired SERVICE_TOKEN must be ignored, got %q", cfg.ServiceToken)
+	}
+	if cfg.PollIntervalMs != DefaultPollIntervalMs {
+		t.Errorf("retired POLL_INTERVAL_MS must be ignored, got %d", cfg.PollIntervalMs)
 	}
 
 	t.Setenv("GORGE_WEBHOOK_MYSQL_HOST", "current-db")
@@ -94,13 +94,10 @@ func TestPrefixedNamesWinOverLegacyOnes(t *testing.T) {
 	cfg = LoadFromEnv()
 	if cfg.MySQLHost != "current-db" || cfg.Namespace != "current" ||
 		cfg.ServiceToken != "current-token" || cfg.PollIntervalMs != 222 {
-		t.Errorf("the prefixed names must win: %+v", cfg)
+		t.Errorf("canonical Gorge variables must be honored: %+v", cfg)
 	}
 }
 
-// TestHeraldDSN pins the database name, which is not this service's choice:
-// the rows it delivers live in Phorge's own `{namespace}_herald` database, and
-// a DSN pointing anywhere else finds no table.
 func TestHeraldDSN(t *testing.T) {
 	cfg := &Config{
 		MySQLUser: "phorge",
@@ -116,13 +113,9 @@ func TestHeraldDSN(t *testing.T) {
 	}
 }
 
-// TestNamespaceReachesTheDSN: STORAGE_NAMESPACE is the variable a Phorge
-// deployment already sets, and getting it wrong is silent — the service starts,
-// connects to a database that does not exist, and reports itself unready with
-// no hint that the name is the problem.
 func TestNamespaceReachesTheDSN(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("STORAGE_NAMESPACE", "custom")
+	t.Setenv("GORGE_WEBHOOK_NAMESPACE", "custom")
 
 	if got := LoadFromEnv().HeraldDSN(); got != "phorge:@tcp(127.0.0.1:3306)/custom_herald"+
 		"?parseTime=true&timeout=5s&readTimeout=30s&writeTimeout=30s" {
@@ -130,10 +123,6 @@ func TestNamespaceReachesTheDSN(t *testing.T) {
 	}
 }
 
-// TestClaimLeaseNeverUndercutsADelivery: the row stays `queued` for the whole
-// attempt, so a lease that expires mid-delivery lets a second attempt take a
-// request whose POST is still in flight — the duplicate the claim exists to
-// prevent.
 func TestClaimLeaseNeverUndercutsADelivery(t *testing.T) {
 	for _, tc := range []struct {
 		lease, timeout, want int
@@ -151,9 +140,6 @@ func TestClaimLeaseNeverUndercutsADelivery(t *testing.T) {
 	}
 }
 
-// TestAnUnparseableValueFallsBackToTheDefault: config.EnvInt skips a key it
-// cannot parse, so a typo degrades to the default rather than to a zero
-// interval — which would be a poll loop with no ticker interval at all.
 func TestAnUnparseableValueFallsBackToTheDefault(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("GORGE_WEBHOOK_POLL_INTERVAL_MS", "soon")
