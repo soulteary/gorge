@@ -76,7 +76,7 @@ TOKEN=dev-token make e2e
 
 ## 配置
 
-环境变量只接受 `GORGE_*` 规范名称。阶段四已经移除独立服务时期的裸变量别名；升级部署时必须同步更新编排文件。
+Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已经移除独立服务时期的裸变量别名；升级部署时必须同步更新编排文件。外部后端的原生变量仍受支持，例如 mailer 的 `SMTP_*` / `MAILER_*`，以及 search 的 `ES_*` / `MEILI_*`；不要把这些名称改写成不存在的 `GORGE_*` 形式。
 
 下表是 `gorge-render` 的。**每个二进制有自己的一张表**，在 [`docs/modules/`](docs/modules/) 下各自的第 4 节；`GORGE_LISTEN_ADDR` 与 `GORGE_SERVICE_TOKEN` 是所有服务共有的两个，只有默认端口不同。
 
