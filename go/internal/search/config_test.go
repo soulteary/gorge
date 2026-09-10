@@ -25,33 +25,21 @@ func TestDefaultsWithNothingSet(t *testing.T) {
 	}
 }
 
-// New names win, old ones still work. The unprefixed names are what the
-// pre-monorepo compose files set, and dropping them would break every existing
-// deployment on upgrade.
-func TestNewNamesWinAndOldOnesStillWork(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-		want string
-	}{
-		{"legacy only", map[string]string{"LISTEN_ADDR": ":9000"}, ":9000"},
-		{"new only", map[string]string{"GORGE_LISTEN_ADDR": ":9001"}, ":9001"},
-		{"new wins", map[string]string{
-			"GORGE_LISTEN_ADDR": ":9001",
-			"LISTEN_ADDR":       ":9000",
-		}, ":9001"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			for k, v := range tc.env {
-				t.Setenv(k, v)
-			}
-			if got := LoadFromEnv().ListenAddr; got != tc.want {
-				t.Errorf("expected %s, got %s", tc.want, got)
-			}
-		})
-	}
+func TestCanonicalServiceNamesAndRetiredAlias(t *testing.T) {
+	t.Run("retired alias is ignored", func(t *testing.T) {
+		t.Setenv("GORGE_LISTEN_ADDR", "")
+		t.Setenv("LISTEN_ADDR", ":9000")
+		if got := LoadFromEnv().ListenAddr; got != DefaultListenAddr {
+			t.Errorf("retired LISTEN_ADDR must be ignored, got %s", got)
+		}
+	})
+	t.Run("canonical name works", func(t *testing.T) {
+		t.Setenv("GORGE_LISTEN_ADDR", ":9001")
+		t.Setenv("LISTEN_ADDR", ":9000")
+		if got := LoadFromEnv().ListenAddr; got != ":9001" {
+			t.Errorf("expected canonical address :9001, got %s", got)
+		}
+	})
 }
 
 func TestBackendListFromEnv(t *testing.T) {
@@ -68,12 +56,13 @@ func TestBackendListFromEnv(t *testing.T) {
 	}
 }
 
-func TestLegacyBackendListName(t *testing.T) {
+func TestRetiredBackendListNameIsIgnored(t *testing.T) {
+	t.Setenv("GORGE_SEARCH_BACKENDS", "")
 	t.Setenv("SEARCH_BACKENDS", `[{"type":"meilisearch","hosts":["meili:7700"]}]`)
 
 	cfg := LoadFromEnv()
-	if len(cfg.Backends) != 1 || cfg.Backends[0].Type != "meilisearch" {
-		t.Fatalf("the legacy name must still be read, got %+v", cfg.Backends)
+	if len(cfg.Backends) != 0 {
+		t.Fatalf("retired SEARCH_BACKENDS must be ignored, got %+v", cfg.Backends)
 	}
 }
 
@@ -117,9 +106,6 @@ func TestSingleElasticsearchBackendFromFlatVariables(t *testing.T) {
 	if b.Type != "elasticsearch" {
 		t.Errorf("expected elasticsearch, got %q", b.Type)
 	}
-	// Comma-separated, and the whitespace around an entry is trimmed: a host
-	// list copied out of a document otherwise yields a hostname with a leading
-	// space, which resolves to nothing.
 	if len(b.Hosts) != 2 || b.Hosts[0] != "es1:9200" || b.Hosts[1] != "es2:9200" {
 		t.Errorf("unexpected hosts: %q", b.Hosts)
 	}
@@ -145,9 +131,6 @@ func TestSingleMeilisearchBackendFromFlatVariables(t *testing.T) {
 	}
 }
 
-// ES_HOST is what turns the flat form on. Without it the service starts with
-// no backends and reports itself not ready, rather than inventing a localhost
-// default that would look configured and never answer.
 func TestNoHostMeansNoBackend(t *testing.T) {
 	t.Setenv("ES_INDEX", "phorge")
 	t.Setenv("ES_VERSION", "7")
@@ -157,8 +140,6 @@ func TestNoHostMeansNoBackend(t *testing.T) {
 	}
 }
 
-// An unset engine name means Elasticsearch, which is also what an empty type
-// in Phorge's cluster.search entry means.
 func TestUnsetEngineMeansElasticsearch(t *testing.T) {
 	t.Setenv("ES_HOST", "es:9200")
 
@@ -175,9 +156,6 @@ func TestLoadFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The token comes from the environment even when a file is in play, so a
-	// secret can be injected separately from the file that holds the backend
-	// addresses.
 	t.Setenv("GORGE_SERVICE_TOKEN", "from-env")
 
 	cfg, err := LoadFromFile(path)
@@ -187,8 +165,6 @@ func TestLoadFromFile(t *testing.T) {
 	if cfg.ServiceToken != "from-env" {
 		t.Errorf("expected the token from the environment, got %q", cfg.ServiceToken)
 	}
-	// A key the file does not mention keeps its default rather than becoming
-	// the zero value.
 	if cfg.ListenAddr != DefaultListenAddr {
 		t.Errorf("expected the default listen address, got %q", cfg.ListenAddr)
 	}
@@ -218,23 +194,21 @@ func TestLoadPrefersTheFileWhenOneIsPointedAt(t *testing.T) {
 func TestLoadReportsAMissingConfigFile(t *testing.T) {
 	t.Setenv("GORGE_SEARCH_CONFIG_FILE", filepath.Join(t.TempDir(), "absent.json"))
 
-	// A config file that was named and cannot be read is a startup failure,
-	// unlike a backend list that was never written: the operator said where
-	// the configuration is and it is not there.
 	if _, err := Load(); err == nil {
 		t.Error("expected an error for a missing config file")
 	}
 }
 
-func TestLegacyConfigFileName(t *testing.T) {
+func TestRetiredConfigFileNameIsIgnored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "search.json")
 	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("GORGE_SEARCH_CONFIG_FILE", "")
 	t.Setenv("SEARCH_CONFIG_FILE", path)
 
-	if ConfigFilePath() != path {
-		t.Errorf("the legacy config file name must still be read, got %q", ConfigFilePath())
+	if got := ConfigFilePath(); got != "" {
+		t.Errorf("retired SEARCH_CONFIG_FILE must be ignored, got %q", got)
 	}
 }
 
@@ -243,9 +217,6 @@ func TestNewEngineDispatchesOnType(t *testing.T) {
 		{Type: "elasticsearch", Hosts: []string{"es:9200"}},
 		{Type: "meilisearch", Hosts: []string{"meili:7700"}},
 		{Type: "test"},
-		// An unknown type is Elasticsearch rather than an error: that is the
-		// pre-monorepo behaviour, and an empty type in Phorge's cluster.search
-		// entry means the same thing.
 		{Type: "", Hosts: []string{"es:9200"}},
 	})
 	if err != nil {
