@@ -83,9 +83,14 @@ func (q *fakeQueue) handler() http.HandlerFunc {
 		case "/api/queue/lease":
 			_ = json.NewDecoder(r.Body).Decode(&q.lastLease)
 			tasks := q.pending
+			for _, task := range tasks {
+				expiry := time.Now().Add(time.Hour).Unix()
+				task.LeaseOwner = r.Header.Get("X-Lease-Owner")
+				task.LeaseExpires = &expiry
+			}
 			q.pending = nil
 			writeData(w, tasks)
-		case "/api/queue/complete":
+		case "/api/queue/finalize":
 			q.completeAttempts++
 			if q.completeFailures > 0 {
 				q.completeFailures--
@@ -95,19 +100,29 @@ func (q *fakeQueue) handler() http.HandlerFunc {
 				})
 				return
 			}
-			var req contracts.CompleteRequest
+			var req contracts.FinalizeRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			q.completed = append(q.completed, req.TaskID)
 			writeData(w, map[string]string{"status": "ok"})
-		case "/api/queue/fail":
-			var req contracts.FailRequest
+		case "/api/queue/renew":
+			var req contracts.RenewRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			q.failed = append(q.failed, req.TaskID)
-			writeData(w, map[string]string{"status": "ok"})
-		case "/api/queue/yield":
-			var req contracts.YieldRequest
+			expiry := max(req.LeaseExpires, time.Now().Unix()+int64(req.Duration))
+			writeData(w, &contracts.Task{ID: req.TaskID, LeaseOwner: req.LeaseOwner, LeaseExpires: &expiry})
+		case "/api/queue/meta":
+			writeData(w, contracts.ExecutionCapabilities{ExecutionVersion: 1, LeaseOutcomes: true})
+		case "/api/queue/resolve":
+			var req contracts.ResolveRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			q.yielded = append(q.yielded, req.TaskID)
+			if req.LeaseOwner == "" || req.LeaseExpires == 0 {
+				http.Error(w, "missing lease", 400)
+				return
+			}
+			if req.Outcome == "yield" {
+				q.yielded = append(q.yielded, req.TaskID)
+			} else {
+				q.failed = append(q.failed, req.TaskID)
+			}
 			writeData(w, map[string]string{"status": "ok"})
 		default:
 			http.NotFound(w, r)

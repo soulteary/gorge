@@ -3,10 +3,11 @@ package taskqueue
 import (
 	"context"
 	"errors"
+	"net/http"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
-	"net/http"
 )
 
 var ErrLeaseConflict = errors.New("task lease no longer belongs to this execution")
@@ -16,6 +17,7 @@ var ErrLeaseConflict = errors.New("task lease no longer belongs to this executio
 type ExecutionStore interface {
 	Finalize(context.Context, *contracts.FinalizeRequest) error
 	Renew(context.Context, *contracts.RenewRequest) (*contracts.Task, error)
+	Resolve(context.Context, *contracts.ResolveRequest) error
 }
 
 func registerExecutionRoutes(g fiber.Router, deps *Deps) {
@@ -24,7 +26,7 @@ func registerExecutionRoutes(g fiber.Router, deps *Deps) {
 		if _, ok := deps.Store.(ExecutionStore); ok {
 			version = 1
 		}
-		return httpx.OK(c, contracts.ExecutionCapabilities{ExecutionVersion: version})
+		return httpx.OK(c, contracts.ExecutionCapabilities{ExecutionVersion: version, LeaseOutcomes: version == 1})
 	})
 	g.Post("/finalize", func(c fiber.Ctx) error {
 		var req contracts.FinalizeRequest
@@ -47,6 +49,23 @@ func registerExecutionRoutes(g fiber.Router, deps *Deps) {
 			return executionError(c, err)
 		}
 		return httpx.OK(c, map[string]string{"status": "finalized"})
+	})
+	g.Post("/resolve", func(c fiber.Ctx) error {
+		var req contracts.ResolveRequest
+		if err := c.Bind().Body(&req); err != nil || !validExecutionLease(req.ExecutionLease) {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid resolution")
+		}
+		if (req.Outcome != "retry" && req.Outcome != "failure" && req.Outcome != "yield") || req.Duration < 0 || req.Duration > 604800 || (req.RetryWait != nil && (*req.RetryWait < 0 || *req.RetryWait > 604800)) {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid resolution")
+		}
+		store, ok := deps.Store.(ExecutionStore)
+		if !ok {
+			return httpx.Fail(c, 503, httpx.CodeInternal, "execution protocol unavailable")
+		}
+		if err := store.Resolve(c.Context(), &req); err != nil {
+			return executionError(c, err)
+		}
+		return httpx.OK(c, map[string]string{"status": "resolved"})
 	})
 	g.Post("/renew", func(c fiber.Ctx) error {
 		var req contracts.RenewRequest

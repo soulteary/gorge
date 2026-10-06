@@ -105,8 +105,7 @@ func newConduitExecutionHandler(conduit *ConduitClient, native worker.TaskHandle
 				return err
 			}
 		}
-		executionCtx, cancel := context.WithDeadline(base, time.Unix(*task.LeaseExpires, 0))
-		defer cancel()
+		executionCtx := base
 		if native != nil {
 			start := time.Now()
 			if err := native(executionCtx, task, data); err != nil {

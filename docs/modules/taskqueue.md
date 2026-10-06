@@ -150,17 +150,26 @@ SELECT id FROM worker_activetask
 
 **这个缺口是 `/readyz` 必须存在的全部理由**：一个连不上后端的 taskqueue 在监听、`/healthz` 答 200、却租不出一个任务，和「慢了一拍」长得一模一样。容器 healthcheck 因此打 `/readyz`。
 
-### 3.6 worker：租约循环与 Conduit 委派
+### 3.6 Worker：租约生命周期与领域委托
 
-`Consumer.Run` 是 worker 的全部工作：按 `PollIntervalMs` 轮询 `lease`（一次要 `LeaseLimit` 个），对每个任务按 `taskClass` 从 `Registry` 找 handler 跑，然后回报——成功 `complete`、`PermanentError` 走 `fail(permanent=true)`、`YieldError` 走 `yield`、其余错误走 `fail(permanent=false)`。结果回写失败会在任务租约上下文内重试，只有 taskqueue 确认写入后才更新进程计数，避免一次短暂队列故障被误记成已完成。队列空了就进入 `IdleTimeoutSec` 之后的退避。`TaskClassFilter` 非空时通过 lease 请求的 `taskClasses` 在取得租约前筛选；没有 Conduit fallback 时，即使未显式配置过滤器，也只请求 Registry 真正支持的类。
+`Consumer.Run` 按任务类领取，执行前确认 v1 和 leaseOutcomes 能力并校验
+当前租约，执行中周期续租；失去所有权立即取消 handler。成功结果统一
+通过 finalize 原子提交，失败和 yield 通过 resolve 提交。结果上报使用
+独立的十秒停机安全上下文，409 不再重试，确认写入后才更新进程计数。
 
-**handler 的注册在 `handlers.RegisterAll`**：本地实现目前覆盖 `FeedPublisherHTTPWorker`，并且无论是否配置 Conduit 都优先使用原生 handler；配了 `GORGE_WORKER_CONDUIT_URL` 才装一个兜底 handler，把任何未本地实现的 task class 通过 Conduit 的 `worker.execute` 委派回 Phorge 的 PHP。这让 worker 不必重写 Phorge 的每一个 worker 就能跑一个装置的全部任务类。没配 Conduit 时，未实现的类不会被这个 worker 租走。`supported` 里的 `*` 就是「配了 fallback」的信号。
+`handlers.RegisterWithFeedPolicy` 配置原生 Feed 政策文件时，版本 1 Feed
+直接由 Go 检查静默模式和 URI 并投递，不调用 PHP prepare。旧 key 任务仍
+委托 PHP，但只转换为快照后续任务。其余未迁移任务通过 Conduit 委托。
+无 Conduit 时只领取已注册原生类；TaskClassFilter 在领取前筛选。
 
-**Conduit 委派必须用表单编码，不能发 JSON。**Phorge 的 `PhabricatorConduitAPIController` 明确拒绝 `Content-Type: application/json`（"Use form-encoded data to submit parameters to Conduit endpoints"），一个它无法当作 Conduit 请求解析的 body 会被更外层的 HTTP 栈用一张 HTML 页面回应——这正是委派环节 `invalid character '<'` 的来源。所以 `handlers/conduit.go` 的 `ConduitClient.Call` 走 Phorge 自家客户端（arcanist 的 `ConduitClient`、旧 `PhabricatorGoConduitGatewayClient`）的线格式：`POST /api/<method>`，`Content-Type: application/x-www-form-urlencoded`，body 里带一个 `params` 字段（值是参数 map 的 JSON），API token 塞在 `__conduit__.token` 里，再加 `output=json` 强制 JSON 信封；网关另外用 `X-Service-Token` 头认证。收到非 JSON body 时不再抛裸的解码错误，而是截一段可诊断的片段。Conduit 客户端本身不设与任务无关的固定 30 秒上限；Consumer 以 taskqueue 返回的 `leaseExpires` 作为执行上下文截止时间，允许合法的长任务使用完整租约窗口。
+Conduit 仍使用表单编码 params JSON，`worker.execute` 独立校验服务令牌，
+并协商 capabilities/prepare/execute。PHP 返回业务结果、重试政策和后续
+任务，Go 负责队列状态。长请求由心跳会话取消控制，取消 HTTP 客户端不
+保证服务端副作用停止，因此任务业务必须考虑幂等。
 
-**`worker.execute` 是 phorge-fork 侧新增的 Conduit method**（`PhabricatorWorkerExecuteConduitAPIMethod`，`shouldRequireAuthentication()=false` 且 `shouldAllowUnguardedWrites()=true`，因为它是经网关认证的机器间内部调用、无用户会话、无 CSRF 面）。它按 `taskClass`+`data` 用 `newv()` 造出真正的 `PhabricatorWorker` 并跑 `executeTask()`，把 `PhabricatorWorkerActiveTask::executeTask` 的分类**回报**而非自己驱动队列（队列归 gorge-worker 管）：正常返回 `success`，`PhabricatorWorkerYieldException`→`yield`（带 `retry`），`PhabricatorWorkerPermanentFailureException`→`permanent-failure`，其余异常→`failure`（临时、可重试）。委派 handler 据此把结果翻译回 worker 的错误词汇（`nil`/`YieldError`/`PermanentError`/普通 error），从而正确 `complete`/`yield`/`fail`。
-
-worker 的 `/readyz` 是 `nil`（`httpx.Config{Ready: nil}`）：它没有自持的外部存储要拨测，连不上 taskqueue 只是租不到、会一直重试，那是 taskqueue 的就绪问题，不该让编排重启 worker。所以它的 healthcheck 打 `/healthz`。
+可选 Feed outbox relay 使用 feed 数据库，职责是将已提交事件发送到队列
+inbox，不执行领域逻辑。`/readyz` 检查队列协议、配置的 Feed 政策和 outbox
+表；`/healthz` 仍表示存活，编排无需因暂时依赖故障重启进程。
 
 ## 4. 配置
 
@@ -250,3 +259,30 @@ Feed HTTP 新任务包含 deliveryVersion=1、uri 和 PHP 生成的完整表单 
 旧 complete/fail/yield 接口和 PHP 队列实现仍保留兼容用途；本批次尚未为旧结果接口增加租约校验，也未删除整个 PHP taskmaster。下一阶段应补齐失败/yield 的所有权保护、持久化执行回执和跨仓库持续验证，再收缩原生队列实现。
 
 验证：`go test ./...`；真实 Redis 使用 `GORGE_TEST_REDIS_ADDR=host:port go test ./internal/taskqueue -run TestExecutionRedisIntegration -v`，测试只清理自己创建的随机前缀。PHP 使用 `GORGE_TEST_ARCANIST_DIR=/path/to/arcanist php tests/contract/worker/execution.php`。
+
+## 执行生命周期与事务事件
+
+执行协议仍为 v1，`GET /api/queue/meta` 另返回 `leaseOutcomes: true`。
+新的 Worker 要求此能力；混合版本必须先升级 queue 再升级 worker。
+`POST /api/queue/resolve` 使用 `taskID/leaseOwner/leaseExpires`，并指定
+`outcome: retry|failure|yield`；`retryWait` 为秒，yield 使用 `duration`。
+旧租约、已过期租约、重复 resolve 返回 409，避免重复增加失败次数。
+成功结果统一走 finalize；409 不应重试或回退到旧接口。
+旧 complete/fail/yield 路由暂供历史 PHP 客户端使用，不能混用来规避租约校验。
+
+Worker 执行前确认租约，执行中每至多 30 秒续租一次；续租请求受当前租约
+截止时间约束。失去所有权时取消 handler，不再报告结果。PHP 请求取消不能
+保证服务端已停止，因此外部操作仍需要幂等键，不能宣称 exactly-once。
+
+`POST /api/queue/enqueue-event` 接受 `{eventID, task: EnqueueRequest}`。
+相同 ID 和请求返回原任务；相同 ID 不同请求返回 `ERR_EVENT_CONFLICT` (409)。
+MySQL 需要 Phorge migration 创建 `worker_gorgeinbox`；Redis 回执存于队列
+前缀下的 inbox hash。回执不自动过期，以免历史事件重放产生重复任务；清理
+必须先确认 outbox 与备份中的事件均不再重放。Redis Lua 使用动态键，沿用
+单实例 Redis 部署约束，不声明 Redis Cluster 支持。
+
+Feed 的业务记录与 `feed_gorgeoutbox` 写入同一个 feed 数据库事务。
+`GORGE_WORKER_OUTBOX_DSN` 指向该 feed 库；relay 通过队列 inbox 提交事件，
+成功后标记 deliveredEpoch。HTTP 响应或源库确认丢失可安全重放；失败事件
+保留 attempts/lastError 并按上限一小时退避。此阶段只覆盖 Feed 发布事件，
+不是任意 PHP 业务事务的通用 outbox。不要在事件仍可能重放时清理 inbox。

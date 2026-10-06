@@ -11,12 +11,17 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
+	"sync"
+	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 	"github.com/soulteary/gorge/go/internal/worker"
 	"github.com/soulteary/gorge/go/internal/worker/handlers"
+	"github.com/soulteary/gorge/go/internal/worker/outbox"
 )
 
 func main() {
@@ -25,17 +30,42 @@ func main() {
 	client := worker.NewClient(cfg.TaskQueueURL, cfg.TaskQueueToken)
 
 	registry := worker.NewRegistry()
-	handlers.RegisterAll(registry, cfg.ConduitURL, cfg.ConduitToken, client)
+	handlers.RegisterWithFeedPolicy(registry, cfg.ConduitURL, cfg.ConduitToken, cfg.FeedPolicyFile, client)
 
 	consumer := worker.NewConsumer(client, registry, cfg)
 
+	var outboxDB *sql.DB
+	if cfg.OutboxDSN != "" {
+		var err error
+		outboxDB, err = sql.Open("mysql", cfg.OutboxDSN)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "invalid outbox configuration")
+			os.Exit(1)
+		}
+		defer outboxDB.Close()
+	}
 	srv := httpx.New(httpx.Config{
 		ListenAddr: cfg.ListenAddr,
-		// Readiness equals liveness: the worker holds no database and reaches
-		// the queue over HTTP, retrying on its own, so there is no external
-		// dependency whose absence should take it out of rotation. A queue
-		// that is briefly down is a logged lease error, not an unready worker.
-		Ready: nil,
+		Ready: func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := client.RequireExecutionProtocol(ctx); err != nil {
+				return err
+			}
+			if cfg.FeedPolicyFile != "" {
+				if err := handlers.ValidateFeedPolicy(cfg.FeedPolicyFile); err != nil {
+					return err
+				}
+			}
+			if outboxDB != nil {
+				rows, err := outboxDB.QueryContext(ctx, "SELECT eventID FROM feed_gorgeoutbox LIMIT 1")
+				if err != nil {
+					return fmt.Errorf("outbox schema unavailable")
+				}
+				rows.Close()
+			}
+			return nil
+		},
 	})
 
 	worker.RegisterRoutes(srv.App(), &worker.Deps{
@@ -46,6 +76,12 @@ func main() {
 	// One signal stops both halves: srv.Run returns on SIGINT or SIGTERM, and
 	// cancelling this context is what ends the lease loop.
 	ctx, stopLoop := context.WithCancel(context.Background())
+	var relayWG sync.WaitGroup
+	if outboxDB != nil {
+		relayWG.Add(1)
+		go func() { defer relayWG.Done(); (&outbox.Relay{DB: outboxDB, Queue: client}).Run(ctx) }()
+	}
+
 	looping := make(chan struct{})
 	go func() {
 		defer close(looping)
@@ -58,6 +94,7 @@ func main() {
 	// not cut off. Cancelling the context is what makes Run return promptly.
 	stopLoop()
 	<-looping
+	relayWG.Wait()
 
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "gorge-worker: %v\n", runErr)

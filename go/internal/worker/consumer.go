@@ -159,7 +159,7 @@ func (c *Consumer) Run(ctx context.Context) {
 					// another worker with the right handler may lease it.
 					retryWait := 60
 					c.reportOutcome(ctx, task, "unsupported class", func(reportCtx context.Context) error {
-						return c.client.Fail(reportCtx, task.ID, false, &retryWait)
+						return c.client.Resolve(reportCtx, task, "retry", &retryWait, 0)
 					})
 					continue
 				}
@@ -195,7 +195,7 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 	handler, ok := c.registry.Get(task.TaskClass)
 	if !ok {
 		slog.Warn("no handler for task", "taskClass", task.TaskClass, "id", task.ID)
-		_ = c.client.Fail(ctx, task.ID, true, nil)
+		_ = c.client.Resolve(ctx, task, "failure", nil, 0)
 		c.failed.Add(1)
 		return
 	}
@@ -205,32 +205,35 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		data = json.RawMessage(task.Data)
 	}
 
-	// A delegated task may legitimately run until the queue lease expires. The
-	// HTTP client has no unrelated fixed timeout; this deadline is the actual
-	// ownership window returned by taskqueue.
-	taskCtx := ctx
-	var cancel context.CancelFunc
-	if task.LeaseExpires != nil {
-		taskCtx, cancel = context.WithDeadline(context.WithValue(ctx, executionContextKey{}, ctx), time.Unix(*task.LeaseExpires, 0))
-		defer cancel()
+	if err := c.client.RequireExecutionProtocol(ctx); err != nil {
+		slog.Warn("execution protocol unavailable", "error", err)
+		return
 	}
-
-	err := handler(taskCtx, task, data)
+	if _, err := executionLease(task); err != nil {
+		slog.Warn("invalid execution lease", "error", err)
+		return
+	}
+	// Confirm current ownership before executing any side effect.
+	if err := c.client.Renew(ctx, task, 60); err != nil {
+		slog.Warn("lease validation failed", "error", err)
+		return
+	}
+	taskCtx, stopHeartbeat := c.client.startHeartbeat(ctx, task)
+	handlerTask := *task
+	err := handler(taskCtx, &handlerTask, data)
+	current, leaseErr := stopHeartbeat()
+	if leaseErr != nil {
+		slog.Warn("execution ownership lost", "taskID", task.ID, "error", leaseErr)
+		return
+	}
+	task = current
 	durationUs := time.Since(start).Microseconds()
-	// A handler may renew the lease. Rebuild the reporting deadline from the
-	// current lease instead of retaining the deadline of the original lease.
-	if task.LeaseExpires != nil {
-		var reportCancel context.CancelFunc
-		taskCtx, reportCancel = context.WithDeadline(ctx, time.Unix(*task.LeaseExpires, 0))
-		defer reportCancel()
-	}
+	reportCtx, reportCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer reportCancel()
+	taskCtx = reportCtx
 
 	var completion *Completion
 	if errors.As(err, &completion) {
-		// Renewal may have extended the handler beyond taskCtx's old deadline.
-		// Result reporting has its own bounded shutdown-safe context.
-		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
 		if c.reportOutcome(reportCtx, task, "finalize", func(reportCtx context.Context) error {
 			return c.client.Finalize(reportCtx, task, completion)
 		}) {
@@ -242,7 +245,7 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		slog.Info("task completed",
 			"taskClass", task.TaskClass, "id", task.ID, "duration", time.Since(start).String())
 		if c.reportOutcome(taskCtx, task, "complete", func(reportCtx context.Context) error {
-			return c.client.Complete(reportCtx, task.ID, durationUs)
+			return c.client.Finalize(reportCtx, task, &Completion{Duration: durationUs})
 		}) {
 			c.processed.Add(1)
 		}
@@ -257,7 +260,7 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		slog.Warn("permanent task failure",
 			"taskClass", task.TaskClass, "id", task.ID, "error", err)
 		if c.reportOutcome(taskCtx, task, "permanent failure", func(reportCtx context.Context) error {
-			return c.client.Fail(reportCtx, task.ID, true, nil)
+			return c.client.Resolve(reportCtx, task, "failure", nil, 0)
 		}) {
 			c.failed.Add(1)
 		}
@@ -269,7 +272,7 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		slog.Info("task yielded",
 			"taskClass", task.TaskClass, "id", task.ID, "duration_sec", dur, "reason", err)
 		c.reportOutcome(taskCtx, task, "yield", func(reportCtx context.Context) error {
-			return c.client.Yield(reportCtx, task.ID, dur)
+			return c.client.Resolve(reportCtx, task, "yield", nil, dur)
 		})
 	default:
 		slog.Warn("temporary task failure",
@@ -277,9 +280,9 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		if c.reportOutcome(taskCtx, task, "temporary failure", func(reportCtx context.Context) error {
 			var retry *RetryError
 			if errors.As(err, &retry) {
-				return c.client.Fail(reportCtx, task.ID, false, &retry.Wait)
+				return c.client.Resolve(reportCtx, task, "retry", &retry.Wait, 0)
 			}
-			return c.client.Fail(reportCtx, task.ID, false, nil)
+			return c.client.Resolve(reportCtx, task, "retry", nil, 0)
 		}) {
 			c.failed.Add(1)
 		}
@@ -308,7 +311,7 @@ func (c *Consumer) reportOutcome(ctx context.Context, task *contracts.Task, outc
 			"outcome", outcome,
 			"attempt", attempt,
 			"error", err)
-		if attempt == resultReportAttempts {
+		if errors.Is(err, ErrLeaseConflict) || attempt == resultReportAttempts {
 			break
 		}
 		timer := time.NewTimer(resultReportBackoff * time.Duration(attempt))

@@ -172,3 +172,16 @@ jobs:
           GORGE_TEST_REDIS_ADDR: 127.0.0.1:6379
           GORGE_TEST_MYSQL_DSN: root:execution-test-only@tcp(127.0.0.1:3306)/
         run: go test ./internal/taskqueue -run 'TestExecution(Redis|MySQL)Integration' -v
+
+  worker-lifecycle:
+    name: Worker heartbeat and relay races
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go/go.sum
+      - name: Verify ownership cancellation and relay replay
+        working-directory: go
+        run: go test -race ./internal/worker/...

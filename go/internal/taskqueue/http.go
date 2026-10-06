@@ -38,6 +38,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g := app.Group("/api/queue")
 	g.Use(auth.Token(deps.Token))
 	registerExecutionRoutes(g, deps)
+	registerInboxRoutes(g, deps)
 
 	g.Post("/enqueue", enqueue(deps))
 	g.Post("/lease", lease(deps))

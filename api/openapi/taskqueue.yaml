@@ -43,7 +43,7 @@ info:
     `tests/contract/taskqueue/`. The database columns and the coupling of
     `status`/`leaseOwner`/`failureCount` are a separate, stricter contract
     documented in `compat/phorge/README.md`.
-  version: 1.1.0
+  version: 1.2.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -80,6 +80,39 @@ paths:
                     type: object
                     properties:
                       executionVersion: {type: integer}
+                      leaseOutcomes: {type: boolean}
+
+  /api/queue/resolve:
+    post:
+      tags: [queue]
+      summary: Record retry, yield or permanent failure under the current lease
+      security:
+        - ServiceTokenHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveRequest'
+      responses:
+        '200': {description: Outcome recorded}
+        '409': {description: Ownership lost or outcome already recorded}
+
+  /api/queue/enqueue-event:
+    post:
+      tags: [queue]
+      summary: Accept an outbox event with a persistent idempotency receipt
+      security:
+        - ServiceTokenHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnqueueEventRequest'
+      responses:
+        '200': {description: Envelope data contains the original accepted Task}
+        '409': {description: Event ID already accepted with another payload}
 
   /api/queue/finalize:
     post:
@@ -595,6 +628,24 @@ components:
               maxItems: 1000
               items:
                 $ref: '#/components/schemas/EnqueueRequest'
+
+    EnqueueEventRequest:
+      type: object
+      required: [eventID, task]
+      properties:
+        eventID: {type: string, minLength: 1, maxLength: 128}
+        task:
+          $ref: '#/components/schemas/EnqueueRequest'
+
+    ResolveRequest:
+      allOf:
+        - $ref: '#/components/schemas/ExecutionLease'
+        - type: object
+          required: [outcome]
+          properties:
+            outcome: {type: string, enum: [retry, failure, yield]}
+            retryWait: {type: integer, minimum: 0, maximum: 604800}
+            duration: {type: integer, minimum: 0, maximum: 604800}
 
     RenewRequest:
       allOf:

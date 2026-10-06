@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/soulteary/gorge/go/internal/contracts"
 	"time"
+
+	"github.com/soulteary/gorge/go/internal/contracts"
 )
 
 func lockExecution(ctx context.Context, tx *sql.Tx, l contracts.ExecutionLease) (*contracts.Task, error) {
@@ -98,4 +99,50 @@ func (s *MySQLStore) Renew(ctx context.Context, req *contracts.RenewRequest) (*c
 	}
 	t.LeaseExpires = &expiry
 	return t, nil
+}
+
+func (s *MySQLStore) Resolve(ctx context.Context, req *contracts.ResolveRequest) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	t, err := lockExecution(ctx, tx, req.ExecutionLease)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrLeaseConflict
+	}
+	if err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	switch req.Outcome {
+	case "failure":
+		_, err = tx.ExecContext(ctx, `INSERT INTO worker_archivetask
+ (id, taskClass, leaseOwner, leaseExpires, failureCount, dataID, priority, objectPHID, containerPHID,
+ result, duration, dateCreated, dateModified, archivedEpoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.ID, t.TaskClass, t.LeaseOwner, req.LeaseExpires, t.FailureCount, t.DataID, t.Priority,
+			nullStr(t.ObjectPHID), nullStr(t.ContainerPHID), contracts.ResultFailure, 0, t.DateCreated, now, now)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, "DELETE FROM worker_activetask WHERE id = ?", t.ID)
+		}
+	case "retry":
+		wait := s.retryWait
+		if req.RetryWait != nil {
+			wait = *req.RetryWait
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE worker_activetask SET failureCount = failureCount + 1,
+ failureTime = ?, leaseOwner = NULL, leaseExpires = ?, dateModified = ? WHERE id = ?`, now, now+int64(wait), now, t.ID)
+	case "yield":
+		duration := req.Duration
+		if duration < 5 {
+			duration = 5
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE worker_activetask SET leaseOwner = ?, leaseExpires = ?, dateModified = ? WHERE id = ?`, contracts.YieldOwner, now+int64(duration), now, t.ID)
+	default:
+		return errors.New("invalid resolution outcome")
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

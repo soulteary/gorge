@@ -22,5 +22,19 @@ type RenewRequest struct {
 }
 
 type ExecutionCapabilities struct {
-	ExecutionVersion int `json:"executionVersion"`
+	ExecutionVersion int  `json:"executionVersion"`
+	LeaseOutcomes    bool `json:"leaseOutcomes"`
+}
+
+// ResolveRequest records a fenced failure or yield. Success uses Finalize.
+type ResolveRequest struct {
+	ExecutionLease
+	Outcome   string `json:"outcome"`
+	RetryWait *int   `json:"retryWait,omitempty"`
+	Duration  int    `json:"duration,omitempty"`
+}
+
+type EnqueueEventRequest struct {
+	EventID string         `json:"eventID"`
+	Task    EnqueueRequest `json:"task"`
 }

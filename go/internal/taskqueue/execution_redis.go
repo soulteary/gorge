@@ -105,3 +105,45 @@ func redisExecutionError(err error) error {
 	}
 	return err
 }
+
+var resolveExecutionScript = redis.NewScript(`
+local prefix,id,owner,expiry,now,outcome,wait = ARGV[1],ARGV[2],ARGV[3],tonumber(ARGV[4]),tonumber(ARGV[5]),ARGV[6],tonumber(ARGV[7])
+local task = prefix..'task:'..id
+if redis.call('HGET', task, 'leaseOwner') ~= owner or tonumber(redis.call('HGET', task, 'leaseExpires')) ~= expiry or expiry <= now then return redis.error_reply('LEASE_CONFLICT') end
+if outcome == 'failure' then
+ local archived = prefix..'archived:'..id
+ local fields = redis.call('HGETALL', task)
+ for i=1,#fields,2 do redis.call('HSET',archived,fields[i],fields[i+1]) end
+ redis.call('HSET',archived,'result',1,'duration',0,'archivedEpoch',now,'dateModified',now)
+ local data = redis.call('GET',prefix..'data:'..redis.call('HGET',task,'dataID'))
+ if data then redis.call('HSET',archived,'data',data) end
+ redis.call('ZREM',prefix..'idx:active',id)
+ redis.call('ZREM',prefix..'idx:unleased',id)
+ redis.call('ZREM',prefix..'idx:leased',id)
+ redis.call('ZADD',prefix..'idx:archived',now,id)
+ redis.call('INCR',prefix..'counter:archived')
+ if tonumber(redis.call('HGET',task,'failureCount') or '0') > 0 then redis.call('DECR',prefix..'counter:failed') end
+ redis.call('DEL',task)
+elseif outcome == 'retry' or outcome == 'yield' then
+ if outcome == 'retry' then
+  local fc = tonumber(redis.call('HGET',task,'failureCount') or '0')
+  if fc == 0 then redis.call('INCR',prefix..'counter:failed') end
+  redis.call('HSET',task,'failureCount',fc+1,'failureTime',now,'leaseOwner','')
+ else redis.call('HSET',task,'leaseOwner','(yield)'); wait = math.max(5,wait) end
+ redis.call('HSET',task,'leaseExpires',now+wait,'dateModified',now)
+ redis.call('ZREM',prefix..'idx:unleased',id)
+ redis.call('ZADD',prefix..'idx:leased',now+wait,id)
+else return redis.error_reply('invalid resolution outcome') end
+return 1
+`)
+
+func (s *RedisStore) Resolve(ctx context.Context, req *contracts.ResolveRequest) error {
+	wait := s.retryWait
+	if req.RetryWait != nil {
+		wait = *req.RetryWait
+	}
+	if req.Outcome == "yield" {
+		wait = req.Duration
+	}
+	return redisExecutionError(resolveExecutionScript.Run(ctx, s.rdb, []string{s.taskKey(req.TaskID)}, s.prefix, req.TaskID, req.LeaseOwner, req.LeaseExpires, time.Now().Unix(), req.Outcome, wait).Err())
+}

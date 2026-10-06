@@ -82,8 +82,11 @@ const (
 	phpFieldTypeConst = "src/applications/search/constants/PhabricatorSearchDocumentFieldType.php"
 	phpRelationConst  = "src/applications/search/constants/PhabricatorSearchRelationship.php"
 	phpFulltextEngine = "src/applications/search/fulltextstorage/PhabricatorGorgeFulltextStorageEngine.php"
+	phpHeraldRequest  = "src/applications/herald/storage/HeraldWebhookRequest.php"
 	phpHeraldWorker   = "src/applications/herald/worker/HeraldWebhookWorker.php"
 	phpWorkerTask     = "src/infrastructure/daemon/workers/storage/PhabricatorWorkerTask.php"
+	phpWorkerExecute  = "src/infrastructure/daemon/workers/conduit/PhabricatorWorkerExecuteConduitAPIMethod.php"
+	phpFeedPublisher  = "src/applications/feed/PhabricatorFeedStoryPublisher.php"
 )
 
 // Manifest returns the whole cross-repository contract register. It is a
@@ -249,20 +252,11 @@ func searchContract() DomainContract {
 	}
 }
 
-// webhookContract registers §9. The two diagnostic routes of §9.8 appear in
-// PhabricatorGorgeWebhookClient, and the §9.1 payload keys appear in
-// HeraldWebhookWorker::callWebhookWithLock(), which builds the same document
-// this service emits — that is the whole point of §9.1, so the two spellings
-// have to agree or a third-party receiver sees a different shape depending on
-// which side delivered.
-//
-// The stats field names carry no files because the webhook client contains no
-// wire-key literal at all: it returns the decoded data section and its callers
-// index it. An earlier version of this file also claimed §9.1–9.6 held nothing
-// comparable; the payload half of that was simply wrong. The writeback half
-// (§9.4–9.6) is still out of scope, but for a checkable reason: those are
-// herald_webhookrequest columns written by SQL on both sides, not json tags,
-// so there is no Go-side name for the checker to anchor them to.
+// webhookContract registers §9. Diagnostic routes remain PHP adapters.
+// Gorge now constructs the receiver payload exclusively; byte-exact fixtures
+// protect its shape. PHP still produces the action flags stored in the request
+// row, so those flags are pinned to the request DAO rather than the retired
+// payload builder. SQL column writeback is outside this JSON-name register.
 func webhookContract() DomainContract {
 	return DomainContract{
 		Domain: "webhook",
@@ -274,16 +268,16 @@ func webhookContract() DomainContract {
 			// §9.1 payload keys. Key order is part of the contract too, but
 			// that is byte-exactness and belongs to TestPayloadIsByteExact;
 			// this only pins the spellings.
-			{Name: "object", PHPFiles: []string{phpHeraldWorker}, Note: "§9.1 top-level payload key."},
-			{Name: "type", PHPFiles: []string{phpHeraldWorker}, Note: "§9.3 object.type, the second PHID segment."},
-			{Name: "phid", PHPFiles: []string{phpHeraldWorker}, Note: "§9.1 used by object, triggers and transactions alike."},
-			{Name: "triggers", PHPFiles: []string{phpHeraldWorker}},
-			{Name: "action", PHPFiles: []string{phpHeraldWorker}},
-			{Name: "test", PHPFiles: []string{phpHeraldWorker}},
-			{Name: "silent", PHPFiles: []string{phpHeraldWorker}, Note: "§9.9 per-request, not the global phabricator.silent setting."},
-			{Name: "secure", PHPFiles: []string{phpHeraldWorker}},
-			{Name: "epoch", PHPFiles: []string{phpHeraldWorker}, Note: "§9.1 the request row's dateCreated, not the attempt time."},
-			{Name: "transactions", PHPFiles: []string{phpHeraldWorker}},
+			{Name: "object", Note: "Go-owned receiver payload root; PHP no longer constructs this document."},
+			{Name: "type", Note: "Go derives object type from the PHID; no PHP payload builder remains."},
+			{Name: "phid", Note: "Go emits object, trigger and transaction identity; PHP stores PHIDs under different SQL/property names."},
+			{Name: "triggers", Note: "Go converts stored triggerPHIDs to receiver objects."},
+			{Name: "action", Note: "Go builds the receiver action envelope from stored request flags."},
+			{Name: "test", PHPFiles: []string{phpHeraldRequest}},
+			{Name: "silent", PHPFiles: []string{phpHeraldRequest}, Note: "§9.9 per-request, not the global phabricator.silent setting."},
+			{Name: "secure", PHPFiles: []string{phpHeraldRequest}},
+			{Name: "epoch", Note: "Go emits request dateCreated as receiver epoch; no PHP payload builder remains."},
+			{Name: "transactions", Note: "Go converts stored transactionPHIDs to receiver objects."},
 			// §9.8 stats fields.
 			{Name: "queuedCount", Note: "DeliveryStats; the client names no key at all, so there is no literal to compare."},
 			{Name: "sentCount", Note: "DeliveryStats; same as queuedCount."},
@@ -307,6 +301,11 @@ func taskqueueContract() DomainContract {
 	return DomainContract{
 		Domain: "taskqueue",
 		Routes: []ContractItem{
+			{Name: "/api/queue/meta", Note: "Go worker negotiates execution capabilities; no PHP client consumes this route."},
+			{Name: "/api/queue/finalize", Note: "Go worker atomically commits PHP-exported followups; PHP does not call it."},
+			{Name: "/api/queue/renew", Note: "Go worker manages lease renewal; no PHP route literal."},
+			{Name: "/api/queue/resolve", Note: "Go worker reports fenced failures/yields; no PHP route literal."},
+			{Name: "/api/queue/enqueue-event", Note: "Go outbox relay consumes this route; PHP writes the source event locally."},
 			{Name: "/api/queue/enqueue", PHPFiles: []string{phpTaskQueueClnt}},
 			{Name: "/api/queue/lease", PHPFiles: []string{phpTaskQueueClnt}},
 			{Name: "/api/queue/complete", PHPFiles: []string{phpTaskQueueClnt}},
@@ -317,7 +316,17 @@ func taskqueueContract() DomainContract {
 			{Name: "/api/queue/stats", PHPFiles: []string{phpTaskQueueClnt}},
 			{Name: "/api/queue/tasks", PHPFiles: []string{phpTaskQueueClnt}},
 		},
+		ErrorCodes: []ContractItem{
+			{Name: "ERR_LEASE_CONFLICT", Note: "Go worker stops reporting when ownership is lost; no PHP branch consumes the code."},
+			{Name: "ERR_EVENT_CONFLICT", Note: "Go relay keeps a conflicting event pending; no PHP branch consumes the code."},
+		},
 		WireFields: []ContractItem{
+			{Name: "eventID", PHPFiles: []string{phpFeedPublisher}, Note: "Feed transaction outbox event identity, preserved into the queue inbox."},
+			{Name: "task", PHPFiles: []string{phpFeedPublisher}, Note: "Outbox event wraps a typed queue request."},
+			{Name: "executionVersion", PHPFiles: []string{phpWorkerExecute}},
+			{Name: "followups", PHPFiles: []string{phpWorkerExecute}},
+			{Name: "leaseOutcomes", Note: "Queue capability consumed by Go worker; no PHP literal."},
+			{Name: "outcome", Note: "Fenced retry/failure/yield classification consumed within Go; PHP reports result instead."},
 			// Request-body field names the client builds by name.
 			{Name: "taskClass", PHPFiles: []string{phpTaskQueueClnt}, Note: "§10.1 worker_activetask.taskClass."},
 			{Name: "data", PHPFiles: []string{phpTaskQueueClnt}, Note: "§10.1 serialized task data."},
@@ -499,7 +508,7 @@ func ReverseScanFiles() []ReverseScanFile {
 		{
 			Path:            phpHeraldWorker,
 			NonContractKeys: []string{"webhookRequestPHID"},
-			Note:            "§9.1 payload construction. webhookRequestPHID is the key of the worker's own task data, on the phd path this service replaces, not a payload key.",
+			Note:            "Retired delivery compatibility sink. webhookRequestPHID identifies its task; receiver payload construction belongs to Go.",
 		},
 		{
 			Path:            phpDBClient,

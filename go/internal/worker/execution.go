@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/soulteary/gorge/go/internal/contracts"
 	"net/http"
+
+	"github.com/soulteary/gorge/go/internal/contracts"
 )
 
 // Completion carries successful work with its staged children. It is a
@@ -50,7 +51,7 @@ func (c *Client) RequireExecutionProtocol(ctx context.Context) error {
 	if err := c.doJSON(req, &meta); err != nil {
 		return err
 	}
-	if meta.ExecutionVersion != 1 {
+	if meta.ExecutionVersion != 1 || !meta.LeaseOutcomes {
 		return fmt.Errorf("taskqueue does not support execution protocol 1")
 	}
 	return nil
@@ -71,6 +72,17 @@ func (c *Client) Finalize(ctx context.Context, task *contracts.Task, result *Com
 	return c.doJSON(req, nil)
 }
 func (c *Client) Renew(ctx context.Context, task *contracts.Task, duration int) error {
+	if session, ok := ctx.Value(leaseSessionKey{}).(*leaseSession); ok {
+		if err := session.renew(ctx, duration); err != nil {
+			return err
+		}
+		updated, _ := session.snapshot()
+		task.LeaseExpires = updated.LeaseExpires
+		return nil
+	}
+	return c.renew(ctx, task, duration)
+}
+func (c *Client) renew(ctx context.Context, task *contracts.Task, duration int) error {
 	lease, err := executionLease(task)
 	if err != nil {
 		return err
@@ -92,4 +104,39 @@ func (c *Client) Renew(ctx context.Context, task *contracts.Task, duration int) 
 	}
 	task.LeaseExpires = updated.LeaseExpires
 	return nil
+}
+
+func (c *Client) Resolve(ctx context.Context, task *contracts.Task, outcome string, wait *int, duration int) error {
+	lease, err := executionLease(task)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(contracts.ResolveRequest{ExecutionLease: lease, Outcome: outcome, RetryWait: wait, Duration: duration})
+	if err != nil {
+		return err
+	}
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/queue/resolve", raw)
+	if err != nil {
+		return err
+	}
+	return c.doJSON(req, nil)
+}
+
+func (c *Client) EnqueueEvent(ctx context.Context, event *contracts.EnqueueEventRequest) (*contracts.Task, error) {
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return nil, err
+	}
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/queue/enqueue-event", raw)
+	if err != nil {
+		return nil, err
+	}
+	task := new(contracts.Task)
+	if err = c.doJSON(req, task); err != nil {
+		return nil, err
+	}
+	if task.ID <= 0 {
+		return nil, fmt.Errorf("queue omitted accepted event task")
+	}
+	return task, nil
 }

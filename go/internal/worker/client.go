@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,8 @@ type apiResponse struct {
 	Error *apiError       `json:"error,omitempty"`
 }
 
+var ErrLeaseConflict = errors.New("execution lease conflict")
+
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -70,42 +73,6 @@ func (c *Client) Lease(ctx context.Context, limit int, taskClasses []string) ([]
 		return nil, fmt.Errorf("lease: %w", err)
 	}
 	return tasks, nil
-}
-
-// Complete reports a task finished successfully, with its runtime in
-// microseconds.
-func (c *Client) Complete(ctx context.Context, taskID int64, durationUs int64) error {
-	body, _ := json.Marshal(contracts.CompleteRequest{TaskID: taskID, Duration: durationUs})
-	req, err := c.newRequest(ctx, http.MethodPost, "/api/queue/complete", body)
-	if err != nil {
-		return err
-	}
-	return c.doJSON(req, nil)
-}
-
-// Fail reports a task failed, permanently or temporarily. A temporary failure
-// with a nil retryWait uses the queue's configured default.
-func (c *Client) Fail(ctx context.Context, taskID int64, permanent bool, retryWait *int) error {
-	body, _ := json.Marshal(contracts.FailRequest{
-		TaskID:    taskID,
-		Permanent: permanent,
-		RetryWait: retryWait,
-	})
-	req, err := c.newRequest(ctx, http.MethodPost, "/api/queue/fail", body)
-	if err != nil {
-		return err
-	}
-	return c.doJSON(req, nil)
-}
-
-// Yield returns a task to the queue to be retried after durationSec seconds.
-func (c *Client) Yield(ctx context.Context, taskID int64, durationSec int) error {
-	body, _ := json.Marshal(contracts.YieldRequest{TaskID: taskID, Duration: durationSec})
-	req, err := c.newRequest(ctx, http.MethodPost, "/api/queue/yield", body)
-	if err != nil {
-		return err
-	}
-	return c.doJSON(req, nil)
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
@@ -142,6 +109,9 @@ func (c *Client) doJSON(req *http.Request, out any) error {
 		return fmt.Errorf("unmarshal (status %d): %w", resp.StatusCode, err)
 	}
 	if envelope.Error != nil {
+		if envelope.Error.Code == "ERR_LEASE_CONFLICT" {
+			return ErrLeaseConflict
+		}
 		return fmt.Errorf("api error [%s]: %s", envelope.Error.Code, envelope.Error.Message)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

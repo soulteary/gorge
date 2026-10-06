@@ -20,6 +20,9 @@ func (s *executionHTTPStore) Finalize(_ context.Context, req *contracts.Finalize
 	s.finalized = req
 	return s.err
 }
+func (s *executionHTTPStore) Resolve(_ context.Context, _ *contracts.ResolveRequest) error {
+	return s.err
+}
 func (s *executionHTTPStore) Renew(_ context.Context, req *contracts.RenewRequest) (*contracts.Task, error) {
 	return &contracts.Task{ID: req.TaskID, LeaseOwner: req.LeaseOwner, LeaseExpires: &req.LeaseExpires}, s.err
 }
@@ -38,7 +41,7 @@ func TestExecutionHTTPProtocol(t *testing.T) {
 	if meta.ExecutionVersion != 1 {
 		t.Fatal(meta)
 	}
-	for _, path := range []string{"/api/queue/meta", "/api/queue/finalize", "/api/queue/renew"} {
+	for _, path := range []string{"/api/queue/meta", "/api/queue/finalize", "/api/queue/renew", "/api/queue/resolve"} {
 		method := http.MethodPost
 		if path == "/api/queue/meta" {
 			method = http.MethodGet
@@ -53,9 +56,23 @@ func TestExecutionHTTPProtocol(t *testing.T) {
 	if resp.StatusCode != 200 || s.finalized == nil || len(s.finalized.Followups) != 1 {
 		t.Fatal(body)
 	}
+	for _, body := range []string{`{"taskID":1,"leaseOwner":"owner","leaseExpires":1234,"outcome":"unknown"}`, `{"taskID":1,"leaseOwner":"owner","leaseExpires":1234,"outcome":"retry","retryWait":-1}`} {
+		resp, response := post(t, app, "/api/queue/resolve", body)
+		if resp.StatusCode != 400 {
+			t.Fatal(response)
+		}
+	}
+	resp, body = post(t, app, "/api/queue/resolve", `{"taskID":1,"leaseOwner":"owner","leaseExpires":1234,"outcome":"yield","duration":20}`)
+	if resp.StatusCode != 200 {
+		t.Fatal(body)
+	}
 	s.err = ErrLeaseConflict
 	resp, body = post(t, app, "/api/queue/finalize", bodyReq)
 	if resp.StatusCode != 409 || envelope(t, body).Error.Code != "ERR_LEASE_CONFLICT" {
+		t.Fatal(body)
+	}
+	resp, body = post(t, app, "/api/queue/resolve", `{"taskID":1,"leaseOwner":"owner","leaseExpires":1234,"outcome":"retry"}`)
+	if resp.StatusCode != 409 {
 		t.Fatal(body)
 	}
 	resp, body = post(t, app, "/api/queue/renew", bodyReq)

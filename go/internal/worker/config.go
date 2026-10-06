@@ -30,6 +30,8 @@ type Config struct {
 	ConduitURL      string
 	ConduitToken    string
 	TaskClassFilter []string
+	OutboxDSN       string
+	FeedPolicyFile  string
 }
 
 // LoadFromEnv reads only the monorepo GORGE_WORKER_* contract. Standalone
@@ -50,6 +52,8 @@ func LoadFromEnv() *Config {
 		ConduitURL:   config.EnvStr("", "GORGE_WORKER_CONDUIT_URL"),
 		ConduitToken: config.EnvStr("", "GORGE_WORKER_CONDUIT_TOKEN"),
 
+		FeedPolicyFile:  config.EnvStr("", "GORGE_WORKER_FEED_POLICY_FILE"),
+		OutboxDSN:       config.EnvStr("", "GORGE_WORKER_OUTBOX_DSN"),
 		TaskClassFilter: splitCSV(config.EnvStr("", "GORGE_WORKER_TASK_CLASS_FILTER")),
 	}
 }
