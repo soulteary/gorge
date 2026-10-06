@@ -26,7 +26,7 @@ func main() {
 }
 func run() error {
 	store := &cleanup.Store{DBs: map[string]*sql.DB{}}
-	for _, role := range []string{"cache", "conduit", "daemon"} {
+	for _, role := range []string{"cache", "conduit", "daemon", "differential", "multimeter"} {
 		dsn := os.Getenv("GORGE_MAINTENANCE_" + strings.ToUpper(role) + "_DSN")
 		if dsn == "" {
 			continue
@@ -52,7 +52,7 @@ func run() error {
 		store.DBs[role] = db
 	}
 	if len(store.DBs) == 0 {
-		return fmt.Errorf("configure GORGE_MAINTENANCE_<CACHE|CONDUIT|DAEMON>_DSN")
+		return fmt.Errorf("configure GORGE_MAINTENANCE_<CACHE|CONDUIT|DAEMON|DIFFERENTIAL|MULTIMETER>_DSN")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

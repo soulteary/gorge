@@ -1,10 +1,10 @@
 # 日志与缓存清理
 
-`gorge-maintenance` 在 `:8200` 提供健康检查和只读清理状态，并在后台执行固定的 MySQL 分批删除。第一批登记六个清理器：`cache.general.ttl`、`cache.general`、`cache.markup`、`conduit.logs`、`daemon.processes`、`daemon.lock-log`。文件、认证、业务销毁、任务归档、outbox/inbox 回执不在范围内。
+`gorge-maintenance` 在 `:8200` 提供健康检查和只读清理状态，并在后台执行固定的 MySQL 分批删除。登记九个清理器：`cache.general.ttl`、`cache.general`、`cache.markup`、`conduit.logs`、`daemon.processes`、`daemon.lock-log`、`differential.parse`、`differential.viewstate`、`multimeter.events`。文件、认证、业务销毁、任务归档、outbox/inbox 回执不在范围内。
 
 ## 配置与执行权
 
-`GORGE_MAINTENANCE_CACHE_DSN`、`GORGE_MAINTENANCE_CONDUIT_DSN`、`GORGE_MAINTENANCE_DAEMON_DSN` 分别指向 Phorge 的对应数据库主库。可以只配置一个角色，但要导入该角色全部登记项。DSN 必须包含数据库名，禁止 multiStatements。`GORGE_SERVICE_TOKEN` 非空；状态接口仅接受 `X-Service-Token`，不接受 URL token。`GORGE_LISTEN_ADDR` 默认为 `:8200`。
+`GORGE_MAINTENANCE_CACHE_DSN`、`GORGE_MAINTENANCE_CONDUIT_DSN`、`GORGE_MAINTENANCE_DAEMON_DSN` 以及 `GORGE_MAINTENANCE_DIFFERENTIAL_DSN`、`GORGE_MAINTENANCE_MULTIMETER_DSN` 分别指向 Phorge 的对应数据库主库。新增角色必须先执行 storage upgrade，以建立控制表和 Multimeter 前导 epoch 索引。Webhook 投递历史、Herald 字段裁剪仍不在本次范围。可以只配置一个角色，但要导入该角色全部登记项。DSN 必须包含数据库名，禁止 multiStatements。`GORGE_SERVICE_TOKEN` 非空；状态接口仅接受 `X-Service-Token`，不接受 URL token。`GORGE_LISTEN_ADDR` 默认为 `:8200`。
 
 每个目标库包含 `gorge_gc_control`。控制行和目标表都必须是 InnoDB，使用同一个本地事务；控制状态不放到另一台服务器。服务账号需要目标表的 SELECT/DELETE 和控制表的 SELECT/INSERT/UPDATE，不需要 CREATE、DROP、ALTER。只连接写主库，不路由到读副本。检查 MySQL read_only；Phorge 应用进入只读维护前应先 pause 已移交的清理器。
 
@@ -63,3 +63,12 @@ pause → 修改 → 重新导出/import → resume；这些入口不能自动�
 跨仓库检查已接入 Gorge 的 Contract drift 工作流和 Phorge 的 runtime contracts。
 前者支持两个仓库 ref，后者支持 gorge_ref。PHP 先运行真实 MySQL 测试并生成导出，
 Go 再验证该导出和 PHP 迁移 DDL；所需文件缺失会失败，不能以跳过代替通过。
+
+## 新增技术清理器
+
+`differential.parse` 默认保留 14 天，`differential.viewstate` 默认 180 天，
+`multimeter.events` 默认 90 天，仍以 PHP 有效策略导出为准。解析缓存的目标是
+`differential_changeset_parse_cache`，不是业务 changeset 表。
+生产覆盖配置要求五个角色 DSN，启动检查要求九项均 owner=gorge；
+仅开启部分角色时不要使用全量生产切换配置，导入文件也应仅包含对应角色策略。
+新增控制表位于 20261007 differential/multimeter 迁移；Multimeter 同时添加 epoch 索引。

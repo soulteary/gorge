@@ -63,7 +63,7 @@ func fixture(t *testing.T) (*Store, *sql.DB) {
 		}
 		exec("CREATE TABLE `" + spec.Table + "` (id BIGINT UNSIGNED PRIMARY KEY,`" + spec.Column + "` BIGINT UNSIGNED NOT NULL, KEY t(`" + spec.Column + "`)) ENGINE=InnoDB")
 	}
-	store := &Store{DBs: map[string]*sql.DB{"cache": db, "conduit": db, "daemon": db}}
+	store := &Store{DBs: map[string]*sql.DB{"cache": db, "conduit": db, "daemon": db, "differential": db, "multimeter": db}}
 	for _, spec := range Specs() {
 		if err := store.Import(context.Background(), policy(spec.ID)); err != nil {
 			t.Fatal(err)
@@ -464,5 +464,52 @@ func TestPendingPolicyRequiresImport(t *testing.T) {
 	}
 	if err := s.SetOwner(ctx, id, "gorge"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// New technical collectors must preserve refreshed/boundary rows and obey the
+// same owner fence as existing collectors; do not use unbounded ID deletion.
+func TestMySQLTechnicalCollectors(t *testing.T) {
+	for _, id := range []string{"differential.parse", "differential.viewstate", "multimeter.events"} {
+		t.Run(id, func(t *testing.T) {
+			s, db := fixture(t)
+			ctx := context.Background()
+			spec, err := Lookup(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ValidateSchema(ctx, id); err != nil {
+				t.Fatal(err)
+			}
+			enable(t, s, id)
+			l, err := s.Claim(ctx, id, "technical", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = db.Exec("INSERT INTO `"+spec.Table+"` (id,`"+spec.Column+"`) VALUES (1,?),(2,?),(3,?)", l.Cutoff-1, l.Cutoff, l.Cutoff+3600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n, err := s.Batch(ctx, l, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Fatalf("deleted %d, want only expired row", n)
+			}
+			if err := s.SetOwner(ctx, id, "paused"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Batch(ctx, l, 100); err == nil {
+				t.Fatal("paused collector accepted stale lease")
+			}
+			var remaining int
+			if err := db.QueryRow("SELECT COUNT(*) FROM `" + spec.Table + "`").Scan(&remaining); err != nil {
+				t.Fatal(err)
+			}
+			if remaining != 2 {
+				t.Fatalf("remaining %d, want 2", remaining)
+			}
+		})
 	}
 }

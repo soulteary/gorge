@@ -17,6 +17,9 @@ var specs = []Spec{
 	{"conduit.logs", "conduit", "conduit_methodcalllog", "dateCreated"},
 	{"daemon.processes", "daemon", "daemon_logevent", "epoch"},
 	{"daemon.lock-log", "daemon", "daemon_locklog", "dateCreated"},
+	{"differential.parse", "differential", "differential_changeset_parse_cache", "dateCreated"},
+	{"differential.viewstate", "differential", "differential_viewstate", "dateModified"},
+	{"multimeter.events", "multimeter", "multimeter_event", "epoch"},
 }
 
 func Specs() []Spec { return append([]Spec(nil), specs...) }

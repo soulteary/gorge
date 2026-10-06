@@ -25,7 +25,7 @@ func TestPHPExportCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(e.Policies) != 6 {
+	if len(e.Policies) != len(Specs()) {
 		t.Fatal("PHP registry drift")
 	}
 }
@@ -34,8 +34,12 @@ func TestPHPControlSchemaContract(t *testing.T) {
 	if root == "" {
 		t.Skip("set PHORGE_FORK_DIR for paired migration check")
 	}
-	for _, role := range []string{"cache", "conduit", "daemon"} {
-		raw, err := os.ReadFile(filepath.Join(root, "resources/sql/autopatches/20261006."+role+".01.gorgecleanup.sql"))
+	for _, role := range []string{"cache", "conduit", "daemon", "differential", "multimeter"} {
+		date := "20261006"
+		if role == "differential" || role == "multimeter" {
+			date = "20261007"
+		}
+		raw, err := os.ReadFile(filepath.Join(root, "resources/sql/autopatches/"+date+"."+role+".01.gorgecleanup.sql"))
 		if err != nil {
 			t.Fatal(err)
 		}
