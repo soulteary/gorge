@@ -48,7 +48,7 @@ func TestHubPublishAndHistory(t *testing.T) {
 
 	h.Publish("default", msg)
 
-	history := h.GetHistory(time.Now().Add(-time.Second))
+	history := h.GetHistory("default", time.Now().Add(-time.Second))
 	if len(history) != 1 {
 		t.Fatalf("expected 1 history entry, got %d", len(history))
 	}
@@ -63,10 +63,10 @@ func TestHistoryIsScopedByAge(t *testing.T) {
 	h := New()
 	h.Publish("default", Message{"key": "old"})
 
-	if got := h.GetHistory(time.Now().Add(time.Second)); len(got) != 0 {
+	if got := h.GetHistory("default", time.Now().Add(time.Second)); len(got) != 0 {
 		t.Errorf("expected nothing at or after a future cutoff, got %d entries", len(got))
 	}
-	if got := h.GetHistory(time.Now().Add(-time.Second)); len(got) != 1 {
+	if got := h.GetHistory("default", time.Now().Add(-time.Second)); len(got) != 1 {
 		t.Errorf("expected 1 entry within the window, got %d", len(got))
 	}
 }
@@ -132,7 +132,7 @@ func TestHubHistoryPurge(t *testing.T) {
 		h.Publish("default", Message{"key": i})
 	}
 
-	history := h.GetHistory(time.Now().Add(-time.Second))
+	history := h.GetHistory("default", time.Now().Add(-time.Second))
 	if len(history) != 10 {
 		t.Fatalf("expected 10, got %d", len(history))
 	}
@@ -151,7 +151,7 @@ func TestHistoryPurgeHonoursTheSizeLimit(t *testing.T) {
 		t.Errorf("expected the history capped at %d, got %d", historySizeLimit, got)
 	}
 	// The oldest entries are the ones dropped.
-	history := h.GetHistory(time.Now().Add(-time.Minute))
+	history := h.GetHistory("default", time.Now().Add(-time.Minute))
 	if len(history) == 0 {
 		t.Fatal("expected history entries")
 	}
@@ -196,5 +196,24 @@ func TestListenerIDsAreUnique(t *testing.T) {
 			t.Fatalf("id %d handed out twice", id)
 		}
 		seen[id] = struct{}{}
+	}
+}
+
+func TestHistoryAndStatusDoNotExposeOtherInstances(t *testing.T) {
+	h := New()
+	h.Publish("other", Message{"key": "foreign"})
+	status := h.Status("default")
+	if status.HistorySize != 0 || status.HistoryAge != nil {
+		t.Fatal("foreign history exposed in status")
+	}
+	if got := h.GetHistory("default", time.Now().Add(-time.Minute)); len(got) != 0 {
+		t.Fatal("foreign history exposed")
+	}
+	h.Publish("default", Message{"key": "local"})
+	if got := h.GetHistory("default", time.Now().Add(-time.Minute)); len(got) != 1 || got[0]["key"] != "local" {
+		t.Fatalf("wrong instance history: %v", got)
+	}
+	if h.Status("default").HistorySize != 1 {
+		t.Fatal("status does not match replayable history")
 	}
 }

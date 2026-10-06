@@ -70,7 +70,7 @@ func serveClient(deps *ClientDeps) fiber.Handler {
 			slog.Info("client disconnected", "listener", listener.ID(), "instance", instance)
 		}()
 
-		readLoop(deps.Hub, listener)
+		readLoop(deps.Hub, listener, instance)
 	}, websocket.Config{AllowEmptyOrigin: true})
 
 	return func(c fiber.Ctx) error {
@@ -109,7 +109,7 @@ const localInstance = "notification_instance"
 // Aphlict answered nothing either, and a browser has no way to act on a
 // protocol complaint; the alternative would be closing connections over a
 // version skew between the JS client and this service.
-func readLoop(h *hub.Hub, l *hub.Listener) {
+func readLoop(h *hub.Hub, l *hub.Listener, instance string) {
 	for {
 		data, err := l.ReadMessage()
 		if err != nil {
@@ -138,7 +138,7 @@ func readLoop(h *hub.Hub, l *hub.Listener) {
 			}
 
 		case "replay":
-			if err := replay(h, l, cmd.Data); err != nil {
+			if err := replay(h, l, instance, cmd.Data); err != nil {
 				return
 			}
 
@@ -152,7 +152,7 @@ func readLoop(h *hub.Hub, l *hub.Listener) {
 // by what it has subscribed to. A write failure ends the session rather than
 // being skipped: the client is already gone, and every remaining message would
 // fail the same way.
-func replay(h *hub.Hub, l *hub.Listener, data json.RawMessage) error {
+func replay(h *hub.Hub, l *hub.Listener, instance string, data json.RawMessage) error {
 	var opts struct {
 		Age int64 `json:"age"`
 	}
@@ -161,7 +161,7 @@ func replay(h *hub.Hub, l *hub.Listener, data json.RawMessage) error {
 	}
 
 	minAge := time.Now().Add(-time.Duration(opts.Age) * time.Millisecond)
-	for _, msg := range h.GetHistory(minAge) {
+	for _, msg := range h.GetHistory(instance, minAge) {
 		subscribers, _ := hub.ToStringSlice(msg["subscribers"])
 		if len(subscribers) > 0 && !l.IsSubscribedToAny(subscribers) {
 			continue

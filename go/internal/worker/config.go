@@ -21,17 +21,19 @@ const (
 
 type Config struct {
 	config.Base
-	TaskQueueURL    string
-	TaskQueueToken  string
-	LeaseLimit      int
-	PollIntervalMs  int
-	MaxWorkers      int
-	IdleTimeoutSec  int
-	ConduitURL      string
-	ConduitToken    string
-	TaskClassFilter []string
-	OutboxDSN       string
-	FeedPolicyFile  string
+	TaskQueueURL           string
+	TaskQueueToken         string
+	LeaseLimit             int
+	PollIntervalMs         int
+	MaxWorkers             int
+	IdleTimeoutSec         int
+	ConduitURL             string
+	ConduitToken           string
+	TaskClassFilter        []string
+	OutboxDSN              string
+	NotificationPolicyFile string
+	NotificationMode       string
+	FeedPolicyFile         string
 }
 
 // LoadFromEnv reads only the monorepo GORGE_WORKER_* contract. Standalone
@@ -52,9 +54,11 @@ func LoadFromEnv() *Config {
 		ConduitURL:   config.EnvStr("", "GORGE_WORKER_CONDUIT_URL"),
 		ConduitToken: config.EnvStr("", "GORGE_WORKER_CONDUIT_TOKEN"),
 
-		FeedPolicyFile:  config.EnvStr("", "GORGE_WORKER_FEED_POLICY_FILE"),
-		OutboxDSN:       config.EnvStr("", "GORGE_WORKER_OUTBOX_DSN"),
-		TaskClassFilter: splitCSV(config.EnvStr("", "GORGE_WORKER_TASK_CLASS_FILTER")),
+		NotificationMode:       config.EnvStr("auto", "GORGE_WORKER_NOTIFICATION_MODE"),
+		NotificationPolicyFile: config.EnvStr("", "GORGE_WORKER_NOTIFICATION_POLICY_FILE"),
+		FeedPolicyFile:         config.EnvStr("", "GORGE_WORKER_FEED_POLICY_FILE"),
+		OutboxDSN:              config.EnvStr("", "GORGE_WORKER_OUTBOX_DSN"),
+		TaskClassFilter:        splitCSV(config.EnvStr("", "GORGE_WORKER_TASK_CLASS_FILTER")),
 	}
 }
 

@@ -15,3 +15,37 @@
 就绪检查现在验证 queue 的 v1 生命周期能力、配置的政策文件和 outbox
 表。健康检查仍只表示存活。首次升级时缺少表会使 /readyz 返回失败，但
 /healthz 不受影响；迁移角色不能依赖 Worker ready，避免首启闭环。
+
+## Native realtime notification delivery
+
+`GORGE_WORKER_NOTIFICATION_POLICY_FILE` points to the atomic deployment-owned
+`notification-policy.json`. `GORGE_WORKER_NOTIFICATION_MODE` supports `auto`
+(native when a policy path exists), `delegated`, `shadow`, and `native`.
+Shadow validates only, then delegates to PHP; it never sends a second request.
+The native handler is registered independently of Conduit and supports both
+legacy `{message: ...}` and version 1 delivery envelopes. Missing legacy IDs
+are derived from instance/task ID and remain stable across retries.
+
+Policy schema: `{"version":1,"mode":"required","instance":"default","endpoints":[]}`.
+Only private `type:notification` messages with nonempty subscribers are accepted;
+invalid messages cannot become broadcasts. Instance must match the deployment.
+Unknown message fields and producer uniqueIDs survive unchanged. Each endpoint
+uses a 2-second timeout, pooled HTTP connections, and no redirects. HTTP success
+means service acceptance, not browser delivery. Authentication failures retry
+and never degrade silently. Other failures retry after 60 seconds in required
+mode, or complete with a degraded counter in fallback mode. Off suppresses
+sending. Empty endpoints preserve PHP's no-op behavior with a warning/counter.
+`phabricator.silent` does not independently suppress notifications.
+
+Authenticated `/api/worker/notification-stats` reports process lifetime counters
+for accepted, degraded, suppressed, retry, invalid, policyError, shadowError and
+noEndpoints outcomes. Native lease heartbeats/fenced outcomes use the common
+consumer. No durable notification receipt or exactly-once browser delivery is
+introduced; peer fingerprints prevent loops, not request retries.
+
+The native handler covers Feed `type:notification` tasks. Conpherence `message`
+and Maniphest `workboards` still publish directly from PHP and are not silently
+reclassified as Feed messages. Migrating those producers requires their own
+transaction/outbox boundaries before the PHP notification client can retire.
+Replay and history statistics are filtered by the WebSocket/request instance;
+matching PHIDs and unaddressed broadcasts cannot cross instance boundaries.

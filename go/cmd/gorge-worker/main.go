@@ -32,6 +32,11 @@ func main() {
 	registry := worker.NewRegistry()
 	handlers.RegisterWithFeedPolicy(registry, cfg.ConduitURL, cfg.ConduitToken, cfg.FeedPolicyFile, client)
 
+	if err := handlers.RegisterNotificationMode(registry, cfg.NotificationPolicyFile, cfg.NotificationMode); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	consumer := worker.NewConsumer(client, registry, cfg)
 
 	var outboxDB *sql.DB
@@ -52,6 +57,11 @@ func main() {
 			if err := client.RequireExecutionProtocol(ctx); err != nil {
 				return err
 			}
+			if cfg.NotificationPolicyFile != "" && cfg.NotificationMode != "delegated" && cfg.NotificationMode != "shadow" {
+				if err := handlers.ValidateNotificationPolicy(cfg.NotificationPolicyFile); err != nil {
+					return err
+				}
+			}
 			if cfg.FeedPolicyFile != "" {
 				if err := handlers.ValidateFeedPolicy(cfg.FeedPolicyFile); err != nil {
 					return err
@@ -69,8 +79,9 @@ func main() {
 	})
 
 	worker.RegisterRoutes(srv.App(), &worker.Deps{
-		Consumer: consumer,
-		Token:    cfg.ServiceToken,
+		Consumer:          consumer,
+		Token:             cfg.ServiceToken,
+		NotificationStats: handlers.NotificationStats,
 	})
 
 	// One signal stops both halves: srv.Run returns on SIGINT or SIGTERM, and

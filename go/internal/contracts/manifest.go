@@ -86,7 +86,7 @@ const (
 	phpHeraldWorker   = "src/applications/herald/worker/HeraldWebhookWorker.php"
 	phpWorkerTask     = "src/infrastructure/daemon/workers/storage/PhabricatorWorkerTask.php"
 	phpWorkerExecute  = "src/infrastructure/daemon/workers/conduit/PhabricatorWorkerExecuteConduitAPIMethod.php"
-	phpFeedPublisher  = "src/applications/feed/PhabricatorFeedStoryPublisher.php"
+	phpFeedPublisher  = "src/applications/feed/worker/FeedPublisherWorker.php"
 )
 
 // Manifest returns the whole cross-repository contract register. It is a

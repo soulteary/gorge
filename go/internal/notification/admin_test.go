@@ -136,7 +136,7 @@ func TestPostMessageAnswersABareReceipt(t *testing.T) {
 		t.Errorf("fingerprint = %v, want %q", body["fingerprint"], peers.Fingerprint())
 	}
 
-	history := messages.GetHistory(time.Now().Add(-time.Second))
+	history := messages.GetHistory("default", time.Now().Add(-time.Second))
 	if len(history) != 1 {
 		t.Fatalf("expected the message to be published, got %d history entries", len(history))
 	}
@@ -228,7 +228,7 @@ func TestContentTypeIsIgnored(t *testing.T) {
 				t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body)
 			}
 
-			history := messages.GetHistory(time.Now().Add(-time.Second))
+			history := messages.GetHistory("default", time.Now().Add(-time.Second))
 			if len(history) != 1 {
 				t.Fatalf("expected the message to be published, got %d history entries", len(history))
 			}
@@ -253,7 +253,7 @@ func TestMessageAlreadyStampedIsNotRepublished(t *testing.T) {
 	if body := decodeBare(t, rec); body["fingerprint"] != peers.Fingerprint() {
 		t.Errorf("expected the receipt to be answered anyway, got %v", body)
 	}
-	if history := messages.GetHistory(time.Now().Add(-time.Second)); len(history) != 0 {
+	if history := messages.GetHistory("default", time.Now().Add(-time.Second)); len(history) != 0 {
 		t.Errorf("expected nothing published, got %d history entries", len(history))
 	}
 }

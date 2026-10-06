@@ -443,3 +443,26 @@ func TestParseInstance(t *testing.T) {
 		}
 	}
 }
+
+func TestReplayIsolatedByInstance(t *testing.T) {
+	baseURL, messages := newClientServer(t)
+	for _, instance := range []string{"default", "other", "tenant"} {
+		// Same recipient across instances, plus unaddressed broadcasts: neither
+		// subscription filtering nor missing recipients should cross tenant bounds.
+		messages.Publish(instance, hub.Message{"type": "notification", "key": instance, "subscribers": []string{"PHID-USER-mine"}})
+		messages.Publish(instance, hub.Message{"type": "notification", "key": instance + "-broadcast"})
+	}
+	conn := dialTo(t, baseURL, "/~tenant/")
+	sendCommand(t, conn, "subscribe", []string{"PHID-USER-mine"})
+	sendCommand(t, conn, "replay", nil)
+	if got := readMessage(t, conn); got["key"] != "tenant" {
+		t.Fatalf("cross-instance replay: %v", got)
+	}
+	if got := readMessage(t, conn); got["key"] != "tenant-broadcast" {
+		t.Fatalf("cross-instance broadcast: %v", got)
+	}
+	sendCommand(t, conn, "ping", nil)
+	if got := readMessage(t, conn); got["type"] != "pong" {
+		t.Fatalf("extra foreign replay: %v", got)
+	}
+}

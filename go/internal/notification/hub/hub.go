@@ -34,6 +34,7 @@ const (
 type Message map[string]any
 
 type historyEntry struct {
+	instance  string
 	timestamp time.Time
 	message   Message
 }
@@ -155,6 +156,7 @@ func (h *Hub) Publish(instance string, msg Message) {
 
 	h.mu.Lock()
 	h.history = append(h.history, historyEntry{
+		instance:  instance,
 		timestamp: time.Now(),
 		message:   msg,
 	})
@@ -181,14 +183,15 @@ func (h *Hub) Publish(instance string, msg Message) {
 	}
 }
 
-// GetHistory returns the messages recorded at or after minAge, oldest first.
-func (h *Hub) GetHistory(minAge time.Time) []Message {
+// GetHistory returns only this instance's messages recorded at or after
+// minAge, oldest first. Both addressed messages and broadcasts are isolated.
+func (h *Hub) GetHistory(instance string, minAge time.Time) []Message {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	var results []Message
 	for _, e := range h.history {
-		if !e.timestamp.Before(minAge) {
+		if e.instance == instance && !e.timestamp.Before(minAge) {
 			results = append(results, e.message)
 		}
 	}
@@ -237,10 +240,15 @@ func (h *Hub) Status(instance string) *contracts.AphlictStatus {
 	}
 
 	h.mu.RLock()
-	status.HistorySize = len(h.history)
-	if len(h.history) > 0 {
-		age := int64(time.Since(h.history[0].timestamp) / time.Millisecond)
-		status.HistoryAge = &age
+	for _, entry := range h.history {
+		if entry.instance != instance {
+			continue
+		}
+		status.HistorySize++
+		if status.HistoryAge == nil {
+			age := int64(time.Since(entry.timestamp) / time.Millisecond)
+			status.HistoryAge = &age
+		}
 	}
 	h.mu.RUnlock()
 

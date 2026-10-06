@@ -9,8 +9,9 @@ import (
 
 // Deps is everything the worker's status route needs.
 type Deps struct {
-	Consumer *Consumer
-	Token    string
+	Consumer          *Consumer
+	Token             string
+	NotificationStats func() any
 }
 
 // RegisterRoutes mounts the worker status endpoint under /api/worker.
@@ -23,6 +24,9 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g.Use(auth.Token(deps.Token))
 
 	g.Get("/stats", stats(deps))
+	if deps.NotificationStats != nil {
+		g.Get("/notification-stats", func(c fiber.Ctx) error { return httpx.OK(c, deps.NotificationStats()) })
+	}
 }
 
 // stats answers this worker's lifetime counters and supported classes.
