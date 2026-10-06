@@ -75,6 +75,13 @@ func main() {
 		relayWG.Add(1)
 		go func() { defer relayWG.Done(); relay.Run(relayCtx) }()
 	}
+	if cfg.Projection != nil && cfg.Projection.Rebuild {
+		relayWG.Add(1)
+		go func() {
+			defer relayWG.Done()
+			(&projection.MySQLStore{DB: controlDB}).RunRebuilds(relayCtx, ingress.Namespace, fmt.Sprintf("rebuild-%d", time.Now().UnixNano()), ingress.Targets)
+		}()
+	}
 	for _, worker := range workers {
 		relayWG.Add(1)
 		go func() { defer relayWG.Done(); worker.Run(relayCtx) }()

@@ -51,8 +51,10 @@ original business edit in another database. Callers must build live snapshots
 under the existing object index lock. The publisher serializes publication, not
 all source reads. Its default source token is the content hash; this is not a
 complete business dependency version. `search.export` remains an unmaterialized
-preview. Deletion capture has an explicit helper, but is not yet wired into the
-object destruction transaction; export `missing` remains non-authoritative.
+preview. Deletion capture now has a pre-destruction intent and primary-source recovery
+for Lisk fulltext objects destroyed through PhabricatorDestructionEngine (see
+below). It is not a distributed business transaction; export `missing` remains
+non-authoritative.
 
 ## Versioned protocol
 
@@ -155,10 +157,10 @@ The module supports opt-in ES shadow delivery. Production cutover blockers are:
 
 - Meili task receipts and unknown-submit/lane recovery remain unimplemented;
 - generation validation, read activation and rollback remain unimplemented;
-- source transactions, authoritative destruction and dependency invalidation are
-  not covered by shadow capture; default sourceVersion is only a document hash;
+- business dirty intents and dependency invalidation are not covered by shadow
+  capture; destruction capture covers only the engine-mediated Lisk fulltext
+  path, not direct SQL or other deletion paths; upsert sourceVersion is a hash;
 - rebuild scan/job/barrier/validation/activation/rollback remain unimplemented;
-- the legacy CLI force flag does not request a forced projection revision;
 - periodic backend health, operational alerting and cleanup policies still
   need integration before production operational use;
 - tests still need actual PHP concurrent publishers, Worker capture-failure
@@ -324,3 +326,110 @@ source failures, and actual heartbeat takeover cancelling an in-flight writer
 without changing the new owner's lease. ES conflict verification now requires
 an explicit delete marker and a valid hash before classifying a replay/newer
 version; missing metadata is never treated as a successful write.
+
+## Forced CLI reindex
+
+The existing `bin/search index --force` parameter now travels through the
+fulltext extension and built document to shadow capture. It reserves a fresh
+projection revision even when serialized content is unchanged. Background tasks
+carry the same parameter. The flag is execution metadata only: it changes
+neither the wire document nor its content hash. Normal indexing still reuses an
+unchanged event. This does not implement rebuild generations or their barriers.
+
+PHP projection tests cover extension propagation and hash stability; the real
+MySQL outbox contract exercises the storage adapter's capture path before
+backend host selection and verifies the forced revision.
+
+## Recoverable authoritative destruction (shadow)
+
+Apply `20261006.search.02.gorgedeletion.sql` before enabling capture on any PHP
+node. With `gorge.search.projection-shadow=true`, the destruction engine takes
+the same namespace/PHID index lock as SearchWorker, commits a search-database
+intent, and then runs the existing object destruction. Intent insertion failure
+stops destruction. A committed source absence is confirmed directly against the
+source DAO's writer connection, without viewer policies, replicas or export
+`missing`. Only then does a transaction publish the deletion projection/outbox
+and complete the intent. The source deletion and search intent are deliberately
+separate commits: the earlier durable intent repairs the crash window.
+
+If destruction fails while the source still exists, the intent remains pending
+and no tombstone is emitted. Database/table errors and retired source classes
+also remain pending. Existing source/search transactions are rejected before
+intent capture; recovery never publishes from an uncommitted source deletion.
+This first boundary supports only Lisk fulltext objects entering the destruction
+engine. Direct SQL deletion, non-Lisk objects, and domain flows with an outer
+transaction need separate integration; they are not silently considered covered.
+
+TriggerDaemon recovers at most 32 due intents per pass while capture is enabled,
+with a 60-second retry interval and per-object locks. Poison rows are deferred
+without blocking the rest of a batch. A manual bounded pass is available:
+
+```sh
+php scripts/setup/recover_gorge_search_deletions.php
+```
+
+Disabling capture pauses automatic recovery without discarding intents. Keep
+completed intents and projection receipts for now; no retention/cleanup policy
+is introduced. Recovery can emit new tombstones, so this command is not a
+read-only audit. It never deletes business objects. Use a database backup and
+complete the shadow comparison before production activation.
+
+`tests/contract/search/deletion.php` uses disposable MySQL databases to cover
+source-present suppression, post-source-commit recovery, atomic publication
+rollback, replay, no-intent absence, source table errors, caller rollback, poison
+row isolation, and the actual destruction engine's pre-intent/crash behavior.
+Real process termination and cross-database concurrent restoration remain
+additional production acceptance tests; the rebuild controller is still absent.
+
+## Durable generation backfill (opt-in)
+
+This is a resumable **control-head backfill**, not a complete business-source
+rebuild. Apply `resources/sql/search/rebuild.sql` to the control database and set
+`projection.rebuild:true` alongside configured ES delivery generations. Startup
+fails if either new table is absent or no delivery backend is configured. Default
+false keeps existing deployments unchanged. Do not confuse this schema with the
+PHP source database migrations. Existing CI MySQL tests exercise the new schema.
+
+Authenticated endpoints (header token only):
+
+- `POST /api/search/projections/rebuilds` with
+  `{"jobID":"backfill-g2","backendID":"es-shadow","generationID":"g2"}`
+  creates an immutable job against a configured, bound target. Repeating the same
+  ID/target returns its persisted cursor; a different target conflicts.
+- `GET /api/search/projections/rebuilds/backfill-g2` reads durable progress.
+- `POST /api/search/projections/rebuilds/backfill-g2/check` persists a repeatable-read
+  checkpoint of current control heads and their exact target revision receipts.
+
+The background runner captures an upper PHID, scans at most 32 heads per page,
+uses stable per-job/PHID/revision event IDs, and advances its cursor only after
+all acceptances commit. A partial page or process crash replays safely. SQL
+ownership/epoch/expiry fence cursor updates; a page has a 20-second deadline
+inside a 30-second lease. Failed pages defer 30 seconds. Multi-instance ownership
+serializes job progress; only currently configured targets are scheduled, so
+removing a target or disabling rebuild pauses work without deleting its cursor; pending jobs rotate rather than monopolizing the runner.
+
+After the captured range is scanned, `awaiting-delivery` remains a repair phase.
+Every 60 seconds it fills missing current-revision deliveries, including late
+lower-PHID objects and new revisions. Tombstones are copied with their original
+revision/source identity; old versions cannot resurrect deleted backend objects.
+The original inbox receipts are never rewritten. A new target receives separate
+rebuild receipts; unchanged source replay does not implicitly retarget history.
+
+A checkpoint reports `knownHeads`, `unappliedHeads`, `transportCaughtUp`, and
+its persisted `checkID/observedEpoch`. Only exact current revisions with
+`status:applied` count. Pending/running/superseded receipts cannot satisfy this
+check. New events can invalidate a prior checkpoint, so re-check current state.
+Backend acceptance is not a refresh/query-equivalence guarantee.
+
+`sourceCoverageVerified:false` and `activationAllowed:false` are deliberate and
+cannot be enabled by the API. Missing business objects that have never emitted a
+projection are invisible to this scan. There is no live-read activation endpoint.
+Authoritative domain-class enumeration, bounded source scanning/materialization,
+dirty-intent barriers, backend query comparison, activation and rollback remain
+required before retiring synchronous PHP indexing. Job/check/receipt retention
+and cancellation are not implemented; keep their rows during shadow rollout.
+
+The real MySQL suite covers partial-page fault injection, restart replay,
+concurrent claims, target conflicts, pending/applied checkpoints, late/new-version
+repair, and expired-lease takeover. These validate the control transport boundary;
+this change does not claim to have tested a real ES rebuild or production cutover.

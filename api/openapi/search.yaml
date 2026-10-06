@@ -36,7 +36,7 @@ info:
     `tests/contract/search/`. Every field name below is camelCase and every one
     of them is a compatibility surface — with a single documented exception,
     `storage_bytes`, described on `IndexStats`.
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -441,6 +441,82 @@ paths:
         '200':
           $ref: '#/components/responses/HealthOK'
 
+  /api/search/projections/rebuilds:
+    post:
+      summary: Create or resume a durable control-head backfill
+      description: Opt-in only. Requires a configured bound target. Does not scan business sources or activate reads.
+      security:
+        - ServiceTokenHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [jobID, backendID, generationID]
+              properties:
+                jobID: {type: string, maxLength: 64}
+                backendID: {type: string, maxLength: 64}
+                generationID: {type: string, maxLength: 64}
+      responses:
+        '200':
+          description: Persisted job in the data envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/RebuildJob'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: Rebuild disabled or target not bound}
+        '409': {description: Job ID belongs to another target}
+        '503': {description: Control database unavailable}
+
+  /api/search/projections/rebuilds/{jobID}:
+    get:
+      summary: Read a persisted backfill cursor
+      security:
+        - ServiceTokenHeader: []
+      parameters:
+        - {name: jobID, in: path, required: true, schema: {type: string, maxLength: 64}}
+      responses:
+        '200':
+          description: Persisted job in the data envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/RebuildJob'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: Job not found or rebuild disabled}
+        '503': {description: Control database unavailable}
+
+  /api/search/projections/rebuilds/{jobID}/check:
+    post:
+      summary: Persist an observed control-transport checkpoint
+      description: Current applied revisions only. Source coverage and production activation remain false. A later update can invalidate this observation.
+      security:
+        - ServiceTokenHeader: []
+      parameters:
+        - {name: jobID, in: path, required: true, schema: {type: string, maxLength: 64}}
+      responses:
+        '200':
+          description: Observed checkpoint in the data envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/RebuildCheck'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: Job not found or rebuild disabled}
+        '503': {description: Control database unavailable}
+
 components:
 
   securitySchemes:
@@ -460,6 +536,31 @@ components:
         `X-Service-Token` is absent.
 
   schemas:
+
+    RebuildJob:
+      type: object
+      properties:
+        namespace: {type: string}
+        jobID: {type: string}
+        backendID: {type: string}
+        generationID: {type: string}
+        upperPHID: {type: string}
+        cursorPHID: {type: string}
+        status: {type: string, enum: [scanning, awaiting-delivery]}
+        pages: {type: integer, format: int64, minimum: 0}
+        sourceCoverageVerified: {type: boolean, enum: [false]}
+
+    RebuildCheck:
+      type: object
+      properties:
+        job: {$ref: '#/components/schemas/RebuildJob'}
+        knownHeads: {type: integer, format: int64, minimum: 0}
+        unappliedHeads: {type: integer, format: int64, minimum: 0}
+        transportCaughtUp: {type: boolean}
+        activationAllowed: {type: boolean, enum: [false]}
+        observedEpoch: {type: integer, format: int64}
+        checkID: {type: integer, format: int64}
+
 
     DocumentField:
       type: object

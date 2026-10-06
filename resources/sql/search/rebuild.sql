@@ -1,0 +1,17 @@
+CREATE TABLE IF NOT EXISTS search_projection_rebuild (
+ namespace VARBINARY(64) NOT NULL, jobID VARBINARY(64) NOT NULL,
+ backendID VARBINARY(64) NOT NULL, generationID VARBINARY(64) NOT NULL,
+ upperPHID VARBINARY(64) NOT NULL, cursorPHID VARBINARY(64) NOT NULL DEFAULT '',
+ status VARBINARY(32) NOT NULL DEFAULT 'scanning', pages BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ leaseOwner VARBINARY(64) NOT NULL DEFAULT '', leaseEpoch BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ leaseExpires BIGINT NOT NULL DEFAULT 0, nextAttempt BIGINT NOT NULL DEFAULT 0,
+ createdEpoch BIGINT NOT NULL,
+ PRIMARY KEY(namespace,jobID), KEY key_pending(namespace,status,nextAttempt,leaseExpires)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS search_projection_rebuild_check (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ namespace VARBINARY(64) NOT NULL, jobID VARBINARY(64) NOT NULL,
+ knownHeads BIGINT UNSIGNED NOT NULL, unappliedHeads BIGINT UNSIGNED NOT NULL,
+ transportCaughtUp BOOLEAN NOT NULL, observedEpoch BIGINT NOT NULL,
+ KEY key_job(namespace,jobID,id)
+) ENGINE=InnoDB;

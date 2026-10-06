@@ -17,6 +17,7 @@ import (
 )
 
 type ProjectionConfig struct {
+	Rebuild         bool                `json:"rebuild,omitempty"`
 	Deliveries      []ProjectionBackend `json:"deliveries,omitempty"`
 	SourceOutboxDSN string              `json:"sourceOutboxDSN,omitempty"`
 	ControlDSN      string              `json:"controlDSN"`
@@ -28,6 +29,7 @@ type projectionAcceptor interface {
 	Accept(context.Context, *contracts.SearchProjection, []projection.Target) (*projection.Receipt, error)
 }
 type ProjectionIngress struct {
+	Rebuilder       projectionRebuilder
 	SourceOutbox    *sql.DB
 	Inspector       projectionInspector
 	BackendDelivery bool
@@ -66,6 +68,13 @@ func OpenProjection(ctx context.Context, cfg *ProjectionConfig, token string) (*
 		"SELECT namespace,phid,revision,envelope FROM search_projection_head LIMIT 0",
 		"SELECT namespace,backendID,generationID,phid,revision,eventID,status,createdEpoch,leaseOwner,leaseEpoch,leaseExpires,leaseRenewals,attempts,nextAttempt,lastError,appliedEpoch FROM search_projection_delivery LIMIT 0",
 	}
+	if cfg.Rebuild {
+		if len(cfg.Deliveries) == 0 {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("rebuild requires bound delivery generations")
+		}
+		probes = append(probes, "SELECT namespace,jobID,backendID,generationID,upperPHID,cursorPHID,status,pages,leaseOwner,leaseEpoch,leaseExpires,nextAttempt,createdEpoch FROM search_projection_rebuild LIMIT 0", "SELECT id,namespace,jobID,knownHeads,unappliedHeads,transportCaughtUp,observedEpoch FROM search_projection_rebuild_check LIMIT 0")
+	}
 	for _, query := range probes {
 		rows, e := db.QueryContext(checkCtx, query)
 		if e != nil {
@@ -77,7 +86,11 @@ func OpenProjection(ctx context.Context, cfg *ProjectionConfig, token string) (*
 			return nil, nil, fmt.Errorf("projection control database or schema unavailable")
 		}
 	}
-	return &ProjectionIngress{Inspector: &projection.MySQLStore{DB: db}, Store: &projection.MySQLStore{DB: db}, Namespace: cfg.Namespace, Targets: append([]projection.Target(nil), cfg.Targets...)}, db, nil
+	ingress := &ProjectionIngress{Inspector: &projection.MySQLStore{DB: db}, Store: &projection.MySQLStore{DB: db}, Namespace: cfg.Namespace, Targets: append([]projection.Target(nil), cfg.Targets...)}
+	if cfg.Rebuild {
+		ingress.Rebuilder = &projection.MySQLStore{DB: db}
+	}
+	return ingress, db, nil
 }
 
 func registerProjectionRoutes(app fiber.Router, deps *Deps) {
@@ -86,9 +99,10 @@ func registerProjectionRoutes(app fiber.Router, deps *Deps) {
 	}
 	g := app.Group("/api/search/projections", auth.Token(deps.Token, auth.WithQueryToken(false)))
 	g.Get("/capabilities", func(c fiber.Ctx) error {
-		return httpx.OK(c, fiber.Map{"projectionVersion": 1, "namespace": deps.Projection.Namespace, "maxDocumentBytes": projection.MaxDocumentBytes, "batch": false, "durableAcceptance": true, "backendDelivery": deps.Projection.BackendDelivery, "inspection": deps.Projection.Inspector != nil, "receiptStatus": []string{"accepted", "superseded"}, "targets": deps.Projection.Targets})
+		return httpx.OK(c, fiber.Map{"projectionVersion": 1, "namespace": deps.Projection.Namespace, "maxDocumentBytes": projection.MaxDocumentBytes, "batch": false, "durableAcceptance": true, "backendDelivery": deps.Projection.BackendDelivery, "inspection": deps.Projection.Inspector != nil, "rebuild": deps.Projection.Rebuilder != nil, "sourceScan": false, "readActivation": false, "receiptStatus": []string{"accepted", "superseded"}, "targets": deps.Projection.Targets})
 	})
 	registerProjectionInspection(g, deps.Projection)
+	registerProjectionRebuild(g, deps.Projection)
 	g.Post("", func(c fiber.Ctx) error {
 		event, err := projection.Decode(c.Body())
 		if err != nil {
