@@ -9,8 +9,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 	"github.com/soulteary/gorge/go/internal/taskqueue"
@@ -29,20 +32,52 @@ func main() {
 		os.Exit(1)
 	}
 
+	var scheduler *taskqueue.Scheduler
+	if cfg.SchedulerEnabled {
+		mysqlStore, ok := store.(*taskqueue.MySQLStore)
+		if !ok || strings.TrimSpace(cfg.SchedulerConduitURI) == "" || strings.TrimSpace(cfg.SchedulerConduitToken) == "" {
+			fmt.Fprintln(os.Stderr, "scheduler requires MySQL and an authenticated Conduit source")
+			_ = store.Close()
+			os.Exit(1)
+		}
+		scheduler = &taskqueue.Scheduler{Store: mysqlStore, Source: taskqueue.NewScheduleSource(cfg.SchedulerConduitURI, cfg.SchedulerConduitToken)}
+	}
+	ready := taskqueue.ReadyProbe(store)
+	if scheduler != nil {
+		ready = func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return scheduler.Ready(ctx)
+		}
+	}
 	srv := httpx.New(httpx.Config{
 		ListenAddr: cfg.ListenAddr,
-		// The backend is the whole of this service's readiness: a queue that
-		// cannot reach its store can answer /healthz but must not stay in
-		// rotation, so /readyz reports the store.
-		Ready: taskqueue.ReadyProbe(store),
+		// Optional scheduling adds migrated schema and clock-source readiness;
+		// liveness remains independent so first-install migrations can run.
+		Ready: ready,
 	})
 
+	var schedulerProbe func(context.Context) error
+	if scheduler != nil {
+		schedulerProbe = scheduler.Ready
+	}
 	taskqueue.RegisterRoutes(srv.App(), &taskqueue.Deps{
-		Store: store,
-		Token: cfg.ServiceToken,
+		Store:            store,
+		Token:            cfg.ServiceToken,
+		SchedulerEnabled: cfg.SchedulerEnabled,
+		SchedulerReady:   schedulerProbe,
 	})
 
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	if scheduler != nil {
+		go func() { defer close(done); scheduler.Run(ctx) }()
+	} else {
+		close(done)
+	}
 	runErr := srv.Run()
+	cancel()
+	<-done
 
 	// Closed explicitly rather than deferred: os.Exit below would skip a
 	// deferred close, and the connection pool is the one thing worth releasing

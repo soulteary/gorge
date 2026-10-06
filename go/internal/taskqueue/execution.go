@@ -26,7 +26,22 @@ func registerExecutionRoutes(g fiber.Router, deps *Deps) {
 		if _, ok := deps.Store.(ExecutionStore); ok {
 			version = 1
 		}
-		return httpx.OK(c, contracts.ExecutionCapabilities{ExecutionVersion: version, LeaseOutcomes: version == 1})
+		caps := contracts.ExecutionCapabilities{ExecutionVersion: version, LeaseOutcomes: version == 1}
+		if store, ok := deps.Store.(ScheduleStore); ok && deps.SchedulerEnabled && deps.SchedulerReady != nil {
+			ctx, cancel := context.WithTimeout(c.Context(), readyTimeout)
+			defer cancel()
+			if err := deps.SchedulerReady(ctx); err != nil {
+				return err
+			}
+			caps.SchedulerProtocol = 1
+			caps.SchedulerAtomicEnqueue = true
+			id, err := store.ScheduleDatabaseID(ctx)
+			if err != nil {
+				return err
+			}
+			caps.SchedulerDatabaseID = id
+		}
+		return httpx.OK(c, caps)
 	})
 	g.Post("/finalize", func(c fiber.Ctx) error {
 		var req contracts.FinalizeRequest

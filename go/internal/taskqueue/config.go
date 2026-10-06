@@ -19,36 +19,42 @@ const (
 
 type Config struct {
 	config.Base
-	Backend        string
-	MySQLHost      string
-	MySQLPort      int
-	MySQLUser      string
-	MySQLPass      string
-	Namespace      string
-	RedisAddr      string
-	RedisPassword  string
-	RedisDB        int
-	RedisKeyPrefix string
-	LeaseDuration  int
-	RetryWait      int
+	Backend               string
+	MySQLHost             string
+	MySQLPort             int
+	MySQLUser             string
+	MySQLPass             string
+	Namespace             string
+	RedisAddr             string
+	RedisPassword         string
+	RedisDB               int
+	RedisKeyPrefix        string
+	LeaseDuration         int
+	RetryWait             int
+	SchedulerEnabled      bool
+	SchedulerConduitURI   string
+	SchedulerConduitToken string
 }
 
 // LoadFromEnv reads only the current GORGE_TASKQUEUE_* contract. Standalone
 // QUEUE_/MYSQL_/REDIS_ aliases were retired with the pre-monorepo deployment.
 func LoadFromEnv() *Config {
 	return &Config{
-		Base:           config.LoadBase(DefaultListenAddr),
-		Backend:        config.EnvStr(DefaultBackend, "GORGE_TASKQUEUE_BACKEND"),
-		MySQLHost:      config.EnvStr(DefaultMySQLHost, "GORGE_TASKQUEUE_MYSQL_HOST"),
-		MySQLPort:      config.EnvInt(DefaultMySQLPort, "GORGE_TASKQUEUE_MYSQL_PORT"),
-		MySQLUser:      config.EnvStr(DefaultMySQLUser, "GORGE_TASKQUEUE_MYSQL_USER"),
-		MySQLPass:      config.EnvStr("", "GORGE_TASKQUEUE_MYSQL_PASS"),
-		Namespace:      config.EnvStr(DefaultNamespace, "GORGE_TASKQUEUE_NAMESPACE"),
-		RedisAddr:      config.EnvStr(DefaultRedisAddr, "GORGE_TASKQUEUE_REDIS_ADDR"),
-		RedisPassword:  config.EnvStr("", "GORGE_TASKQUEUE_REDIS_PASSWORD"),
-		RedisDB:        config.EnvInt(DefaultRedisDB, "GORGE_TASKQUEUE_REDIS_DB"),
-		RedisKeyPrefix: config.EnvStr(DefaultRedisKeyPrefix, "GORGE_TASKQUEUE_REDIS_KEY_PREFIX"),
-		LeaseDuration:  config.EnvInt(DefaultLeaseDuration, "GORGE_TASKQUEUE_LEASE_DURATION"),
-		RetryWait:      config.EnvInt(DefaultRetryWait, "GORGE_TASKQUEUE_RETRY_WAIT"),
+		Base:                  config.LoadBase(DefaultListenAddr),
+		SchedulerEnabled:      config.EnvBool(false, "GORGE_TASKQUEUE_SCHEDULER_ENABLED"),
+		SchedulerConduitURI:   config.EnvStr("", "GORGE_TASKQUEUE_SCHEDULER_CONDUIT_URI"),
+		SchedulerConduitToken: config.EnvStr("", "GORGE_TASKQUEUE_SCHEDULER_CONDUIT_TOKEN"),
+		Backend:               config.EnvStr(DefaultBackend, "GORGE_TASKQUEUE_BACKEND"),
+		MySQLHost:             config.EnvStr(DefaultMySQLHost, "GORGE_TASKQUEUE_MYSQL_HOST"),
+		MySQLPort:             config.EnvInt(DefaultMySQLPort, "GORGE_TASKQUEUE_MYSQL_PORT"),
+		MySQLUser:             config.EnvStr(DefaultMySQLUser, "GORGE_TASKQUEUE_MYSQL_USER"),
+		MySQLPass:             config.EnvStr("", "GORGE_TASKQUEUE_MYSQL_PASS"),
+		Namespace:             config.EnvStr(DefaultNamespace, "GORGE_TASKQUEUE_NAMESPACE"),
+		RedisAddr:             config.EnvStr(DefaultRedisAddr, "GORGE_TASKQUEUE_REDIS_ADDR"),
+		RedisPassword:         config.EnvStr("", "GORGE_TASKQUEUE_REDIS_PASSWORD"),
+		RedisDB:               config.EnvInt(DefaultRedisDB, "GORGE_TASKQUEUE_REDIS_DB"),
+		RedisKeyPrefix:        config.EnvStr(DefaultRedisKeyPrefix, "GORGE_TASKQUEUE_REDIS_KEY_PREFIX"),
+		LeaseDuration:         config.EnvInt(DefaultLeaseDuration, "GORGE_TASKQUEUE_LEASE_DURATION"),
+		RetryWait:             config.EnvInt(DefaultRetryWait, "GORGE_TASKQUEUE_RETRY_WAIT"),
 	}
 }

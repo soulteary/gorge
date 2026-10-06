@@ -81,6 +81,9 @@ paths:
                     properties:
                       executionVersion: {type: integer}
                       leaseOutcomes: {type: boolean}
+                      schedulerProtocol: {type: integer, description: "Present as 1 only when the MySQL scheduler is enabled and its schema/source are ready."}
+                      schedulerAtomicEnqueue: {type: boolean, description: "Event advancement and task enqueue share one transaction."}
+                      schedulerDatabaseID: {type: string, description: "Persistent worker database identity; must match Phorge before takeover."}
 
   /api/queue/resolve:
     post:

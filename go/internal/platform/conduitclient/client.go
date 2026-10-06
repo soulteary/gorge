@@ -109,6 +109,9 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any)
 	}
 	var cr Response
 	if err := json.Unmarshal(respBody, &cr); err != nil {
+		if c.responseLimit > 0 {
+			return nil, fmt.Errorf("conduit %s returned non-JSON (HTTP %d)", method, resp.StatusCode)
+		}
 		// A non-JSON body is almost always an HTML error/login page from a
 		// misrouted call. Surface a bounded, diagnosable slice of it rather
 		// than the raw "invalid character '<'" the decoder would give.
@@ -118,6 +121,11 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any)
 	}
 
 	if cr.ErrorCode != nil {
+		if c.responseLimit > 0 {
+			// Neither error field is trusted: both may contain response data
+			// which source callers would otherwise copy into service logs.
+			return nil, fmt.Errorf("conduit %s returned an API error", method)
+		}
 		info := ""
 		if cr.ErrorInfo != nil {
 			info = *cr.ErrorInfo

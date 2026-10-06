@@ -286,3 +286,12 @@ Feed 的业务记录与 `feed_gorgeoutbox` 写入同一个 feed 数据库事务�
 成功后标记 deliveredEpoch。HTTP 响应或源库确认丢失可安全重放；失败事件
 保留 attempts/lastError 并按上限一小时退避。此阶段只覆盖 Feed 发布事件，
 不是任意 PHP 业务事务的通用 outbox。不要在事件仍可能重放时清理 inbox。
+
+## 持久触发器调度（可选，MySQL）
+
+`GORGE_TASKQUEUE_SCHEDULER_ENABLED` 默认 `false`。
+`GORGE_TASKQUEUE_SCHEDULER_CONDUIT_URI` / `GORGE_TASKQUEUE_SCHEDULER_CONDUIT_TOKEN`
+指定认证的 PHP 时钟计算入口；启用时二者必须非空。Go 在同库事务中推进事件并入队，
+数据库 `php / paused / gorge` 执行权与服务开关分开管理。
+认证 `/api/queue/meta` 增加 `schedulerProtocol` / `schedulerAtomicEnqueue` 能力字段。
+详细启用、支持范围和回切见 [持久触发器调度](scheduler.md)。

@@ -449,6 +449,9 @@ services:
       # "mysql" (the default) or "redis". The Redis settings below are read
       # only when this is "redis".
       GORGE_TASKQUEUE_BACKEND: ${GORGE_TASKQUEUE_BACKEND:-mysql}
+      GORGE_TASKQUEUE_SCHEDULER_ENABLED: ${GORGE_TASKQUEUE_SCHEDULER_ENABLED:-false}
+      GORGE_TASKQUEUE_SCHEDULER_CONDUIT_URI: ${GORGE_TASKQUEUE_SCHEDULER_CONDUIT_URI:-http://gorge-conduit:8150}
+      GORGE_TASKQUEUE_SCHEDULER_CONDUIT_TOKEN: ${GORGE_CONDUIT_TOKEN:-}
       # Same posture as gorge-webhook: a blank host does not switch anything
       # off — there is nothing to switch off — it falls through to 127.0.0.1
       # and the service sits unready until this points at the MySQL holding the

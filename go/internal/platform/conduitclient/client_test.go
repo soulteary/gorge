@@ -70,3 +70,25 @@ func TestBoundedTransportRejectsStatusSizeAndRedirect(t *testing.T) {
 		})
 	}
 }
+
+func TestBoundedTransportDoesNotExposeResponseInErrors(t *testing.T) {
+	for _, body := range []string{
+		`<html>private-response-marker</html>`,
+		`{"error_code":"ERR-PRIVATE","error_info":"private-response-marker"}`,
+		`{"error_code":"private-response-marker","error_info":null}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		_, err := NewBounded(srv.URL, "token", 1024).Call(t.Context(), "trigger.plan", nil)
+		if err == nil || strings.Contains(err.Error(), "private-response-marker") {
+			t.Fatalf("response exposed or accepted: %v", err)
+		}
+		// Keep the existing worker transport's diagnostics compatible.
+		_, legacyErr := New(srv.URL, "token").Call(t.Context(), "trigger.plan", nil)
+		if legacyErr == nil || !strings.Contains(legacyErr.Error(), "private-response-marker") {
+			t.Fatalf("legacy diagnostics changed: %v", legacyErr)
+		}
+		srv.Close()
+	}
+}

@@ -25,8 +25,10 @@ const LeaseOwnerHeader = "X-Lease-Owner"
 
 // Deps is everything the task queue routes need to serve a request.
 type Deps struct {
-	Store Store
-	Token string
+	Store            Store
+	Token            string
+	SchedulerEnabled bool
+	SchedulerReady   func(context.Context) error
 }
 
 // RegisterRoutes mounts the task queue endpoints under /api/queue.

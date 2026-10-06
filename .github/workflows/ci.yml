@@ -251,7 +251,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go/go.sum
-      - name: Verify leases, parent and children, and replay receipts
+      - name: Verify leases, atomic scheduler, parent and children, and replay receipts
         working-directory: go
         env:
           GORGE_TEST_REDIS_ADDR: 127.0.0.1:6379

@@ -218,4 +218,5 @@ func TestExecutionMySQLIntegration(t *testing.T) {
 	s := &MySQLStore{db: db, leaseDuration: 3600, retryWait: 300}
 	exerciseExecutionStore(t, ctx, s, s)
 	exerciseOutboxRelay(t, s)
+	t.Run("scheduler", func(t *testing.T) { exerciseSchedulerMySQL(t, s) })
 }
