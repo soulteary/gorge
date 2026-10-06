@@ -47,6 +47,7 @@ type Deps struct {
 // The paths are named after the domain and must not change:
 // PhabricatorGorgeFileStorageClient calls them as written.
 func RegisterRoutes(app fiber.Router, deps *Deps) {
+	registerFetchRoutes(app, deps.Token)
 	g := app.Group("/api/file")
 	g.Use(auth.Token(deps.Token))
 

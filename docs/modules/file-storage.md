@@ -243,3 +243,45 @@ S3 要求五个齐全，是因为半套配置会造出一个每次请求都失�
 **它是本域唯一一个「配置问题」而不是「存储问题」的写失败**，也是唯一一个 Phorge 侧的 setup check 能据以行动的码：503 意味着去补一个后端配置，而其余任何失败都收敛进平台码——请求本身有问题落 400，超过某个具名引擎的限额落 413，读不到落 404，后端试了并且坏了落 500。
 
 **新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。**
+
+## 受控远程下载
+
+`POST /api/file/fetch` 使用 JSON `{ "uri": "https://…", "denyCIDRs": [] }`，
+成功返回 `application/octet-stream` 原始字节，错误仍返回标准 envelope。
+此接口只接收 `X-Service-Token`，不接受 query token；未配置服务令牌时返回 503。
+PHP `PhabricatorFile::newFromFileDownload()` 使用此接口，并传入
+`security.outbound-blacklist`。下载结果仍由 PHP 创建文件对象并写入现有存储路径；
+下载过程不创建临时持久 blob，因此 PHP 后续失败不会留下独立下载 blob。
+
+只支持公共 HTTP/HTTPS、默认端口或显式 80/443；拒绝 URL 用户名密码、私网、
+回环、链路本地、共享地址、保留/文档地址及 IPv6 转换空间。调用方 denyCIDRs
+只能收紧策略，不能允许这些地址。所有 DNS 答案必须通过检查，连接直接使用已检查
+IP，Host 和 TLS SNI 保留原域名。每次重定向重新检查连接，最多 10 次跳转；
+不使用环境代理、不向远端传递服务令牌或用户 headers。
+
+每次最多 16 MiB、总时限 20 秒、单进程最多 4 个并行下载；满额返回 503。
+请求 identity 编码并拒绝其他 Content-Encoding，未知长度也按实际读取字节限制。
+返回数据在内存中有界缓冲，本版本不是大文件流式下载服务。
+失败消息不包含目标 URI（可能含日历订阅密钥）或远端响应内容。
+
+升级时先部署包含 fetch 的 Gorge，再升级 PHP；新 PHP 不回退到本地 HTTP 下载。
+需要配置非空 Gorge file token。私网下载、自定义端口、编码响应与超过 16 MiB
+的远程资源不再支持；原有文件上传/分块上传接口不受此下载限制影响。
+
+验证：`go test -race ./internal/filestorage`，覆盖重定向、DNS 混合答案/重解析、
+IP 绑定、附加黑名单、已知/未知长度、取消、并发上限及 header-only 认证。
+
+PHP 真实 HTTP 客户端契约（使用本机临时 fixture，不需要业务数据库）：
+`GORGE_TEST_ARCANIST_DIR=/path/to/arcanist php tests/contract/download/runtime.php`，
+在 Phorge 目录运行，验证原始二进制、空文件、令牌、附加黑名单与错误 envelope。
+
+下载能力可通过认证 `GET /api/file/fetch/meta` 检查，返回 protocolVersion=1、
+maxBytes、publicOnly、headerTokenOnly、pinnedDNS。PHP 启动检查和 setup 页面会验证
+该协议，防止旧服务仅通过 `/readyz` 后在实际下载时失败。使用当前旧版镜像标签
+不会自动获得新增接口；需要构建或部署包含本次改动的新 file-storage 镜像。
+重定向不会发送 Referer；仅接受最终 HTTP 200，拒绝未经请求的 206 部分内容。
+
+Phorge 的 `docker-compose.production.yml` 覆盖文件会从相邻 Gorge 源码构建
+`gorge-file-storage:local`，并要求设置 `GORGE_FILE_TOKEN`。迁移作业生成的部署配置
+通过共享 conf volume 提供给 Web 和 daemon。PHP 下载 HTTP 契约已接入 Phorge runtime
+contracts CI；真实 MySQL 调度验收仍在原有隔离数据库 CI 中运行。
