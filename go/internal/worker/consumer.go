@@ -211,13 +211,33 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 	taskCtx := ctx
 	var cancel context.CancelFunc
 	if task.LeaseExpires != nil {
-		taskCtx, cancel = context.WithDeadline(ctx, time.Unix(*task.LeaseExpires, 0))
+		taskCtx, cancel = context.WithDeadline(context.WithValue(ctx, executionContextKey{}, ctx), time.Unix(*task.LeaseExpires, 0))
 		defer cancel()
 	}
 
 	err := handler(taskCtx, task, data)
 	durationUs := time.Since(start).Microseconds()
+	// A handler may renew the lease. Rebuild the reporting deadline from the
+	// current lease instead of retaining the deadline of the original lease.
+	if task.LeaseExpires != nil {
+		var reportCancel context.CancelFunc
+		taskCtx, reportCancel = context.WithDeadline(ctx, time.Unix(*task.LeaseExpires, 0))
+		defer reportCancel()
+	}
 
+	var completion *Completion
+	if errors.As(err, &completion) {
+		// Renewal may have extended the handler beyond taskCtx's old deadline.
+		// Result reporting has its own bounded shutdown-safe context.
+		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if c.reportOutcome(reportCtx, task, "finalize", func(reportCtx context.Context) error {
+			return c.client.Finalize(reportCtx, task, completion)
+		}) {
+			c.processed.Add(1)
+		}
+		return
+	}
 	if err == nil {
 		slog.Info("task completed",
 			"taskClass", task.TaskClass, "id", task.ID, "duration", time.Since(start).String())
@@ -255,6 +275,10 @@ func (c *Consumer) processTask(ctx context.Context, task *contracts.Task) {
 		slog.Warn("temporary task failure",
 			"taskClass", task.TaskClass, "id", task.ID, "error", err)
 		if c.reportOutcome(taskCtx, task, "temporary failure", func(reportCtx context.Context) error {
+			var retry *RetryError
+			if errors.As(err, &retry) {
+				return c.client.Fail(reportCtx, task.ID, false, &retry.Wait)
+			}
 			return c.client.Fail(reportCtx, task.ID, false, nil)
 		}) {
 			c.failed.Add(1)

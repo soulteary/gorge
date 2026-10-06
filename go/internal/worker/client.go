@@ -144,6 +144,9 @@ func (c *Client) doJSON(req *http.Request, out any) error {
 	if envelope.Error != nil {
 		return fmt.Errorf("api error [%s]: %s", envelope.Error.Code, envelope.Error.Message)
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("queue returned HTTP %d", resp.StatusCode)
+	}
 	if out != nil && envelope.Data != nil {
 		if err := json.Unmarshal(envelope.Data, out); err != nil {
 			return fmt.Errorf("unmarshal data: %w", err)

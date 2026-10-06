@@ -23,7 +23,7 @@ taskqueue 本身几乎是 webhook 的翻版（同为「有外部依赖 + 后台�
 
 **不负责**：**定义任务**。哪个事务该排哪个 worker、任务负载长什么样、优先级取哪个带，全部由 Phorge 侧的 `PhabricatorWorker::scheduleTask` 决定并写好；本服务只入队、租出、归档。它也不建表、不改表结构、不需要 DDL 权限——三张 worker 表都是 Phorge 的 `bin/storage upgrade` 的产出。
 
-**它必须替换 Phorge 自己的 taskmaster 守护进程，而不是与之并存。** 队列在库里，`phd` 与 gorge-worker 谁都能取，所以「多一个消费者」在这个域里不是扩容而是**把每个任务跑两遍**。让路的方式是停掉 PHP 侧的 `phd`；与 webhook 第 38 条同源。
+**它必须替换 Phorge 自己的 taskmaster 守护进程，而不是与之并存。** 队列在库里，`phd` 与 gorge-worker 谁都能取，所以「多一个消费者」在这个域里不是扩容而是**把每个任务跑两遍**。让路的方式是停掉 PHP 侧的 taskmaster，保留仍承担仓库拉取、trigger、fact 等职责的守护进程；与 webhook 第 38 条同源。
 
 **有外部依赖，而且和 webhook 一样是这一类里最硬的那种。** 数据库不是它写穿的一个后端，而是它的工作本身——三张表就是队列。所以「一个后端都没配」这个状态在这里不存在，`/readyz` 只有一条判据（后端答话），见 3.5。选 Redis 后端时判据换成 Redis 答话，形状不变。
 
@@ -236,3 +236,17 @@ if err != nil {
 worker 的 `/api/worker/stats` 读进程内计数器，永不失败，连错误路径都没有。
 
 **新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。**
+
+## 委派执行协议 v1
+
+配套更新 gorge-taskqueue、gorge-worker 和 Phorge 后，worker 在执行业务前检查 `/api/queue/meta` 的 `executionVersion=1`，再以空 taskClass 探测 PHP capabilities，确认协议版本后调用 `worker.execute` 的 prepare 阶段。PHP 返回任务类的最大重试检查结果和所需租约时间；Go 通过 `/api/queue/renew` 续期后，调用 execute 阶段。PHP 收到 failureCount、priority 和当前租约上下文，临时失败使用任务类自定义的等待时间。
+
+成功响应携带序列化的 followups。Go 通过 `/api/queue/finalize` 在 MySQL 事务或 Redis Lua 脚本中提交父任务归档及全部子任务，子任务保留延迟、对象和容器关联，未指定优先级时继承父任务优先级。归档保留 owner/expiry 作为重试回执，重复提交不会重复入队；当前租约不匹配或已经过期时返回 409 `ERR_LEASE_CONFLICT`。这保证队列提交的一致性，不保证 PHP 业务副作用恰好执行一次：PHP 响应丢失或进程崩溃仍需业务幂等或持久化执行结果。
+
+`worker.execute` 独立校验 `X-Service-Token`，`gorge.conduit.token` 必须配置非空值并与 Go worker 和 gateway 使用的 token 一致。部署顺序为先更新 taskqueue 和 PHP，再更新 worker；升级期间暂停 taskmaster/worker 消费，完成后只恢复 Go 消费者。旧 worker 与新版 PHP 的委派协议不兼容，回滚应同步回滚配套组件。
+
+Feed HTTP 新任务包含 deliveryVersion=1、uri 和 PHP 生成的完整表单 body。Go 在 PHP prepare 阶段检查当前 silent 和 hooks 配置后发送快照；旧 key/uri 任务仍委派 PHP 处理，避免丢弃队列存量。
+
+旧 complete/fail/yield 接口和 PHP 队列实现仍保留兼容用途；本批次尚未为旧结果接口增加租约校验，也未删除整个 PHP taskmaster。下一阶段应补齐失败/yield 的所有权保护、持久化执行回执和跨仓库持续验证，再收缩原生队列实现。
+
+验证：`go test ./...`；真实 Redis 使用 `GORGE_TEST_REDIS_ADDR=host:port go test ./internal/taskqueue -run TestExecutionRedisIntegration -v`，测试只清理自己创建的随机前缀。PHP 使用 `GORGE_TEST_ARCANIST_DIR=/path/to/arcanist php tests/contract/worker/execution.php`。

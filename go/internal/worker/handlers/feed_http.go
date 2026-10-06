@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -17,31 +15,29 @@ import (
 // FeedHTTPData is the task data of a FeedPublisherHTTPWorker task, spelled as
 // Phorge serialises it.
 type FeedHTTPData struct {
-	URI     string `json:"uri"`
-	StoryID int64  `json:"storyID"`
+	URI             string `json:"uri"`
+	DeliveryVersion int    `json:"deliveryVersion"`
+	Body            string `json:"body"`
 }
 
 // NewFeedHTTPHandler returns a native handler for FeedPublisherHTTPWorker
-// tasks: it POSTs the story id to the configured feed endpoint. It is the one
+// tasks: it POSTs a complete versioned story snapshot to the feed endpoint. It is the one
 // class the worker runs itself rather than delegating, because it is a plain
 // HTTP forward with no Phorge-side logic to reach back for.
 func NewFeedHTTPHandler() worker.TaskHandler {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 
 	return func(ctx context.Context, task *contracts.Task, data json.RawMessage) error {
 		var td FeedHTTPData
 		if err := json.Unmarshal(data, &td); err != nil {
 			return &worker.PermanentError{Msg: fmt.Sprintf("invalid task data: %v", err)}
 		}
-		if td.URI == "" {
+		if td.URI == "" || td.DeliveryVersion != 1 || td.Body == "" {
 			return &worker.PermanentError{Msg: "missing URI in task data"}
 		}
 
-		formData := url.Values{}
-		formData.Set("storyID", fmt.Sprintf("%d", td.StoryID))
-
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, td.URI,
-			strings.NewReader(formData.Encode()))
+			strings.NewReader(td.Body))
 		if err != nil {
 			return fmt.Errorf("build request: %w", err)
 		}
@@ -49,15 +45,13 @@ func NewFeedHTTPHandler() worker.TaskHandler {
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return fmt.Errorf("http request to %s failed: %w", td.URI, err)
+			return &worker.RetryError{Message: fmt.Sprintf("feed HTTP request failed: %v", err), Wait: max(task.FailureCount+1, 1) * 60}
 		}
 		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			slog.Info("feed story delivered",
-				"storyID", td.StoryID, "uri", td.URI, "status", resp.StatusCode)
 			return nil
 		}
-		return fmt.Errorf("feed HTTP hook %s returned status %d", td.URI, resp.StatusCode)
+		return &worker.RetryError{Message: fmt.Sprintf("feed HTTP hook returned status %d", resp.StatusCode), Wait: max(task.FailureCount+1, 1) * 60}
 	}
 }

@@ -46,17 +46,27 @@ func (s *MySQLStore) Ready(ctx context.Context) error {
 }
 
 func (s *MySQLStore) Enqueue(ctx context.Context, req *contracts.EnqueueRequest) (*contracts.Task, error) {
-	priority := contracts.PriorityDefault
-	if req.Priority != nil {
-		priority = *req.Priority
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	task, err := enqueueInTx(ctx, tx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+func enqueueInTx(ctx context.Context, tx *sql.Tx, req *contracts.EnqueueRequest) (*contracts.Task, error) {
+	priority := contracts.PriorityDefault
+	if req.Priority != nil {
+		priority = *req.Priority
+	}
 	now := time.Now().Unix()
 
 	res, err := tx.ExecContext(ctx,
@@ -109,10 +119,6 @@ func (s *MySQLStore) Enqueue(ctx context.Context, req *contracts.EnqueueRequest)
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert activetask: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
 	}
 
 	return &contracts.Task{

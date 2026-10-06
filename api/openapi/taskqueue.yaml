@@ -26,7 +26,7 @@ info:
       `{"status": "ok"}` with no envelope, because container probes consume them
       directly.
 
-    Error codes: this domain adds none of its own. A malformed request is
+    Error codes: versioned execution adds `ERR_LEASE_CONFLICT` (409). A malformed request is
     `ERR_BAD_REQUEST`, a missing task on `GET /api/queue/tasks/:id` is
     `ERR_NOT_FOUND`, and a backend that does not answer is `ERR_INTERNAL` with a
     generic message — the query, the host and the driver's error go to the log,
@@ -43,7 +43,7 @@ info:
     `tests/contract/taskqueue/`. The database columns and the coupling of
     `status`/`leaseOwner`/`failureCount` are a separate, stricter contract
     documented in `compat/phorge/README.md`.
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -61,6 +61,73 @@ tags:
     description: Liveness and readiness probes
 
 paths:
+
+  /api/queue/meta:
+    get:
+      tags: [queue]
+      summary: Read supported execution protocol
+      security:
+        - ServiceTokenHeader: []
+      responses:
+        '200':
+          description: Envelope data contains executionVersion (1 supports finalize and renew).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      executionVersion: {type: integer}
+
+  /api/queue/finalize:
+    post:
+      tags: [queue]
+      summary: Atomically archive a successful parent and enqueue its followups
+      description: |
+        Requires the current owner and lease expiry. Retries with the archived
+        ownership receipt succeed without creating duplicate followups. An
+        omitted child priority inherits the parent's priority.
+      security:
+        - ServiceTokenHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinalizeRequest'
+      responses:
+        '200':
+          description: Envelope data contains status finalized.
+        '400':
+          description: Invalid request or more than 1000 followups.
+        '409':
+          description: ERR_LEASE_CONFLICT, ownership changed or lease expired.
+        '503':
+          description: Backend does not support execution protocol 1.
+
+  /api/queue/renew:
+    post:
+      tags: [queue]
+      summary: Extend the current execution lease without shortening it
+      security:
+        - ServiceTokenHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenewRequest'
+      responses:
+        '200':
+          description: Envelope data contains the task with its current leaseExpires.
+        '400':
+          description: Invalid request; duration must be between 1 and 604800 seconds.
+        '409':
+          description: ERR_LEASE_CONFLICT, ownership changed or lease expired.
+        '503':
+          description: Backend does not support execution protocol 1.
 
   /api/queue/enqueue:
     post:
@@ -507,6 +574,35 @@ components:
       description: Fallback for callers that cannot set headers. Checked only when `X-Service-Token` is absent.
 
   schemas:
+
+    ExecutionLease:
+      type: object
+      required: [taskID, leaseOwner, leaseExpires]
+      properties:
+        taskID: {type: integer, format: int64, minimum: 1}
+        leaseOwner: {type: string, minLength: 1}
+        leaseExpires: {type: integer, format: int64, minimum: 1}
+
+    FinalizeRequest:
+      allOf:
+        - $ref: '#/components/schemas/ExecutionLease'
+        - type: object
+          required: [duration]
+          properties:
+            duration: {type: integer, format: int64, minimum: 0}
+            followups:
+              type: array
+              maxItems: 1000
+              items:
+                $ref: '#/components/schemas/EnqueueRequest'
+
+    RenewRequest:
+      allOf:
+        - $ref: '#/components/schemas/ExecutionLease'
+        - type: object
+          required: [duration]
+          properties:
+            duration: {type: integer, minimum: 1, maximum: 604800}
 
     Task:
       type: object

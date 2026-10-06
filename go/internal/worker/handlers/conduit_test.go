@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/worker"
@@ -162,8 +163,26 @@ func conduitResultServer(t *testing.T, resultJSON string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		_ = r.ParseForm()
+		var params map[string]any
+		_ = json.Unmarshal([]byte(r.PostFormValue("params")), &params)
+		if params["phase"] == "capabilities" {
+			if params["taskClass"] != "" {
+				t.Error("capability probe must not name a business worker")
+			}
+			_, _ = io.WriteString(w, `{"result":{"executionVersion":1,"result":"capabilities"},"error_code":null,"error_info":null}`)
+			return
+		}
+		if params["phase"] == "prepare" {
+			_, _ = io.WriteString(w, `{"result":{"executionVersion":1,"result":"prepared"},"error_code":null,"error_info":null}`)
+			return
+		}
+		var result map[string]any
+		_ = json.Unmarshal([]byte(resultJSON), &result)
+		result["executionVersion"] = 1
+		encoded, _ := json.Marshal(result)
 		_, _ = io.WriteString(w, fmt.Sprintf(
-			`{"result":%s,"error_code":null,"error_info":null}`, resultJSON))
+			`{"result":%s,"error_code":null,"error_info":null}`, string(encoded)))
 	}))
 }
 
@@ -173,14 +192,17 @@ func runDelegate(t *testing.T, resultJSON string) error {
 	defer srv.Close()
 
 	h := NewConduitDelegateHandler(NewConduitClient(srv.URL, "tok"))
-	task := &contracts.Task{ID: 7, TaskClass: "SomeWorker"}
+	expiry := time.Now().Add(time.Hour).Unix()
+	task := &contracts.Task{ID: 7, TaskClass: "SomeWorker", LeaseOwner: "owner", LeaseExpires: &expiry}
 	return h(context.Background(), task, json.RawMessage(`{"k":"v"}`))
 }
 
 // TestDelegateSuccess: a "success" classification completes the task (nil).
 func TestDelegateSuccess(t *testing.T) {
-	if err := runDelegate(t, `{"result":"success","duration":12}`); err != nil {
-		t.Fatalf("success should map to nil, got: %v", err)
+	err := runDelegate(t, `{"result":"success","duration":12,"followups":[{"taskClass":"Child","data":"{}"}]}`)
+	var completion *worker.Completion
+	if !errors.As(err, &completion) || completion.Duration != 12 || len(completion.Followups) != 1 {
+		t.Fatalf("success must carry the atomic completion, got: %v", err)
 	}
 }
 
@@ -243,7 +265,8 @@ func TestDelegateHTMLIsTransient(t *testing.T) {
 	defer srv.Close()
 
 	h := NewConduitDelegateHandler(NewConduitClient(srv.URL, "tok"))
-	task := &contracts.Task{ID: 7, TaskClass: "SomeWorker"}
+	expiry := time.Now().Add(time.Hour).Unix()
+	task := &contracts.Task{ID: 7, TaskClass: "SomeWorker", LeaseOwner: "owner", LeaseExpires: &expiry}
 	err := h(context.Background(), task, nil)
 	if err == nil {
 		t.Fatal("expected an error for an HTML response")
@@ -251,5 +274,27 @@ func TestDelegateHTMLIsTransient(t *testing.T) {
 	var perm *worker.PermanentError
 	if errors.As(err, &perm) {
 		t.Errorf("HTML response should be transient, not permanent: %v", err)
+	}
+}
+
+func TestDelegateRejectsOldPHPBeforeBusinessExecution(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = r.ParseForm()
+		var params map[string]any
+		_ = json.Unmarshal([]byte(r.PostFormValue("params")), &params)
+		if params["taskClass"] != "" {
+			t.Error("business task reached unsupported PHP")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"result":null,"error_code":"ERR-NO-TASK-CLASS","error_info":"Class required"}`)
+	}))
+	defer srv.Close()
+	expiry := time.Now().Add(time.Hour).Unix()
+	handler := NewConduitDelegateHandler(NewConduitClient(srv.URL, "token"))
+	err := handler(context.Background(), &contracts.Task{ID: 1, TaskClass: "BusinessWorker", LeaseOwner: "owner", LeaseExpires: &expiry}, json.RawMessage(`{}`))
+	if err == nil || calls != 1 {
+		t.Fatalf("unsupported PHP was not rejected safely: %v, calls=%d", err, calls)
 	}
 }

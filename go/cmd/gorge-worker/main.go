@@ -25,7 +25,7 @@ func main() {
 	client := worker.NewClient(cfg.TaskQueueURL, cfg.TaskQueueToken)
 
 	registry := worker.NewRegistry()
-	handlers.RegisterAll(registry, cfg.ConduitURL, cfg.ConduitToken)
+	handlers.RegisterAll(registry, cfg.ConduitURL, cfg.ConduitToken, client)
 
 	consumer := worker.NewConsumer(client, registry, cfg)
 

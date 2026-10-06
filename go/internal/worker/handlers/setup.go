@@ -9,6 +9,9 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/worker"
 )
 
@@ -19,7 +22,7 @@ import (
 // stand in for the whole taskmaster daemon: the explicit registrations below
 // are the classes worth naming, and the fallback catches the rest. Without a
 // Conduit URL the worker handles only what it implements natively.
-func RegisterAll(registry *worker.Registry, conduitURL, conduitToken string) {
+func RegisterAll(registry *worker.Registry, conduitURL, conduitToken string, queues ...*worker.Client) {
 	// This class has a complete native implementation and must remain usable
 	// even when no Conduit fallback is configured. Register it first so adding
 	// the fallback does not replace the native path either.
@@ -30,12 +33,21 @@ func RegisterAll(registry *worker.Registry, conduitURL, conduitToken string) {
 	}
 
 	conduit := NewConduitClient(conduitURL, conduitToken)
-	delegate := NewConduitDelegateHandler(conduit)
+	delegate := NewConduitDelegateHandler(conduit, queues...)
 
 	registry.Register("PhabricatorSearchWorker", delegate)
 	registry.Register("PhabricatorMetaMTAWorker", delegate)
 	registry.Register("PhabricatorApplicationTransactionPublishWorker", delegate)
 	registry.Register("HeraldWebhookWorker", delegate)
 
+	// Persisted legacy feed tasks contain a key, not a delivery snapshot.
+	nativeFeed := newConduitExecutionHandler(conduit, NewFeedHTTPHandler(), queues...)
+	registry.Register("FeedPublisherHTTPWorker", func(ctx context.Context, task *contracts.Task, data json.RawMessage) error {
+		var snapshot FeedHTTPData
+		if json.Unmarshal(data, &snapshot) == nil && snapshot.DeliveryVersion == 1 {
+			return nativeFeed(ctx, task, data)
+		}
+		return delegate(ctx, task, data)
+	})
 	registry.SetFallback(delegate)
 }
