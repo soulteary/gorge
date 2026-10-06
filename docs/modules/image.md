@@ -42,3 +42,41 @@ GORGE_TEST_ARCANIST_DIR=... GORGE_TEST_IMAGE_URL=... GORGE_TEST_IMAGE_TOKEN=... 
 真实后端测试覆盖四种格式、五预设、GIF帧数/时间/循环、静态政策、损坏/不支持格式；本地无URL时集成套件跳过，CI必须启动实际镜像。PHP geometry导出脚本可以刷新oracle，刷新需连同算法变更评审。
 
 尚未完成的退役验收：真实 MySQL 下并发 regenerate 和源文件删除竞态、生产样本像素差异验收、入口请求并发限制，以及头像/图标/Meme/SpriteSheet 的独立迁移。以上完成前保留 PHP legacy 和 GD。
+
+## Additional recipes: Meme and builtin composition
+
+`POST /api/image/meme?revision=meme-v1&animation=legacy-static|legacy-preserve`
+accepts the original binary image, plus base64 UTF-8 `X-Gorge-Meme-Above` and
+`X-Gorge-Meme-Below` headers. Total text is limited to 4096 bytes and 16 lines per
+block; controls other than newline are refused. Go draws the text into a PNG
+layer, so text never enters ImageMagick expressions. The service fits fonts
+between 5 and 72 points, centers each line and draws a black outline. Oversized
+text/canvases and missing glyphs fail explicitly. This is a versioned new layout,
+not a claim of pixel equality with PHP GD.
+
+The default font is embedded Go Bold. An operator may set
+`GORGE_IMAGE_MEME_FONT` to a mounted trusted TTF/OTF (maximum 8 MiB) for other
+scripts. The SHA-256 font revision is advertised in capabilities and included
+with the backend revision in the PHP Meme cache key. GIF preservation retains
+frames, delay and loop behavior within the total-frame pixel budget. The canvas
+limit is 16 Mi pixels; output uses the source JPEG/PNG/GIF/WebP format.
+
+`POST /api/image/compose` accepts JSON `{revision:"compose-v1", recipe,
+background, border, width, height, layers}`. Each layer is base64 binary image.
+Recipes are fixed: `avatar` (400x400, RGBA border), `icon` (200x200), `favicon`
+(square 16/32/64/128, base then top-right/bottom-right/bottom-left/top-left emblems).
+Background is six hex RGB digits, optionally prefixed with `#`. Avatar border is
+[R,G,B,A] with alpha 0..1. Empty emblem strings preserve corner positions.
+Favicons start with a transparent canvas; their background value is ignored.
+Composition outputs PNG, uses bounded Go decoders and does not invoke a shell.
+Maximum five layers, 8 MiB total compressed bytes, 16 Mi pixels decoded total.
+Favicon resampling uses Catmull-Rom; compare visual output before cutover.
+
+Phorge `GORGE_IMAGE_MEME_MODE` / `gorge.image.meme-mode` and
+`GORGE_IMAGE_BUILTIN_MODE` / `gorge.image.builtin-mode` independently select
+legacy/shadow/gorge. Defaults remain legacy. Shadow stores only the legacy
+result; Gorge mode requires the versioned capability and validates binary
+geometry, MIME, revision and digest before persistence. Builtin/favicons cache
+keys include the rollout/recipe revision. Existing generated files are retained.
+Runtime sprite generation is not part of these endpoints; sprite build tooling
+remains a separate build concern.

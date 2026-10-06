@@ -31,6 +31,7 @@ const (
 type Config struct {
 	ListenAddr      string
 	BodyLimit       string
+	ReadBufferSize  int
 	ShutdownTimeout time.Duration
 	// Ready is handed to the /readyz probe; nil means "no external dependency".
 	Ready health.ReadyFunc
@@ -84,6 +85,7 @@ func New(cfg Config) *Server {
 	}
 
 	app := fiber.New(fiber.Config{
+		ReadBufferSize: cfg.ReadBufferSize,
 		// Echo distinguished /status/ from /status; Fiber collapses them unless
 		// strict routing is on. The notification admin contract requires
 		// /status (no trailing slash) to be a 404, so this preserves it. Every

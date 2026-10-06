@@ -317,6 +317,8 @@ services:
       # The in-container path, not a host path: it is where the volume below
       # is mounted. The image creates it owned by the unprivileged user, which
       # is what lets a fresh named volume be writable at all.
+      GORGE_FILE_UPLOAD_ROOT: ${GORGE_FILE_UPLOAD_ROOT:-}
+      GORGE_FILE_DELETION_DSN: ${GORGE_FILE_DELETION_DSN:-}
       GORGE_FILE_LOCAL_DISK_PATH: ${GORGE_FILE_LOCAL_DISK_PATH:-/var/lib/gorge/files}
       # Blank host = the blob backend is not registered. Point it at Phorge's
       # database to turn it on, and read the double-write warning in

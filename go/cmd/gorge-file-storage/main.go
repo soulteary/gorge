@@ -7,8 +7,12 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
+	"time"
 
 	"github.com/soulteary/gorge/go/internal/filestorage"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
@@ -23,6 +27,61 @@ func main() {
 		os.Exit(1)
 	}
 
+	var uploads *filestorage.Uploads
+	if cfg.UploadRoot != "" {
+		if cfg.ServiceToken == "" {
+			fmt.Fprintln(os.Stderr, "uploads require a service token")
+			os.Exit(1)
+		}
+		uploads, err = filestorage.NewUploads(cfg.UploadRoot)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	var deletionDB *sql.DB
+	if cfg.DeletionDSN != "" {
+		if err = filestorage.ValidateDeletionDatabase(cfg.Namespace, cfg.DeletionDSN); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if cfg.ServiceToken == "" {
+			fmt.Fprintln(os.Stderr, "deletion consumer requires a service token")
+			os.Exit(1)
+		}
+		deletionDB, err = filestorage.OpenDB(cfg.DeletionDSN)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if deletionDB != nil {
+					batch, c := context.WithTimeout(ctx, 30*time.Second)
+					err := filestorage.ProcessDeletion(batch, deletionDB, router, uploads)
+					c()
+					if err != nil {
+						slog.Error("file deletion retry failed", "error", err)
+					}
+				}
+				if uploads != nil {
+					if err := uploads.SweepExpired(ctx, 100); err != nil {
+						slog.Error("upload expiry failed", "error", err)
+					}
+				}
+			}
+		}
+	}()
 	srv := httpx.New(httpx.Config{
 		ListenAddr: cfg.ListenAddr,
 		// The file arrives as the raw request body, so the platform's 2M
@@ -33,18 +92,35 @@ func main() {
 		// legitimate state to boot into while the configuration is still being
 		// written — but it must not read as healthy, or orchestration keeps a
 		// service in rotation that fails every file it is handed.
-		Ready: router.Ready,
+		Ready: func() error {
+			if e := router.Ready(); e != nil {
+				return e
+			}
+			if deletionDB != nil {
+				ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+				defer c()
+				return deletionDB.PingContext(ctx)
+			}
+			return nil
+		},
 	})
 
 	filestorage.RegisterRoutes(srv.App(), &filestorage.Deps{
-		Router: router,
-		Token:  cfg.ServiceToken,
+		Router:          router,
+		Token:           cfg.ServiceToken,
+		Uploads:         uploads,
+		DeletionEnabled: deletionDB != nil,
 	})
 
 	// Closed explicitly rather than deferred: os.Exit below would skip a
 	// deferred close, and the connection pool is the one thing here worth
 	// releasing on the way out.
 	runErr := srv.Run()
+	cancel()
+	<-done
+	if deletionDB != nil {
+		_ = deletionDB.Close()
+	}
 	if closeErr := router.Close(); closeErr != nil {
 		fmt.Fprintf(os.Stderr, "gorge-file-storage: failed to close the storage backends: %v\n", closeErr)
 	}

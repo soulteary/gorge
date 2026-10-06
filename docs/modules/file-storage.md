@@ -285,3 +285,8 @@ Phorge 的 `docker-compose.production.yml` 覆盖文件会从相邻 Gorge 源码
 `gorge-file-storage:local`，并要求设置 `GORGE_FILE_TOKEN`。迁移作业生成的部署配置
 通过共享 conf volume 提供给 Web 和 daemon。PHP 下载 HTTP 契约已接入 Phorge runtime
 contracts CI；真实 MySQL 调度验收仍在原有隔离数据库 CI 中运行。
+
+## Resumable byte lifecycle
+
+See [file-lifecycle.md](file-lifecycle.md) for opt-in persistent upload sessions,
+transactional physical deletion intents, rollout and historical format limits.

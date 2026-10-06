@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"golang.org/x/image/font/opentype"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -49,6 +50,8 @@ type Result struct {
 }
 type Service struct {
 	Binary, PolicyDir string
+	MemeFont          *opentype.Font
+	MemeFontRevision  string
 	Timeout           time.Duration
 	slots             chan struct{}
 	BackendRevision   string
@@ -66,6 +69,9 @@ func New(binary, policy string, concurrency int, timeout time.Duration) (*Servic
 		return nil, fmt.Errorf("image policy directory is required")
 	}
 	s := &Service{Binary: binary, PolicyDir: policy, Timeout: timeout, slots: make(chan struct{}, concurrency)}
+	if err := s.SetMemeFont(nil); err != nil {
+		return nil, err
+	}
 	raw, err := os.ReadFile(filepath.Join(policy, "policy.xml"))
 	if err != nil {
 		return nil, err

@@ -20,7 +20,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gorge-image initialization failed:", e)
 		os.Exit(1)
 	}
-	server := httpx.New(httpx.Config{ListenAddr: cfg.ListenAddr, BodyLimit: "16M", Ready: s.Ready})
+	if fontPath := config.EnvStr("", "GORGE_IMAGE_MEME_FONT"); fontPath != "" {
+		raw, err := os.ReadFile(fontPath)
+		if err == nil {
+			err = s.SetMemeFont(raw)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "invalid meme font:", err)
+			os.Exit(1)
+		}
+	}
+	// 4 KiB UTF-8 captions expand to about 5.5 KiB in base64 headers, beyond
+	// Fiber's default 4 KiB request header buffer.
+	server := httpx.New(httpx.Config{ListenAddr: cfg.ListenAddr, BodyLimit: "16M", ReadBufferSize: 8 << 10, Ready: s.Ready})
 	imagetransform.RegisterRoutes(server.App(), s, cfg.ServiceToken)
 	if e = server.Run(); e != nil {
 		fmt.Fprintln(os.Stderr, e)

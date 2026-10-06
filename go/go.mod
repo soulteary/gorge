@@ -13,6 +13,7 @@ require (
 	github.com/gofiber/contrib/v3/websocket v1.2.5
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/redis/go-redis/v9 v9.22.0
+	golang.org/x/image v0.46.0
 )
 
 require (

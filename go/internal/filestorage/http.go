@@ -32,8 +32,10 @@ const contentTypeBlob = "application/octet-stream"
 
 // Deps is everything the file storage routes need to serve a request.
 type Deps struct {
-	Router *Router
-	Token  string
+	Router          *Router
+	Token           string
+	Uploads         *Uploads
+	DeletionEnabled bool
 }
 
 // RegisterRoutes mounts the file storage endpoints.
@@ -48,6 +50,12 @@ type Deps struct {
 // PhabricatorGorgeFileStorageClient calls them as written.
 func RegisterRoutes(app fiber.Router, deps *Deps) {
 	registerFetchRoutes(app, deps.Token)
+	registerUploadRoutes(app, deps.Uploads, deps.Token)
+	lifecycle := app.Group("/api/file/lifecycle")
+	lifecycle.Use(auth.Token(deps.Token, auth.WithQueryToken(false)))
+	lifecycle.Get("/meta", func(c fiber.Ctx) error {
+		return httpx.OK(c, map[string]any{"protocolVersion": 1, "deletionOutbox": deps.DeletionEnabled, "uploads": deps.Uploads != nil})
+	})
 	g := app.Group("/api/file")
 	g.Use(auth.Token(deps.Token))
 

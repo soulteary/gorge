@@ -25,6 +25,8 @@ type Config struct {
 	S3SecretKey      string
 	S3Region         string
 	S3Endpoint       string
+	UploadRoot       string
+	DeletionDSN      string
 	InstanceName     string
 }
 
@@ -34,6 +36,8 @@ type Config struct {
 func LoadFromEnv() *Config {
 	return &Config{
 		Base:             config.LoadBase(DefaultListenAddr),
+		UploadRoot:       config.EnvStr("", "GORGE_FILE_UPLOAD_ROOT"),
+		DeletionDSN:      config.EnvStr("", "GORGE_FILE_DELETION_DSN"),
 		MySQLHost:        config.EnvStr("", "GORGE_FILE_MYSQL_HOST"),
 		MySQLPort:        config.EnvInt(DefaultMySQLPort, "GORGE_FILE_MYSQL_PORT"),
 		MySQLUser:        config.EnvStr(DefaultMySQLUser, "GORGE_FILE_MYSQL_USER"),
