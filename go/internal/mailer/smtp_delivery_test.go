@@ -17,14 +17,25 @@ func fakeSubmissionSMTP(t *testing.T, accept bool) *smtpAdapter {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
-		fmt.Fprint(conn, "220 test\r\n")
+		defer func() {
+			if err := conn.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		if _, err := fmt.Fprint(conn, "220 test\r\n"); err != nil {
+			t.Error(err)
+			return
+		}
 		reader := textproto.NewReader(bufio.NewReader(conn))
 		for {
 			line, err := reader.ReadLine()
@@ -32,20 +43,29 @@ func fakeSubmissionSMTP(t *testing.T, accept bool) *smtpAdapter {
 				return
 			}
 			if strings.HasPrefix(line, "DATA") {
-				fmt.Fprint(conn, "354 continue\r\n")
+				if _, err := fmt.Fprint(conn, "354 continue\r\n"); err != nil {
+					t.Error(err)
+					return
+				}
 				if _, err = reader.ReadDotBytes(); err != nil {
 					return
 				}
 				if !accept {
 					return
 				}
-				fmt.Fprint(conn, "250 accepted\r\n")
+				if _, err := fmt.Fprint(conn, "250 accepted\r\n"); err != nil {
+					t.Error(err)
+					return
+				}
 				continue
 			}
 			if strings.HasPrefix(line, "QUIT") {
 				return
 			}
-			fmt.Fprint(conn, "250 ok\r\n")
+			if _, err := fmt.Fprint(conn, "250 ok\r\n"); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	}()
 	tcp := ln.Addr().(*net.TCPAddr)
@@ -67,12 +87,21 @@ func TestSMTPContextCancelsGreeting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() {
+		if err := ln.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
-			defer conn.Close()
-			bufio.NewReader(conn).ReadByte()
+			defer func() {
+				if err := conn.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			// The client cancels before sending a greeting; EOF is expected.
+			_, _ = bufio.NewReader(conn).ReadByte()
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

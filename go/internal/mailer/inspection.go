@@ -39,7 +39,8 @@ func (s *DeliveryService) Inspect(ctx context.Context, id string) (*DeliveryInsp
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	// Rollback is cleanup and may return sql.ErrTxDone after commit.
+	defer func() { _ = tx.Rollback() }()
 	out := &DeliveryInspection{Attempts: []DeliveryAttemptInspection{}}
 	var raw []byte
 	err = tx.QueryRowContext(ctx, `SELECT state,revision,attempt,nextAttempt,result,deadline,startedEpoch,projectionPending,projectionAttempts,projectionNextAttempt,projectionLastError FROM gorge_mail_delivery WHERE deliveryID=?`, id).Scan(
@@ -62,13 +63,15 @@ func (s *DeliveryService) Inspect(ctx context.Context, id string) (*DeliveryInsp
 	for rows.Next() {
 		var a DeliveryAttemptInspection
 		if err = rows.Scan(&a.Attempt, &a.StartedEpoch, &a.FinishedEpoch, &a.Outcome); err != nil {
-			rows.Close()
+			_ = rows.Close() // Preserve the scan error.
 			return nil, err
 		}
 		out.Attempts = append(out.Attempts, a)
 	}
 	err = rows.Err()
-	rows.Close()
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		return nil, err
 	}

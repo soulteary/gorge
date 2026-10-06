@@ -19,16 +19,22 @@ func TestFeedPolicyRevocationAndSilentAreReadAtExecution(t *testing.T) {
 	if err := handler(context.Background(), &contracts.Task{}, data); err == nil {
 		t.Fatal("missing policy was accepted")
 	}
-	os.WriteFile(path, []byte(`{"silent":true,"uris":[]}`), 0600)
+	if err := os.WriteFile(path, []byte(`{"silent":true,"uris":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := handler(t.Context(), &contracts.Task{}, data); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(path, []byte(`{"silent":false,"uris":[]}`), 0600)
+	if err := os.WriteFile(path, []byte(`{"silent":false,"uris":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var permanent *worker.PermanentError
 	if err := handler(t.Context(), &contracts.Task{}, data); !errors.As(err, &permanent) {
 		t.Fatalf("removed hook accepted: %v", err)
 	}
-	os.WriteFile(path, []byte(`{"uris":[]}`), 0600)
+	if err := os.WriteFile(path, []byte(`{"uris":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := handler(t.Context(), &contracts.Task{}, data); err == nil {
 		t.Fatal("incomplete policy accepted")
 	}

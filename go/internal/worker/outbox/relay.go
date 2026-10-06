@@ -57,13 +57,15 @@ func (r *Relay) Once(ctx context.Context) error {
 	for rows.Next() {
 		var e event
 		if err = rows.Scan(&e.id, &e.payload, &e.attempts); err != nil {
-			rows.Close()
+			_ = rows.Close() // Preserve the scan error.
 			return err
 		}
 		events = append(events, e)
 	}
 	err = rows.Err()
-	rows.Close()
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		return err
 	}

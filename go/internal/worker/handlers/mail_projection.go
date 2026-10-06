@@ -25,13 +25,15 @@ func ProjectMailResultsOnce(ctx context.Context, db *sql.DB, conduit *ConduitCli
 	for rows.Next() {
 		var p projection
 		if err = rows.Scan(&p.id, &p.payload, &p.result, &p.revision, &p.attempts); err != nil {
-			rows.Close()
+			_ = rows.Close() // Preserve the scan error.
 			return err
 		}
 		pending = append(pending, p)
 	}
 	err = rows.Err()
-	rows.Close()
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		return err
 	}

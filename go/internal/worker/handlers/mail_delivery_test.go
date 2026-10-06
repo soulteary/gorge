@@ -17,25 +17,39 @@ import (
 func TestMailPreparationAndSubmissionBoundary(t *testing.T) {
 	var prepare, authorize, apply atomic.Int32
 	php := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+			return
+		}
 		var params map[string]any
-		json.Unmarshal([]byte(r.FormValue("params")), &params)
+		if err := json.Unmarshal([]byte(r.FormValue("params")), &params); err != nil {
+			t.Error(err)
+			return
+		}
 		if r.Header.Get("X-Service-Token") != "internal" {
 			t.Error("missing conduit authentication")
 		}
 		switch params["phase"] {
 		case "prepare":
 			prepare.Add(1)
-			w.Write([]byte(`{"result":{"schemaVersion":1,"deliveryID":"mail/example/1","mailID":7,"deadline":9999999999,"message":{"from":{"address":"sender@example.test"},"to":[{"address":"to@example.test"}],"subject":"test"}}}`))
+			if _, err := w.Write([]byte(`{"result":{"schemaVersion":1,"deliveryID":"mail/example/1","mailID":7,"deadline":9999999999,"message":{"from":{"address":"sender@example.test"},"to":[{"address":"to@example.test"}],"subject":"test"}}}`)); err != nil {
+				t.Error(err)
+			}
 		case "authorize":
 			authorize.Add(1)
-			w.Write([]byte(`{"result":{"changed":false}}`))
+			if _, err := w.Write([]byte(`{"result":{"changed":false}}`)); err != nil {
+				t.Error(err)
+			}
 		case "apply":
 			n := apply.Add(1)
 			if n == 1 {
-				w.Write([]byte(`{"error_code":"projection-down","error_info":"temporary"}`))
+				if _, err := w.Write([]byte(`{"error_code":"projection-down","error_info":"temporary"}`)); err != nil {
+					t.Error(err)
+				}
 			} else {
-				w.Write([]byte(`{"result":{"applied":true}}`))
+				if _, err := w.Write([]byte(`{"result":{"applied":true}}`)); err != nil {
+					t.Error(err)
+				}
 			}
 		default:
 			t.Errorf("unexpected PHP phase: %v", params["phase"])
@@ -47,9 +61,14 @@ func TestMailPreparationAndSubmissionBoundary(t *testing.T) {
 			t.Error("missing mailer token")
 		}
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
 		if r.URL.Path == "/api/mailer/prepare" {
-			w.Write([]byte(`{"data":{"deliveryID":"mail/example/1","state":"prepared","revision":0}}`))
+			if _, err := w.Write([]byte(`{"data":{"deliveryID":"mail/example/1","state":"prepared","revision":0}}`)); err != nil {
+				t.Error(err)
+			}
 			return
 		}
 		if r.URL.Path != "/api/mailer/execute" || body["allowSend"] != true || body["deliveryID"] != "mail/example/1" {
@@ -58,11 +77,15 @@ func TestMailPreparationAndSubmissionBoundary(t *testing.T) {
 		if _, ok := body["message"]; ok {
 			t.Error("submission task includes message content")
 		}
-		w.Write([]byte(`{"data":{"deliveryID":"mail/example/1","state":"accepted","revision":2}}`))
+		if _, err := w.Write([]byte(`{"data":{"deliveryID":"mail/example/1","state":"accepted","revision":2}}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer mailer.Close()
 	policy := filepath.Join(t.TempDir(), "policy.json")
-	os.WriteFile(policy, []byte(`{"silent":false,"uris":[]}`), 0600)
+	if err := os.WriteFile(policy, []byte(`{"silent":false,"uris":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	conduit := NewConduitClient(php.URL, "internal")
 	task := &contracts.Task{Priority: 25}
 	err := NewMailPreparationHandler(conduit, mailer.URL, "mail-token")(context.Background(), task, json.RawMessage(`7`))
@@ -88,7 +111,9 @@ func TestMailReadinessRejectsMissingNativeProtocol(t *testing.T) {
 			if r.Header.Get("X-Service-Token") != "token" {
 				t.Error("missing token")
 			}
-			w.Write([]byte(body))
+			if _, err := w.Write([]byte(body)); err != nil {
+				t.Error(err)
+			}
 		}))
 		err := ValidateMailDeliveryService(context.Background(), server.URL+"/", "token")
 		server.Close()
@@ -100,7 +125,9 @@ func TestMailReadinessRejectsMissingNativeProtocol(t *testing.T) {
 func TestMailPreparationRejectsDifferentServiceRoute(t *testing.T) {
 	var calls atomic.Int32
 	php := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"result":{"schemaVersion":1,"deliveryID":"mail/1","mailID":7,"deadline":9999999999,"mailerURI":"http://different-mailer","message":{"from":{"address":"from@example.test"},"to":[{"address":"to@example.test"}]}}}`))
+		if _, err := w.Write([]byte(`{"result":{"schemaVersion":1,"deliveryID":"mail/1","mailID":7,"deadline":9999999999,"mailerURI":"http://different-mailer","message":{"from":{"address":"from@example.test"},"to":[{"address":"to@example.test"}]}}}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer php.Close()
 	mailer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))

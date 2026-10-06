@@ -15,7 +15,8 @@ const DefaultListenAddr = ":8120"
 
 type Config struct {
 	config.Base
-	Backends []engine.BackendDef `json:"backends"`
+	Backends   []engine.BackendDef `json:"backends"`
+	Projection *ProjectionConfig   `json:"projection,omitempty"`
 }
 
 func Load() (*Config, error) {
@@ -43,6 +44,13 @@ func LoadFromEnv() *Config {
 	}
 	if cfg.Backends == nil {
 		cfg.Backends = defFromEnv()
+	}
+	if raw := config.EnvStr("", "GORGE_SEARCH_PROJECTION"); raw != "" {
+		// Preserve the parse error for startup validation, rather than falling back.
+		cfg.Projection = &ProjectionConfig{}
+		if err := json.Unmarshal([]byte(raw), cfg.Projection); err != nil {
+			cfg.Projection.invalid = true
+		}
 	}
 	return cfg
 }

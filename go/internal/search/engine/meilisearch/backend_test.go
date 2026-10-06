@@ -2,6 +2,7 @@ package meilisearch
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -457,6 +458,10 @@ func TestIndexDocumentRoundTrip(t *testing.T) {
 		gotBody   []byte
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/tasks/1" {
+			_, _ = w.Write([]byte(`{"uid":1,"status":"succeeded"}`))
+			return
+		}
 		gotPath = r.URL.Path
 		gotMethod = r.Method
 		gotAuth = r.Header.Get("Authorization")
@@ -739,10 +744,7 @@ func TestDoRequestReturnsBodyOnSuccess(t *testing.T) {
 	}
 }
 
-// InitIndex drops the index, recreates it, waits for the task queue to drain
-// and then writes the settings. The delete's 404 on a first run is normal, and
-// waitForIdle returns as soon as the tasks endpoint reports an empty queue, so
-// the whole sequence completes without a real Meilisearch.
+// InitIndex confirms each creation/settings task; first-run delete 404 is normal.
 func TestInitIndexDropsCreatesAndConfigures(t *testing.T) {
 	var (
 		sawDelete   bool
@@ -760,8 +762,10 @@ func TestInitIndexDropsCreatesAndConfigures(t *testing.T) {
 			sawCreate = true
 			_, _ = w.Write([]byte(`{"taskUid":1}`))
 		case strings.HasPrefix(r.URL.Path, "/tasks"):
-			// An empty queue lets waitForIdle return immediately.
-			_, _ = w.Write([]byte(`{"total":0}`))
+			uid := strings.TrimPrefix(r.URL.Path, "/tasks/")
+			if _, err := fmt.Fprintf(w, `{"uid":%s,"status":"succeeded"}`, uid); err != nil {
+				t.Error(err)
+			}
 		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/settings"):
 			sawSettings = true
 			_, _ = w.Write([]byte(`{"taskUid":2}`))

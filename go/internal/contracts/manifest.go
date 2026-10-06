@@ -72,22 +72,23 @@ type DomainContract struct {
 // dozens. They are repository-relative: the checker joins them onto whatever
 // PHORGE_FORK_DIR points at.
 const (
-	phpMetaMail       = "src/applications/metamta/storage/PhabricatorMetaMTAMail.php"
-	phpMailerClient   = "src/infrastructure/cluster/PhabricatorGorgeMailerClient.php"
-	phpSearchClient   = "src/infrastructure/cluster/PhabricatorGorgeSearchClient.php"
-	phpTaskQueueClnt  = "src/infrastructure/cluster/PhabricatorGorgeTaskQueueClient.php"
-	phpWebhookClient  = "src/infrastructure/cluster/PhabricatorGorgeWebhookClient.php"
-	phpDBClient       = "src/infrastructure/cluster/PhabricatorGorgeDBClient.php"
-	phpDatabaseRef    = "src/infrastructure/cluster/PhabricatorDatabaseRef.php"
-	phpSchemaQuery    = "src/applications/config/schema/PhabricatorConfigSchemaQuery.php"
-	phpFieldTypeConst = "src/applications/search/constants/PhabricatorSearchDocumentFieldType.php"
-	phpRelationConst  = "src/applications/search/constants/PhabricatorSearchRelationship.php"
-	phpFulltextEngine = "src/applications/search/fulltextstorage/PhabricatorGorgeFulltextStorageEngine.php"
-	phpHeraldRequest  = "src/applications/herald/storage/HeraldWebhookRequest.php"
-	phpHeraldWorker   = "src/applications/herald/worker/HeraldWebhookWorker.php"
-	phpWorkerTask     = "src/infrastructure/daemon/workers/storage/PhabricatorWorkerTask.php"
-	phpWorkerExecute  = "src/infrastructure/daemon/workers/conduit/PhabricatorWorkerExecuteConduitAPIMethod.php"
-	phpFeedPublisher  = "src/applications/feed/worker/FeedPublisherWorker.php"
+	phpMetaMail           = "src/applications/metamta/storage/PhabricatorMetaMTAMail.php"
+	phpMailerClient       = "src/infrastructure/cluster/PhabricatorGorgeMailerClient.php"
+	phpSearchClient       = "src/infrastructure/cluster/PhabricatorGorgeSearchClient.php"
+	phpTaskQueueClnt      = "src/infrastructure/cluster/PhabricatorGorgeTaskQueueClient.php"
+	phpWebhookClient      = "src/infrastructure/cluster/PhabricatorGorgeWebhookClient.php"
+	phpDBClient           = "src/infrastructure/cluster/PhabricatorGorgeDBClient.php"
+	phpDatabaseRef        = "src/infrastructure/cluster/PhabricatorDatabaseRef.php"
+	phpSchemaQuery        = "src/applications/config/schema/PhabricatorConfigSchemaQuery.php"
+	phpFieldTypeConst     = "src/applications/search/constants/PhabricatorSearchDocumentFieldType.php"
+	phpRelationConst      = "src/applications/search/constants/PhabricatorSearchRelationship.php"
+	phpDocumentSerializer = "src/applications/search/index/PhabricatorSearchDocumentSerializer.php"
+	phpFulltextEngine     = "src/applications/search/fulltextstorage/PhabricatorGorgeFulltextStorageEngine.php"
+	phpHeraldRequest      = "src/applications/herald/storage/HeraldWebhookRequest.php"
+	phpHeraldWorker       = "src/applications/herald/worker/HeraldWebhookWorker.php"
+	phpWorkerTask         = "src/infrastructure/daemon/workers/storage/PhabricatorWorkerTask.php"
+	phpWorkerExecute      = "src/infrastructure/daemon/workers/conduit/PhabricatorWorkerExecuteConduitAPIMethod.php"
+	phpFeedPublisher      = "src/applications/feed/worker/FeedPublisherWorker.php"
 )
 
 // Manifest returns the whole cross-repository contract register. It is a
@@ -174,8 +175,9 @@ func mailerContract() DomainContract {
 // checked against those files verbatim (§7.3).
 //
 // The §7.2 document, query and stats field names are checked against
-// PhabricatorGorgeFulltextStorageEngine, which spells every one of them out:
-// newDocumentSpec() and newQuerySpec() build the request arrays key by key and
+// the shared PhabricatorSearchDocumentSerializer and
+// PhabricatorGorgeFulltextStorageEngine: newDocumentSpec() and newQuerySpec()
+// build the request arrays key by key and
 // getIndexStats() names the five stats keys in its label map. An earlier
 // version of this file claimed they were "flattened and read generically" and
 // left them unpinned; that was false and left §7.2 — the half of the section
@@ -223,20 +225,20 @@ func searchContract() DomainContract {
 			{Name: "open", PHPFiles: []string{phpRelationConst}, Note: "§7.3 RELATIONSHIP_OPEN (status marker)."},
 			{Name: "clos", PHPFiles: []string{phpRelationConst}, Note: "§7.3 RELATIONSHIP_CLOSED (status marker)."},
 			{Name: "unow", PHPFiles: []string{phpRelationConst}, Note: "§7.3 RELATIONSHIP_UNOWNED (status marker)."},
-			// §7.2 document keys, built by name in newDocumentSpec().
-			{Name: "phid", PHPFiles: []string{phpFulltextEngine}, Note: "§7.2 document identity."},
-			{Name: "type", PHPFiles: []string{phpFulltextEngine}, Note: "§7.2 document type."},
-			{Name: "title", PHPFiles: []string{phpFulltextEngine}},
-			{Name: "dateCreated", PHPFiles: []string{phpFulltextEngine}},
-			{Name: "dateModified", PHPFiles: []string{phpFulltextEngine}},
-			{Name: "fields", PHPFiles: []string{phpFulltextEngine}, Note: "§7.2 the field-tuple list; a document may carry several corpora per field name."},
-			{Name: "relationships", PHPFiles: []string{phpFulltextEngine}},
-			{Name: "name", PHPFiles: []string{phpFulltextEngine}, Note: "§7.2 the four-character field/relationship name inside a tuple."},
-			{Name: "corpus", PHPFiles: []string{phpFulltextEngine}},
-			{Name: "aux", PHPFiles: []string{phpFulltextEngine}},
-			{Name: "relatedPHID", PHPFiles: []string{phpFulltextEngine}, Note: "§7.2 the README's own example of a silent rename: collapse it into phid and every relationship goes empty."},
-			{Name: "rtype", PHPFiles: []string{phpFulltextEngine}},
-			{Name: "timestamp", PHPFiles: []string{phpFulltextEngine}},
+			// §7.2 document keys, shared by adapters and exporters via the serializer.
+			{Name: "phid", PHPFiles: []string{phpDocumentSerializer}, Note: "§7.2 document identity."},
+			{Name: "type", PHPFiles: []string{phpDocumentSerializer}, Note: "§7.2 document type."},
+			{Name: "title", PHPFiles: []string{phpDocumentSerializer}},
+			{Name: "dateCreated", PHPFiles: []string{phpDocumentSerializer}},
+			{Name: "dateModified", PHPFiles: []string{phpDocumentSerializer}},
+			{Name: "fields", PHPFiles: []string{phpDocumentSerializer}, Note: "§7.2 the field-tuple list; a document may carry several corpora per field name."},
+			{Name: "relationships", PHPFiles: []string{phpDocumentSerializer}},
+			{Name: "name", PHPFiles: []string{phpDocumentSerializer}, Note: "§7.2 the four-character field/relationship name inside a tuple."},
+			{Name: "corpus", PHPFiles: []string{phpDocumentSerializer}},
+			{Name: "aux", PHPFiles: []string{phpDocumentSerializer}},
+			{Name: "relatedPHID", PHPFiles: []string{phpDocumentSerializer}, Note: "§7.2 the README's own example of a silent rename: collapse it into phid and every relationship goes empty."},
+			{Name: "rtype", PHPFiles: []string{phpDocumentSerializer}},
+			{Name: "timestamp", PHPFiles: []string{phpDocumentSerializer}},
 			// §7.2 query keys, built by name in newQuerySpec().
 			{Name: "query", PHPFiles: []string{phpFulltextEngine}},
 			{Name: "types", PHPFiles: []string{phpFulltextEngine}},
@@ -520,8 +522,12 @@ func ReverseScanFiles() []ReverseScanFile {
 			Note: "§9.8; it names no key today, which is exactly the claim the webhook stats items make. If a key ever appears here, one of those items stops being true and this check says so.",
 		},
 		{
+			Path: phpDocumentSerializer,
+			Note: "Shared document serializer used by storage and batch export.",
+		},
+		{
 			Path: phpFulltextEngine,
-			Note: "§7.2 document, query and stats keys.",
+			Note: "§7.2 query and stats keys.",
 		},
 		{
 			Path:            phpHeraldWorker,

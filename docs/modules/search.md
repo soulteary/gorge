@@ -238,3 +238,10 @@ Elasticsearch 6 把一个索引收紧到只能有一个 mapping type，7 起把 
 ### 一处刻意收紧：`/sane` 现在要求 `docTypes`
 
 迁入前空的 `docTypes` 会被接受。它的后果比 `/init` 上同样的疏漏更坏：sanity check 拿「本服务今天会为这批类型建出的配置」去比对线上索引，空类型列表建出的是一份空期望，**任何索引都满足它**——包括一份没有 mapping、没有 `cjk` 子字段的索引。答案会是一个自信的 `sane: true`。现在两条路径都答 400，记在 [`../findings.md`](../findings.md) #20。
+
+## Projection extraction
+
+See [search-projection.md](search-projection.md) for the implemented extraction boundary,
+versioned delivery acceptance primitive, Meilisearch completion checks, and the
+remaining outbox/rebuild migration work. No production delivery switch is enabled
+by these changes.

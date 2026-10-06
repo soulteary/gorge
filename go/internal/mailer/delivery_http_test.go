@@ -19,7 +19,9 @@ func TestNativeMailRoutesRequireAuthentication(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		response.Body.Close()
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if response.StatusCode != 401 {
 			t.Fatalf("%s unauthenticated: %d", route, response.StatusCode)
 		}

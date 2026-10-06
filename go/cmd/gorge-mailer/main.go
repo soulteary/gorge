@@ -41,7 +41,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "invalid delivery DSN")
 			os.Exit(1)
 		}
-		defer db.Close()
+		defer func() {
+			if err := db.Close(); err != nil {
+				slog.Error("database close failed", "error", err)
+			}
+		}()
 		nativeDispatcher, err := mailer.NewDispatcher(cfg.Mailers, mailer.RetryPolicy{})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

@@ -21,6 +21,46 @@ env:
   GO_VERSION: '1.27'
 
 jobs:
+  search-projection-runtime:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: search-contract-only
+        ports: ['3306:3306']
+        options: --health-cmd "mysqladmin ping -psearch-contract-only" --health-interval 5s --health-timeout 3s --health-retries 30
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: 'false'
+          node.store.allow_mmap: 'false'
+          ES_JAVA_OPTS: '-Xms256m -Xmx256m'
+        ports: ['9200:9200']
+      meilisearch:
+        image: getmeili/meilisearch:v1.12.8
+        env:
+          MEILI_MASTER_KEY: search-contract-only
+        ports: ['7700:7700']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go/go.sum
+      - name: Wait for Meilisearch
+        run: curl --retry 30 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:7700/health
+      - name: Wait for Elasticsearch
+        run: curl --retry 60 --retry-delay 1 --retry-connrefused --retry-all-errors -fsS http://127.0.0.1:9200/
+      - name: Verify durable acceptance and backend completion
+        working-directory: go
+        env:
+          GORGE_TEST_SEARCH_MYSQL_DSN: root:search-contract-only@tcp(127.0.0.1:3306)/?timeout=5s&readTimeout=5s&writeTimeout=5s
+          GORGE_TEST_ES_URL: http://127.0.0.1:9200
+          GORGE_TEST_MEILI_URL: http://127.0.0.1:7700
+          GORGE_TEST_MEILI_KEY: search-contract-only
+        run: go test -race -count=1 ./internal/search/...
   image-runtime:
     runs-on: ubuntu-latest
     steps:

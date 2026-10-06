@@ -16,7 +16,12 @@ func executionRequest() *contracts.FinalizeRequest {
 }
 func TestFinalizeMySQLRejectsReassignedLease(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	req := executionRequest()
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(executionRows(req.LeaseExpires + 1))
@@ -31,7 +36,12 @@ func TestFinalizeMySQLRejectsReassignedLease(t *testing.T) {
 }
 func TestFinalizeMySQLLostResponseReplayDoesNotEnqueueAgain(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	req := executionRequest()
 	req.Followups = []contracts.EnqueueRequest{{TaskClass: "Child", Data: "{}"}}
 	mock.ExpectBegin()
@@ -47,7 +57,12 @@ func TestFinalizeMySQLLostResponseReplayDoesNotEnqueueAgain(t *testing.T) {
 }
 func TestFinalizeMySQLChildFailureRollsBackParent(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	req := executionRequest()
 	req.Followups = []contracts.EnqueueRequest{{TaskClass: "Child", Data: "{}"}}
 	mock.ExpectBegin()
@@ -63,7 +78,12 @@ func TestFinalizeMySQLChildFailureRollsBackParent(t *testing.T) {
 }
 func TestFinalizeMySQLArchivesOnlyInsideTransaction(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	req := executionRequest()
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(executionRows(req.LeaseExpires))
@@ -79,7 +99,12 @@ func TestFinalizeMySQLArchivesOnlyInsideTransaction(t *testing.T) {
 }
 func TestRenewMySQLKeepsLongerExistingLease(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	req := executionRequest()
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(executionRows(req.LeaseExpires))

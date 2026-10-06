@@ -35,9 +35,15 @@ func TestNotificationNativeCompatibilityAndStableID(t *testing.T) {
 			t.Error("instance not encoded")
 		}
 		var message map[string]json.RawMessage
-		json.NewDecoder(r.Body).Decode(&message)
+		if err := json.NewDecoder(r.Body).Decode(&message); err != nil {
+			t.Error(err)
+			return
+		}
 		var id string
-		json.Unmarshal(message["uniqueID"], &id)
+		if err := json.Unmarshal(message["uniqueID"], &id); err != nil {
+			t.Error(err)
+			return
+		}
 		ids = append(ids, id)
 		if string(message["extension"]) != "42" {
 			t.Error("unknown field lost")
@@ -90,11 +96,15 @@ func TestNotificationPolicyFailuresAndRevocation(t *testing.T) {
 	}
 	path := notificationPolicyFile(t, "required", server.URL)
 	h := NewNotificationPublishHandler(path)
-	os.WriteFile(path, []byte(`{"version":1,"mode":"off","instance":"tenant a","endpoints":[]}`), 0600)
+	if err := os.WriteFile(path, []byte(`{"version":1,"mode":"off","instance":"tenant a","endpoints":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := h(t.Context(), &contracts.Task{}, data); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(path, []byte(`{}`), 0600)
+	if err := os.WriteFile(path, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := h(t.Context(), &contracts.Task{}, data); err == nil {
 		t.Fatal("invalid policy silently disabled delivery")
 	}
@@ -121,7 +131,7 @@ func TestNotificationFailoverAndRedirect(t *testing.T) {
 	goodCalls := 0
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { goodCalls++; w.WriteHeader(200) }))
 	defer good.Close()
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, good.URL, 302) }))
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, good.URL, http.StatusFound) }))
 	defer redirect.Close()
 	data := json.RawMessage(`{"message":{"type":"notification","key":"1","subscribers":["u"]}}`)
 	h := NewNotificationPublishHandler(notificationPolicyFile(t, "required", redirect.URL))

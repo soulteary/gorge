@@ -32,7 +32,8 @@ type BackendDef struct {
 	APIKey   string   `json:"apiKey,omitempty"`
 
 	// Options carries backend-specific switches that do not deserve a field of
-	// their own. Only the test backend reads it today, and it is how the
+	// their own. The Elasticsearch projection mode uses it to guard versioned writes;
+	// the test backend also uses it for the
 	// contract fixtures reach the failure paths behind the five domain error
 	// codes; see test.go.
 	Options map[string]string `json:"options,omitempty"`

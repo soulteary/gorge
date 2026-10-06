@@ -8,7 +8,9 @@ package meilisearch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -101,15 +103,91 @@ func (b *Backend) Info() contracts.BackendInfo {
 	}
 }
 
+// IndexDocument preserves the synchronous API: accepted is not indexed.
 func (b *Backend) IndexDocument(doc *contracts.Document) error {
-	msDoc := b.buildDocument(doc)
-	body, err := json.Marshal([]any{msDoc})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.timeout)*time.Second)
+	defer cancel()
+	uid, err := b.SubmitDocument(ctx, doc)
 	if err != nil {
-		return fmt.Errorf("marshal document: %w", err)
+		return err
+	}
+	return b.WaitTask(ctx, uid)
+}
+
+// SubmitDocument returns a receipt for durable delivery callers to persist.
+// POST is the full-replacement API; PUT would retain removed attributes.
+func (b *Backend) SubmitDocument(ctx context.Context, doc *contracts.Document) (int64, error) {
+	body, err := json.Marshal([]any{b.buildDocument(doc)})
+	if err != nil {
+		return 0, fmt.Errorf("marshal document: %w", err)
 	}
 	url := fmt.Sprintf("%s/indexes/%s/documents", b.host, b.index)
-	_, err = b.doRequest(url, http.MethodPost, bytes.NewReader(body))
-	return err
+	response, err := b.doRequestContext(ctx, url, http.MethodPost, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	return decodeTaskReceipt(response)
+}
+
+func decodeTaskReceipt(response []byte) (int64, error) {
+	var receipt struct {
+		UID *int64 `json:"taskUid"`
+	}
+	if json.Unmarshal(response, &receipt) != nil || receipt.UID == nil || *receipt.UID < 0 {
+		return 0, fmt.Errorf("meilisearch accepted a write without a valid task receipt")
+	}
+	return *receipt.UID, nil
+}
+
+// TaskState checks one receipt, never the queue-wide idle state.
+func (b *Backend) TaskState(ctx context.Context, uid int64) (string, error) {
+	if uid < 0 {
+		return "", fmt.Errorf("invalid task UID")
+	}
+	body, err := b.doRequestContext(ctx, fmt.Sprintf("%s/tasks/%d", b.host, uid), http.MethodGet, nil)
+	if err != nil {
+		return "", err
+	}
+	var task struct {
+		UID    *int64 `json:"uid"`
+		Status string `json:"status"`
+		Error  struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &task); err != nil {
+		return "", fmt.Errorf("invalid task response: %w", err)
+	}
+	if task.UID == nil || *task.UID != uid {
+		return "", fmt.Errorf("meilisearch task receipt mismatch")
+	}
+	switch task.Status {
+	case "enqueued", "processing", "succeeded":
+		return task.Status, nil
+	case "failed", "canceled":
+		return task.Status, &TaskFailure{UID: uid, Status: task.Status, Code: task.Error.Code}
+	default:
+		return "", fmt.Errorf("unknown meilisearch task status %q", task.Status)
+	}
+}
+
+func (b *Backend) WaitTask(ctx context.Context, uid int64) error {
+	for {
+		state, err := b.TaskState(ctx, uid)
+		if err != nil {
+			return err
+		}
+		if state == "succeeded" {
+			return nil
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("meilisearch task %d completion unknown: %w", uid, ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func (b *Backend) Search(q *contracts.SearchQuery) ([]string, error) {
@@ -154,29 +232,40 @@ func (b *Backend) IndexExists() (bool, error) {
 // InitIndex drops the index and recreates it. Everything in it is gone
 // afterwards and a full reindex has to follow.
 func (b *Backend) InitIndex(_ []string) error {
-	// A missing index makes the delete a 404, which is the normal case on a
-	// first init.
-	_ = b.deleteIndex()
-
-	createBody, err := json.Marshal(map[string]string{
-		"uid":        b.index,
-		"primaryKey": "id",
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.timeout)*time.Second)
+	defer cancel()
+	response, err := b.doRequestContext(ctx, fmt.Sprintf("%s/indexes/%s", b.host, b.index), http.MethodDelete, nil)
 	if err != nil {
-		return fmt.Errorf("marshal index creation: %w", err)
+		var remote *responseError
+		if !errors.As(err, &remote) || remote.Status != http.StatusNotFound {
+			return err
+		}
+	} else if err := b.waitReceipt(ctx, response); err != nil {
+		var failed *TaskFailure
+		if !errors.As(err, &failed) || failed.Status != "failed" || failed.Code != "index_not_found" {
+			return err
+		}
 	}
-	url := fmt.Sprintf("%s/indexes", b.host)
-	if _, err := b.doRequest(url, http.MethodPost, bytes.NewReader(createBody)); err != nil {
-		return fmt.Errorf("create index: %w", err)
-	}
-
-	// Meilisearch queues index work, so settings written before the creation
-	// task drains are applied against an index that does not exist yet.
-	if err := b.waitForIdle(); err != nil {
+	createBody, err := json.Marshal(map[string]string{"uid": b.index, "primaryKey": "id"})
+	if err != nil {
 		return err
 	}
+	response, err = b.doRequestContext(ctx, b.host+"/indexes", http.MethodPost, bytes.NewReader(createBody))
+	if err != nil {
+		return fmt.Errorf("create index: %w", err)
+	}
+	if err := b.waitReceipt(ctx, response); err != nil {
+		return err
+	}
+	return b.configureIndex(ctx)
+}
 
-	return b.configureIndex()
+func (b *Backend) waitReceipt(ctx context.Context, response []byte) error {
+	uid, err := decodeTaskReceipt(response)
+	if err != nil {
+		return err
+	}
+	return b.WaitTask(ctx, uid)
 }
 
 func (b *Backend) IndexStats() (contracts.IndexStats, error) {
@@ -240,13 +329,7 @@ func (b *Backend) IndexIsSane(_ []string) (bool, error) {
 
 // Internal helpers
 
-func (b *Backend) deleteIndex() error {
-	url := fmt.Sprintf("%s/indexes/%s", b.host, b.index)
-	_, err := b.doRequest(url, http.MethodDelete, nil)
-	return err
-}
-
-func (b *Backend) configureIndex() error {
+func (b *Backend) configureIndex(ctx context.Context) error {
 	settings := msSettings{
 		SearchableAttributes: b.searchableAttributes(),
 		FilterableAttributes: b.filterableAttributes(),
@@ -263,8 +346,11 @@ func (b *Backend) configureIndex() error {
 		return fmt.Errorf("marshal index settings: %w", err)
 	}
 	url := fmt.Sprintf("%s/indexes/%s/settings", b.host, b.index)
-	_, err = b.doRequest(url, http.MethodPatch, bytes.NewReader(body))
-	return err
+	response, err := b.doRequestContext(ctx, url, http.MethodPatch, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	return b.waitReceipt(ctx, response)
 }
 
 func (b *Backend) searchableAttributes() []string {
@@ -291,27 +377,6 @@ func (b *Backend) filterableAttributes() []string {
 
 func (b *Backend) sortableAttributes() []string {
 	return []string{"dateCreated", "lastModified"}
-}
-
-// waitForIdle polls the task queue for up to six seconds. It returns nil on
-// timeout rather than failing: the caller's next request will report the real
-// problem, and turning a slow queue into an init failure would be misleading.
-func (b *Backend) waitForIdle() error {
-	for range 30 {
-		time.Sleep(200 * time.Millisecond)
-		url := fmt.Sprintf("%s/tasks?statuses=enqueued,processing&limit=1", b.host)
-		body, err := b.doRequest(url, http.MethodGet, nil)
-		if err != nil {
-			continue
-		}
-		var resp struct {
-			Total int `json:"total"`
-		}
-		if json.Unmarshal(body, &resp) == nil && resp.Total == 0 {
-			return nil
-		}
-	}
-	return nil
 }
 
 func (b *Backend) buildDocument(doc *contracts.Document) map[string]any {
@@ -459,7 +524,11 @@ func (b *Backend) buildFilters(q *contracts.SearchQuery) []any {
 // HTTP layer
 
 func (b *Backend) doRequest(url, method string, body io.Reader) ([]byte, error) {
-	req, err := http.NewRequest(method, url, body)
+	return b.doRequestContext(context.Background(), url, method, body)
+}
+
+func (b *Backend) doRequestContext(ctx context.Context, url, method string, body io.Reader) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -480,10 +549,28 @@ func (b *Backend) doRequest(url, method string, body io.Reader) ([]byte, error) 
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("meilisearch returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, &responseError{Status: resp.StatusCode}
 	}
 
 	return respBody, nil
+}
+
+// TaskFailure exposes only stable classification, never document-bearing messages.
+type TaskFailure struct {
+	UID    int64
+	Status string
+	Code   string
+}
+
+func (e *TaskFailure) Error() string {
+	return fmt.Sprintf("meilisearch task %d %s (%s)", e.UID, e.Status, e.Code)
+}
+
+// Keep backend payloads (which may contain document text) out of errors/logs.
+type responseError struct{ Status int }
+
+func (e *responseError) Error() string {
+	return fmt.Sprintf("meilisearch returned status %d", e.Status)
 }
 
 // Response types

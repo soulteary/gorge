@@ -124,7 +124,11 @@ func (s *Service) withInput(data []byte, fn func(string) (any, error)) (any, err
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			slog.Error("image temporary directory cleanup failed", "error", err)
+		}
+	}()
 	path := filepath.Join(dir, "source")
 	if err = os.WriteFile(path, data, 0600); err != nil {
 		return nil, err

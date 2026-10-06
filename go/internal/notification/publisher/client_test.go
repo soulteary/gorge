@@ -13,7 +13,10 @@ import (
 func TestClientBoundsSlowEndpoint(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Error(err)
+			return
+		}
 		close(started)
 		select {
 		case <-r.Context().Done():

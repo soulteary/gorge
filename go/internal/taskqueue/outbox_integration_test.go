@@ -34,14 +34,20 @@ func exerciseOutboxRelay(t *testing.T, s *MySQLStore) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		for key, values := range resp.Header {
 			for _, value := range values {
 				w.Header().Add(key, value)
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	relay := &outbox.Relay{DB: s.db, Queue: worker.NewClient(server.URL, testToken)}

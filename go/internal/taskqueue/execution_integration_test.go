@@ -23,7 +23,11 @@ func TestExecutionRedisIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	ctx := context.Background()
 	defer func() {
 		keys, _ := s.rdb.Keys(ctx, prefix+"*").Result()
@@ -175,19 +179,31 @@ func TestExecutionMySQLIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	defer func() {
+		if err := admin.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	name := fmt.Sprintf("gorge_execution_test_%d", time.Now().UnixNano())
 	ctx := context.Background()
 	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
 		t.Fatal(err)
 	}
-	defer admin.ExecContext(ctx, "DROP DATABASE "+name)
+	defer func() {
+		if _, err := admin.ExecContext(ctx, "DROP DATABASE "+name); err != nil {
+			t.Error(err)
+		}
+	}()
 	cfg.DBName = name
 	db, err := OpenDB(cfg.FormatDSN())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	for _, ddl := range []string{
 		`CREATE TABLE worker_gorgeinbox (eventID VARBINARY(128) NOT NULL PRIMARY KEY, payloadHash VARCHAR(64) NOT NULL, response LONGTEXT NOT NULL) ENGINE=InnoDB`,
 		`CREATE TABLE worker_taskdata (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB`,

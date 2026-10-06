@@ -75,7 +75,7 @@ func newConduitExecutionHandler(conduit *ConduitClient, native worker.TaskHandle
 			return err
 		}
 		if supported.ExecutionVersion != 1 || supported.Result != "capabilities" {
-			return fmt.Errorf("Phorge does not support execution protocol 1")
+			return fmt.Errorf("phorge does not support execution protocol 1")
 		}
 		prepared, err := conduit.Call(ctx, "worker.execute", params)
 		if err != nil {
@@ -86,7 +86,7 @@ func newConduitExecutionHandler(conduit *ConduitClient, native worker.TaskHandle
 			return err
 		}
 		if policy.ExecutionVersion != 1 {
-			return fmt.Errorf("Phorge does not support execution protocol 1")
+			return fmt.Errorf("phorge does not support execution protocol 1")
 		}
 		if policy.Result == "permanent-failure" {
 			return &worker.PermanentError{Msg: policy.FailureReason}

@@ -45,7 +45,9 @@ func TestFeedDoesNotFollowRedirectToAnotherDestination(t *testing.T) {
 	called := false
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
 	defer target.Close()
-	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, 307) }))
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
 	defer source.Close()
 	raw, _ := json.Marshal(FeedHTTPData{URI: source.URL, DeliveryVersion: 1, Body: "storyID=17"})
 	err := NewFeedHTTPHandler()(context.Background(), &contracts.Task{}, raw)

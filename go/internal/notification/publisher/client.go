@@ -43,7 +43,8 @@ func (c *Client) Publish(ctx context.Context, endpoint, instance string, payload
 		}
 		return fmt.Errorf("notification transport failed")
 	}
-	defer resp.Body.Close()
+	// Closing the read-only response is cleanup; request/read errors take precedence.
+	defer func() { _ = resp.Body.Close() }()
 	_, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		return ErrCredentials

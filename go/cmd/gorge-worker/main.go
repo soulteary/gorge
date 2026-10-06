@@ -66,7 +66,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "invalid mail outbox DSN")
 			os.Exit(1)
 		}
-		defer mailDB.Close()
+		defer func() {
+			if err := mailDB.Close(); err != nil {
+				slog.Error("database close failed", "error", err)
+			}
+		}()
 	}
 	consumer := worker.NewConsumer(client, registry, cfg)
 
@@ -78,7 +82,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "invalid outbox configuration")
 			os.Exit(1)
 		}
-		defer outboxDB.Close()
+		defer func() {
+			if err := outboxDB.Close(); err != nil {
+				slog.Error("database close failed", "error", err)
+			}
+		}()
 	}
 	srv := httpx.New(httpx.Config{
 		ListenAddr: cfg.ListenAddr,
@@ -103,19 +111,25 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("outbox schema unavailable")
 				}
-				rows.Close()
+				if err := rows.Close(); err != nil {
+					return err
+				}
 			}
 			if mailDB != nil {
 				rows, err := mailDB.QueryContext(ctx, "SELECT eventID FROM metamta_gorgeoutbox LIMIT 1")
 				if err != nil {
 					return fmt.Errorf("mail outbox schema unavailable")
 				}
-				rows.Close()
+				if err := rows.Close(); err != nil {
+					return err
+				}
 				rows, err = mailDB.QueryContext(ctx, "SELECT deliveryID,projectionAttempts,projectionNextAttempt FROM gorge_mail_delivery LIMIT 1")
 				if err != nil {
 					return fmt.Errorf("mail projection schema unavailable")
 				}
-				rows.Close()
+				if err := rows.Close(); err != nil {
+					return err
+				}
 			}
 			if cfg.MailerURL != "" {
 				if err := handlers.ValidateMailDeliveryService(ctx, cfg.MailerURL, cfg.MailerToken); err != nil {

@@ -49,7 +49,17 @@ func deliveryTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close(); admin.Exec("DROP DATABASE " + name); admin.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+		if _, err := admin.Exec("DROP DATABASE " + name); err != nil {
+			t.Error(err)
+		}
+		if err := admin.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	for _, ddl := range []string{
 		`CREATE TABLE gorge_mail_delivery (deliveryID VARBINARY(128) PRIMARY KEY,payloadHash VARCHAR(64) NOT NULL,payload LONGTEXT NOT NULL,state VARCHAR(32) NOT NULL,revision INT NOT NULL,attempt INT NOT NULL,nextAttempt BIGINT NOT NULL,startedEpoch BIGINT NOT NULL,result LONGTEXT NOT NULL,projectionPending TINYINT NOT NULL DEFAULT 0,deadline BIGINT NOT NULL DEFAULT 0,projectionNextAttempt BIGINT NOT NULL DEFAULT 0,projectionAttempts INT NOT NULL DEFAULT 0,projectionLastError VARCHAR(255) NOT NULL DEFAULT '') ENGINE=InnoDB`,
 		`CREATE TABLE gorge_mail_attempt (id BIGINT AUTO_INCREMENT PRIMARY KEY,deliveryID VARBINARY(128) NOT NULL,attempt INT NOT NULL,startedEpoch BIGINT NOT NULL,finishedEpoch BIGINT NULL,outcome VARCHAR(32) NOT NULL,UNIQUE KEY deliveryAttempt(deliveryID,attempt)) ENGINE=InnoDB`,
@@ -101,7 +111,7 @@ func TestMailDeliveryMySQLIntegration(t *testing.T) {
 		t.Fatalf("unknown: %+v %v", out, err)
 	}
 	calls := a.calls.Load()
-	out, err = s.Deliver(ctx, unknown)
+	_, err = s.Deliver(ctx, unknown)
 	if err != nil || a.calls.Load() != calls {
 		t.Fatalf("unknown resent: %v", err)
 	}
@@ -112,13 +122,17 @@ func TestMailDeliveryMySQLIntegration(t *testing.T) {
 		t.Fatalf("retry: %+v %v", out, err)
 	}
 	calls = a.calls.Load()
-	s.Deliver(ctx, retry)
+	if _, err := s.Deliver(ctx, retry); err != nil {
+		t.Fatal(err)
+	}
 	if a.calls.Load() != calls {
 		t.Fatal("retry ignored nextAttempt")
 	}
 	dead := makeReq("mail/dead")
 	dead.AllowSend = &pause
-	s.Deliver(ctx, dead)
+	if _, err := s.Deliver(ctx, dead); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = db.Exec("UPDATE gorge_mail_delivery SET state='submitting',startedEpoch=0 WHERE deliveryID=?", dead.DeliveryID); err != nil {
 		t.Fatal(err)
 	}
@@ -135,13 +149,17 @@ func TestMailDeliveryMySQLIntegration(t *testing.T) {
 	}
 	cancelled := makeReq("mail/cancel")
 	cancelled.AllowSend = &pause
-	s.Deliver(ctx, cancelled)
+	if _, err := s.Deliver(ctx, cancelled); err != nil {
+		t.Fatal(err)
+	}
 	out, err = s.Cancel(ctx, cancelled.DeliveryID)
 	if err != nil || out.State != "cancelled" {
 		t.Fatalf("cancel: %+v %v", out, err)
 	}
 	cancelled.AllowSend = nil
-	s.Deliver(ctx, cancelled)
+	if _, err := s.Deliver(ctx, cancelled); err != nil {
+		t.Fatal(err)
+	}
 	if a.calls.Load() != calls {
 		t.Fatal("cancelled delivery sent")
 	}
@@ -159,13 +177,23 @@ func TestMailDeliveryMySQLIntegration(t *testing.T) {
 	}
 	orphan := makeReq("mail/orphan")
 	orphan.AllowSend = &pause
-	s.Deliver(ctx, orphan)
-	db.Exec("UPDATE gorge_mail_delivery SET state='submitting',attempt=1,startedEpoch=0 WHERE deliveryID=?", orphan.DeliveryID)
-	db.Exec("INSERT INTO gorge_mail_attempt(deliveryID,attempt,startedEpoch,outcome) VALUES (?,1,0,'submitting')", orphan.DeliveryID)
+	if _, err := s.Deliver(ctx, orphan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE gorge_mail_delivery SET state='submitting',attempt=1,startedEpoch=0 WHERE deliveryID=?", orphan.DeliveryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO gorge_mail_attempt(deliveryID,attempt,startedEpoch,outcome) VALUES (?,1,0,'submitting')", orphan.DeliveryID); err != nil {
+		t.Fatal(err)
+	}
 	stale := makeReq("mail/expired-orphan")
 	stale.AllowSend = &pause
-	s.Deliver(ctx, stale)
-	db.Exec("UPDATE gorge_mail_delivery SET deadline=1 WHERE deliveryID=?", stale.DeliveryID)
+	if _, err := s.Deliver(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE gorge_mail_delivery SET deadline=1 WHERE deliveryID=?", stale.DeliveryID); err != nil {
+		t.Fatal(err)
+	}
 	calls = a.calls.Load()
 	if err = s.Recover(ctx); err != nil {
 		t.Fatal(err)
@@ -185,7 +213,10 @@ func TestMailDeliveryMySQLIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var repeated int
-	db.QueryRow("SELECT revision FROM gorge_mail_delivery WHERE deliveryID=?", orphan.DeliveryID).Scan(&repeated)
+	if err := db.QueryRow("SELECT revision FROM gorge_mail_delivery WHERE deliveryID=?", orphan.DeliveryID).Scan(&repeated); err != nil {
+		t.Error(err)
+		return
+	}
 	if repeated != revision || a.calls.Load() != calls {
 		t.Fatal("recovery duplicated outcome or sent mail")
 	}
@@ -195,7 +226,10 @@ func TestMailDeliveryMySQLIntegration(t *testing.T) {
 		t.Fatal("missing backend accepted submission")
 	}
 	var n int
-	db.QueryRow("SELECT COUNT(*) FROM gorge_mail_attempt WHERE deliveryID=?", blocked.DeliveryID).Scan(&n)
+	if err := db.QueryRow("SELECT COUNT(*) FROM gorge_mail_attempt WHERE deliveryID=?", blocked.DeliveryID).Scan(&n); err != nil {
+		t.Error(err)
+		return
+	}
 	if n != 0 {
 		t.Fatal("configuration failure consumed provider attempt")
 	}

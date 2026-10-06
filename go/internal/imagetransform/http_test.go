@@ -40,7 +40,9 @@ func TestHTTPAuthAndValidation(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		res.Body.Close()
+		if err := res.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if res.StatusCode != c.status {
 			t.Errorf("%s got %d", c.path, res.StatusCode)
 		}
@@ -90,7 +92,11 @@ func TestRealImageService(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		defer res.Body.Close()
+		defer func() {
+			if err := res.Body.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		out, e := io.ReadAll(res.Body)
 		if e != nil {
 			t.Fatal(e)
@@ -110,11 +116,20 @@ func TestRealImageService(t *testing.T) {
 		var b bytes.Buffer
 		switch format {
 		case "png":
-			png.Encode(&b, img)
+			if err := png.Encode(&b, img); err != nil {
+				t.Error(err)
+				return
+			}
 		case "jpeg":
-			jpeg.Encode(&b, img, nil)
+			if err := jpeg.Encode(&b, img, nil); err != nil {
+				t.Error(err)
+				return
+			}
 		case "gif":
-			gif.Encode(&b, img, nil)
+			if err := gif.Encode(&b, img, nil); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 		for name := range Recipes {
 			out := call("/api/image/transform?revision="+Revision+"&recipe="+name, b.Bytes(), 200)
@@ -131,7 +146,10 @@ func TestRealImageService(t *testing.T) {
 	a.SetColorIndex(3, 3, 1)
 	b.SetColorIndex(20, 20, 2)
 	var anim bytes.Buffer
-	gif.EncodeAll(&anim, &gif.GIF{Image: []*image.Paletted{a, b}, Delay: []int{5, 12}, LoopCount: 3, Disposal: []byte{gif.DisposalBackground, gif.DisposalPrevious}})
+	if err := gif.EncodeAll(&anim, &gif.GIF{Image: []*image.Paletted{a, b}, Delay: []int{5, 12}, LoopCount: 3, Disposal: []byte{gif.DisposalBackground, gif.DisposalPrevious}}); err != nil {
+		t.Error(err)
+		return
+	}
 	out := call("/api/image/transform?revision="+Revision+"&recipe=profile&animation=legacy-preserve", anim.Bytes(), 200)
 	g, e := gif.DecodeAll(bytes.NewReader(out))
 	if e != nil || len(g.Image) != 2 || g.Delay[0] != 5 || g.Delay[1] != 12 || g.LoopCount != 3 {
@@ -155,7 +173,10 @@ func TestRealImageService(t *testing.T) {
 
 func TestOversizedCanvasRejectedBeforeDecoder(t *testing.T) {
 	var buf bytes.Buffer
-	png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, 1, 1)))
+	if err := png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Error(err)
+		return
+	}
 	data := buf.Bytes()
 	binary.BigEndian.PutUint32(data[16:20], 40000)
 	binary.BigEndian.PutUint32(data[20:24], 40000)
@@ -183,7 +204,11 @@ func TestRealImageCacheAndConcurrency(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		defer res.Body.Close()
+		defer func() {
+			if err := res.Body.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		var envelope struct{ Data map[string]int }
 		if e = json.NewDecoder(res.Body).Decode(&envelope); e != nil || res.StatusCode != 200 {
 			t.Fatalf("stats response: %d %v", res.StatusCode, e)
@@ -194,7 +219,10 @@ func TestRealImageCacheAndConcurrency(t *testing.T) {
 	var source bytes.Buffer
 	img := image.NewNRGBA(image.Rect(0, 0, 37, 29))
 	img.SetNRGBA(0, 0, color.NRGBA{99, 11, 40, 255})
-	png.Encode(&source, img)
+	if err := png.Encode(&source, img); err != nil {
+		t.Error(err)
+		return
+	}
 	var wg sync.WaitGroup
 	errs := make(chan string, 24)
 	start := make(chan struct{})
@@ -210,7 +238,11 @@ func TestRealImageCacheAndConcurrency(t *testing.T) {
 				errs <- e.Error()
 				return
 			}
-			defer res.Body.Close()
+			defer func() {
+				if err := res.Body.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			if res.StatusCode != 200 {
 				raw, _ := io.ReadAll(res.Body)
 				errs <- string(raw)

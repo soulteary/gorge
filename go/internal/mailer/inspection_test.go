@@ -26,7 +26,12 @@ func TestDeliveryInspection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() {
+				mock.ExpectClose()
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			mock.ExpectBegin()
 			mock.ExpectQuery("SELECT state,revision,attempt,nextAttempt,result").WithArgs("mail/1").WillReturnRows(sqlmock.NewRows([]string{"state", "revision", "attempt", "nextAttempt", "result", "deadline", "startedEpoch", "projectionPending", "projectionAttempts", "projectionNextAttempt", "projectionLastError"}).AddRow(tc.state, 2, 1, 0, tc.receipt, 400, 100, tc.pending, 3, 300, "projection acknowledgment unavailable"))
 			mock.ExpectQuery("SELECT attempt,startedEpoch,finishedEpoch,outcome").WithArgs("mail/1").WillReturnRows(sqlmock.NewRows([]string{"attempt", "startedEpoch", "finishedEpoch", "outcome"}).AddRow(1, 100, nil, tc.state))
@@ -39,7 +44,11 @@ func TestDeliveryInspection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer response.Body.Close()
+			defer func() {
+				if err := response.Body.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			if response.StatusCode != 200 {
 				t.Fatalf("HTTP %d", response.StatusCode)
 			}
@@ -77,7 +86,12 @@ func TestDeliveryInspectionErrors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() {
+				mock.ExpectClose()
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
 			mock.ExpectBegin()
 			mock.ExpectQuery("SELECT state,revision").WithArgs("mail/1").WillReturnError(tc.err)
 			mock.ExpectRollback()
@@ -90,7 +104,9 @@ func TestDeliveryInspectionErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			body, _ := io.ReadAll(response.Body)
-			response.Body.Close()
+			if err := response.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
 			if response.StatusCode != tc.status {
 				t.Fatalf("HTTP %d: %s", response.StatusCode, body)
 			}
@@ -118,7 +134,9 @@ func TestDeliveryInspectionAuthenticationAndIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		response.Body.Close()
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if response.StatusCode != tc.status {
 			t.Fatalf("%s: HTTP %d", tc.path, response.StatusCode)
 		}

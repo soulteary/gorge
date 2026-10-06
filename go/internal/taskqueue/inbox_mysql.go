@@ -18,7 +18,8 @@ func (s *MySQLStore) EnqueueEvent(ctx context.Context, req *contracts.EnqueueEve
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	// Rollback is cleanup and may return sql.ErrTxDone after commit.
+	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, "INSERT INTO worker_gorgeinbox (eventID, payloadHash, response) VALUES (?, ?, '') ON DUPLICATE KEY UPDATE eventID = eventID", req.EventID, digest)
 	if err != nil {
 		return nil, err

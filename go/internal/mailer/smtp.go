@@ -52,12 +52,15 @@ func (a *smtpAdapter) Send(ctx context.Context, msg *contracts.EmailMessage) (st
 	if err != nil {
 		return "", &SafeRetryError{Err: err}
 	}
-	defer conn.Close()
+	// Cleanup must not turn an accepted message into a retry.
+	defer func() { _ = conn.Close() }()
 	rawConn := conn
-	stop := context.AfterFunc(ctx, func() { rawConn.Close() })
+	stop := context.AfterFunc(ctx, func() { _ = rawConn.Close() })
 	defer stop()
 	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
+		if err := conn.SetDeadline(deadline); err != nil {
+			return "", &SafeRetryError{Err: err}
+		}
 	}
 	if a.protocol == "ssl" || a.protocol == "tls" {
 		secured := tls.Client(conn, &tls.Config{ServerName: a.host, MinVersion: tls.VersionTLS12})
@@ -70,7 +73,7 @@ func (a *smtpAdapter) Send(ctx context.Context, msg *contracts.EmailMessage) (st
 	if err != nil {
 		return "", &SafeRetryError{Err: err}
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if a.protocol != "ssl" && a.protocol != "tls" {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			if err := client.StartTLS(&tls.Config{ServerName: a.host, MinVersion: tls.VersionTLS12}); err != nil {

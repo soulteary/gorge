@@ -38,7 +38,8 @@ func mailDeliveryCall(ctx context.Context, url, token string, payload any) (*con
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	// Closing the read-only response is cleanup; request/read errors take precedence.
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		return nil, err
@@ -175,7 +176,8 @@ func ValidateMailDeliveryService(ctx context.Context, url, token string) error {
 	if err != nil {
 		return fmt.Errorf("native mailer unavailable")
 	}
-	defer response.Body.Close()
+	// Closing the read-only response is cleanup; request/read errors take precedence.
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != 200 {
 		return fmt.Errorf("native mailer capabilities unavailable: HTTP %d", response.StatusCode)
 	}

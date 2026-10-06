@@ -17,7 +17,10 @@ func TestHeartbeatExtendsLeaseAndStopsBeforeReporting(t *testing.T) {
 	renewed := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req contracts.RenewRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
 		count.Add(1)
 		expiry := req.LeaseExpires + 60
 		writeData(w, &contracts.Task{ID: req.TaskID, LeaseOwner: req.LeaseOwner, LeaseExpires: &expiry})
@@ -52,7 +55,10 @@ func TestHeartbeatExtendsLeaseAndStopsBeforeReporting(t *testing.T) {
 func TestHeartbeatCancelsOnOwnershipLoss(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(409)
-		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "ERR_LEASE_CONFLICT", "message": "reassigned"}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "ERR_LEASE_CONFLICT", "message": "reassigned"}}); err != nil {
+			t.Error(err)
+			return
+		}
 	}))
 	defer srv.Close()
 	expiry := time.Now().Unix() + 3

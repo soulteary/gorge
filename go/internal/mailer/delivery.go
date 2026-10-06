@@ -29,14 +29,14 @@ type DeliveryService struct {
 func (s *DeliveryService) Ready(ctx context.Context) error {
 	rows, err := s.DB.QueryContext(ctx, "SELECT deliveryID,projectionPending,deadline,projectionNextAttempt FROM gorge_mail_delivery LIMIT 1")
 	if err == nil {
-		rows.Close()
+		err = rows.Close()
 	}
 	if err != nil {
 		return err
 	}
 	rows, err = s.DB.QueryContext(ctx, "SELECT deliveryID FROM gorge_mail_attempt LIMIT 1")
 	if err == nil {
-		rows.Close()
+		err = rows.Close()
 	}
 	return err
 }
@@ -64,7 +64,8 @@ func (s *DeliveryService) Deliver(ctx context.Context, req contracts.MailDeliver
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	// Rollback is cleanup and may return sql.ErrTxDone after a successful commit.
+	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `INSERT INTO gorge_mail_delivery (deliveryID,payloadHash,payload,deadline,state,revision,attempt,nextAttempt,startedEpoch,result) VALUES (?,?,?,?,'prepared',0,0,0,0,'{}') ON DUPLICATE KEY UPDATE deliveryID=deliveryID`, req.DeliveryID, hash, raw, req.Deadline)
 	if err != nil {
 		return nil, err
@@ -167,7 +168,8 @@ func (s *DeliveryService) Deliver(ctx context.Context, req contracts.MailDeliver
 	if err != nil {
 		return nil, err
 	}
-	defer report.Rollback()
+	// Rollback is cleanup and may return sql.ErrTxDone after a successful commit.
+	defer func() { _ = report.Rollback() }()
 	if err = saveDelivery(reportCtx, report, out, "submitting"); err != nil {
 		return nil, err
 	}
@@ -206,7 +208,8 @@ func (s *DeliveryService) Cancel(ctx context.Context, id string) (*contracts.Mai
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	// Rollback is cleanup and may return sql.ErrTxDone after a successful commit.
+	defer func() { _ = tx.Rollback() }()
 	var state, storedResult string
 	var revision, attempt int
 	if err = tx.QueryRowContext(ctx, "SELECT state,revision,attempt,result FROM gorge_mail_delivery WHERE deliveryID=? FOR UPDATE", id).Scan(&state, &revision, &attempt, &storedResult); err != nil {
@@ -254,15 +257,15 @@ func (s *DeliveryService) Recover(ctx context.Context) error {
 		}
 		rows, err := tx.QueryContext(ctx, query, kind, threshold)
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback() // Preserve the operation error.
 			return err
 		}
 		var pending []*contracts.MailDeliveryResult
 		for rows.Next() {
 			out := &contracts.MailDeliveryResult{}
 			if err = rows.Scan(&out.DeliveryID, &out.Revision, &out.Attempt); err != nil {
-				rows.Close()
-				tx.Rollback()
+				_ = rows.Close()  // Preserve the scan error.
+				_ = tx.Rollback() // Preserve the operation error.
 				return err
 			}
 			out.Revision++
@@ -273,9 +276,11 @@ func (s *DeliveryService) Recover(ctx context.Context) error {
 			pending = append(pending, out)
 		}
 		err = rows.Err()
-		rows.Close()
+		if closeErr := rows.Close(); err == nil {
+			err = closeErr
+		}
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback() // Preserve the operation error.
 			return err
 		}
 		for _, out := range pending {
@@ -285,7 +290,7 @@ func (s *DeliveryService) Recover(ctx context.Context) error {
 				err = saveDelivery(ctx, tx, out, kind)
 			}
 			if err != nil {
-				tx.Rollback()
+				_ = tx.Rollback() // Preserve the operation error.
 				return err
 			}
 		}

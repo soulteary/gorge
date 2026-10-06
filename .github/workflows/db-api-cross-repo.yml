@@ -216,7 +216,8 @@ jobs:
         run: |
           set -euo pipefail
           PATH="$PWD/../arcanist/bin:$PATH"
-          ./bin/storage upgrade --force
+          # Replay migrations: the bundled quickstart contains retired schemata.
+          ./bin/storage upgrade --force --no-quickstart
 
       - name: Build and start gorge-db-api against the same MySQL
         working-directory: gorge/go

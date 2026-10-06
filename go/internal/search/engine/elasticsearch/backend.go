@@ -27,12 +27,13 @@ import (
 // The table is in-process state and is the reason this domain gets a binary of
 // its own rather than sharing gorge-render's.
 type Backend struct {
-	hosts    []string
-	index    string
-	version  int
-	timeout  int
-	protocol string
-	roles    map[string]bool
+	projectionMode bool
+	hosts          []string
+	index          string
+	version        int
+	timeout        int
+	protocol       string
+	roles          map[string]bool
 
 	mu     sync.RWMutex
 	health map[string]bool
@@ -66,13 +67,14 @@ func New(def engine.BackendDef) *Backend {
 	b := &Backend{
 		// A slash in the index name would escape the path this backend builds
 		// its URLs from, so it is stripped rather than escaped.
-		hosts:    def.Hosts,
-		index:    strings.ReplaceAll(def.Index, "/", ""),
-		version:  def.Version,
-		timeout:  def.Timeout,
-		protocol: def.Protocol,
-		roles:    make(map[string]bool),
-		health:   make(map[string]bool),
+		projectionMode: def.Options["projection"] == "true",
+		hosts:          def.Hosts,
+		index:          strings.ReplaceAll(def.Index, "/", ""),
+		version:        def.Version,
+		timeout:        def.Timeout,
+		protocol:       def.Protocol,
+		roles:          make(map[string]bool),
+		health:         make(map[string]bool),
 	}
 	if b.index == "" {
 		b.index = engine.DefaultIndexName
@@ -213,6 +215,9 @@ func (b *Backend) singleMappingType() string {
 func (b *Backend) supportsIncludeInAll() bool { return b.version < 6 }
 
 func (b *Backend) IndexDocument(doc *contracts.Document) error {
+	if b.projectionMode {
+		return fmt.Errorf("projection index requires versioned writes")
+	}
 	host, err := b.hostForRole("write")
 	if err != nil {
 		return err
@@ -531,6 +536,9 @@ func (b *Backend) buildDocSpec(doc *contracts.Document) map[string]any {
 
 func (b *Backend) buildSearchSpec(q *contracts.SearchQuery) map[string]any {
 	bq := &esquery.BoolQuery{}
+	if b.projectionMode {
+		bq.AddMustNot(map[string]any{"term": map[string]any{"_gorge.deleted": true}})
+	}
 
 	if q.Query != "" {
 		// The must clause searches every subfield of the three corpus fields,
@@ -792,6 +800,9 @@ func (b *Backend) buildIndexConfig(docTypes []string) map[string]any {
 func (b *Backend) buildProperties() map[string]any {
 	textType := b.textFieldType()
 	props := map[string]any{}
+	if b.projectionMode {
+		props["_gorge"] = map[string]any{"properties": map[string]any{"namespace": map[string]any{"type": "keyword"}, "generation": map[string]any{"type": "keyword"}, "hash": map[string]any{"type": "keyword"}, "deleted": map[string]any{"type": "boolean"}}}
+	}
 
 	for _, f := range esquery.AllFields() {
 		props[f] = map[string]any{

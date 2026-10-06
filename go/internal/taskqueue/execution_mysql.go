@@ -106,7 +106,8 @@ func (s *MySQLStore) Resolve(ctx context.Context, req *contracts.ResolveRequest)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	// Rollback is cleanup and may return sql.ErrTxDone after commit.
+	defer func() { _ = tx.Rollback() }()
 	t, err := lockExecution(ctx, tx, req.ExecutionLease)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrLeaseConflict

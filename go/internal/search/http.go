@@ -36,8 +36,9 @@ const (
 
 // Deps is everything the search routes need to serve a request.
 type Deps struct {
-	Engine *engine.SearchEngine
-	Token  string
+	Engine     *engine.SearchEngine
+	Token      string
+	Projection *ProjectionIngress
 }
 
 // RegisterRoutes mounts the search endpoints.
@@ -47,6 +48,7 @@ type Deps struct {
 // probes are not registered here — the platform's httpx.New already did that,
 // and domain packages must not register a second copy.
 func RegisterRoutes(app fiber.Router, deps *Deps) {
+	registerProjectionRoutes(app, deps)
 	g := app.Group("/api/search")
 	g.Use(auth.Token(deps.Token))
 
