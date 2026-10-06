@@ -70,10 +70,41 @@ func TestStatsRequiresToken(t *testing.T) {
 	}
 }
 
-// TestReadinessIsLiveness: the worker holds no database and reaches the queue
-// over HTTP, so /readyz answers 200 as long as the process is up — there is no
-// external dependency whose absence should take it out of rotation.
-func TestReadinessIsLiveness(t *testing.T) {
+func TestWorkerCapabilitiesBeforePHPBootstrap(t *testing.T) {
+	app := newStatsServer(t)
+	for _, token := range []string{"", testToken} {
+		req := httptest.NewRequest(http.MethodGet, "/api/worker/meta", nil)
+		req.Header.Set("X-Service-Token", token)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				t.Errorf("close capabilities response: %v", err)
+			}
+		}()
+		if token == "" {
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatal("capabilities must enforce authentication")
+			}
+			continue
+		}
+		var envelope struct {
+			Data contracts.ExecutionCapabilities `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Data.ExecutionVersion != 1 || !envelope.Data.LeaseOutcomes {
+			t.Fatalf("invalid capabilities: %+v", envelope)
+		}
+	}
+}
+
+// The stats-only fixture installs no dependency probe. Production main wires
+// queue/PHP negotiation, policies and storage checks into /readyz.
+func TestStatsFixtureWithoutDependencyProbeIsReady(t *testing.T) {
 	app := newStatsServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
@@ -82,6 +113,6 @@ func TestReadinessIsLiveness(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("readiness must equal liveness for the worker, got %d", resp.StatusCode)
+		t.Errorf("fixture without a dependency probe must be ready, got %d", resp.StatusCode)
 	}
 }

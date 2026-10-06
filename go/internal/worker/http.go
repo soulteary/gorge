@@ -3,6 +3,7 @@ package worker
 import (
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/soulteary/gorge/go/internal/contracts"
 	"github.com/soulteary/gorge/go/internal/platform/auth"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 )
@@ -14,7 +15,7 @@ type Deps struct {
 	NotificationStats func() any
 }
 
-// RegisterRoutes mounts the worker status endpoint under /api/worker.
+// RegisterRoutes mounts worker status and static capabilities under /api/worker.
 //
 // The path is part of the contract: a Phorge setup check reads
 // /api/worker/stats to confirm the consumer is alive and to see which classes
@@ -22,6 +23,11 @@ type Deps struct {
 func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g := app.Group("/api/worker")
 	g.Use(auth.Token(deps.Token))
+	g.Get("/meta", func(c fiber.Ctx) error {
+		return httpx.OK(c, contracts.ExecutionCapabilities{
+			ExecutionVersion: 1, LeaseOutcomes: true,
+		})
+	})
 
 	g.Get("/stats", stats(deps))
 	if deps.NotificationStats != nil {

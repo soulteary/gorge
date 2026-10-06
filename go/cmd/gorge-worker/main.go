@@ -73,6 +73,15 @@ func main() {
 		}()
 	}
 	consumer := worker.NewConsumer(client, registry, cfg)
+	checkExecution := func(ctx context.Context) error {
+		if err := client.RequireExecutionProtocol(ctx); err != nil {
+			return err
+		}
+		if cfg.ConduitURL != "" {
+			return handlers.ValidateExecutionService(ctx, cfg.ConduitURL, cfg.ConduitToken)
+		}
+		return nil
+	}
 
 	var outboxDB *sql.DB
 	if cfg.OutboxDSN != "" {
@@ -88,55 +97,58 @@ func main() {
 			}
 		}()
 	}
+	checkReady := func(ctx context.Context) error {
+		if err := checkExecution(ctx); err != nil {
+			return err
+		}
+		if cfg.NotificationPolicyFile != "" && cfg.NotificationMode != "delegated" && cfg.NotificationMode != "shadow" {
+			if err := handlers.ValidateNotificationPolicy(cfg.NotificationPolicyFile); err != nil {
+				return err
+			}
+		}
+		if cfg.FeedPolicyFile != "" {
+			if err := handlers.ValidateFeedPolicy(cfg.FeedPolicyFile); err != nil {
+				return err
+			}
+		}
+		if outboxDB != nil {
+			rows, err := outboxDB.QueryContext(ctx, "SELECT eventID FROM feed_gorgeoutbox LIMIT 1")
+			if err != nil {
+				return fmt.Errorf("outbox schema unavailable")
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+		}
+		if mailDB != nil {
+			rows, err := mailDB.QueryContext(ctx, "SELECT eventID FROM metamta_gorgeoutbox LIMIT 1")
+			if err != nil {
+				return fmt.Errorf("mail outbox schema unavailable")
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			rows, err = mailDB.QueryContext(ctx, "SELECT deliveryID,projectionAttempts,projectionNextAttempt FROM gorge_mail_delivery LIMIT 1")
+			if err != nil {
+				return fmt.Errorf("mail projection schema unavailable")
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+		}
+		if cfg.MailerURL != "" {
+			if err := handlers.ValidateMailDeliveryService(ctx, cfg.MailerURL, cfg.MailerToken); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	srv := httpx.New(httpx.Config{
 		ListenAddr: cfg.ListenAddr,
 		Ready: func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := client.RequireExecutionProtocol(ctx); err != nil {
-				return err
-			}
-			if cfg.NotificationPolicyFile != "" && cfg.NotificationMode != "delegated" && cfg.NotificationMode != "shadow" {
-				if err := handlers.ValidateNotificationPolicy(cfg.NotificationPolicyFile); err != nil {
-					return err
-				}
-			}
-			if cfg.FeedPolicyFile != "" {
-				if err := handlers.ValidateFeedPolicy(cfg.FeedPolicyFile); err != nil {
-					return err
-				}
-			}
-			if outboxDB != nil {
-				rows, err := outboxDB.QueryContext(ctx, "SELECT eventID FROM feed_gorgeoutbox LIMIT 1")
-				if err != nil {
-					return fmt.Errorf("outbox schema unavailable")
-				}
-				if err := rows.Close(); err != nil {
-					return err
-				}
-			}
-			if mailDB != nil {
-				rows, err := mailDB.QueryContext(ctx, "SELECT eventID FROM metamta_gorgeoutbox LIMIT 1")
-				if err != nil {
-					return fmt.Errorf("mail outbox schema unavailable")
-				}
-				if err := rows.Close(); err != nil {
-					return err
-				}
-				rows, err = mailDB.QueryContext(ctx, "SELECT deliveryID,projectionAttempts,projectionNextAttempt FROM gorge_mail_delivery LIMIT 1")
-				if err != nil {
-					return fmt.Errorf("mail projection schema unavailable")
-				}
-				if err := rows.Close(); err != nil {
-					return err
-				}
-			}
-			if cfg.MailerURL != "" {
-				if err := handlers.ValidateMailDeliveryService(ctx, cfg.MailerURL, cfg.MailerToken); err != nil {
-					return err
-				}
-			}
-			return nil
+			return checkReady(ctx)
 		},
 	})
 
@@ -186,7 +198,9 @@ func main() {
 	looping := make(chan struct{})
 	go func() {
 		defer close(looping)
-		consumer.Run(ctx)
+		if worker.WaitForExecution(ctx, 2*time.Second, checkReady) {
+			consumer.Run(ctx)
+		}
 	}()
 
 	runErr := srv.Run()

@@ -12,9 +12,15 @@
 旧 key 格式仍需委托 PHP，必须先排空历史任务再移除该兼容路径。
 不配置政策文件时保留之前的 PHP prepare 路径；原生化部署必须配置它。
 
-就绪检查现在验证 queue 的 v1 生命周期能力、配置的政策文件和 outbox
-表。健康检查仍只表示存活。首次升级时缺少表会使 /readyz 返回失败，但
-/healthz 不受影响；迁移角色不能依赖 Worker ready，避免首启闭环。
+就绪检查验证 queue 的 v1 生命周期能力、PHP worker.execute capabilities（配置了
+Conduit 时）、政策文件、outbox 表及配置的原生 mailer 能力。首次检查全部成功前不会
+领取业务任务；失败时继续等待，取消进程会结束等待。/healthz 仍只表示存活。
+
+鉴权的 GET `/api/worker/meta` 返回 `{data:{executionVersion:1,leaseOutcomes:true}}`，
+只报告此 worker 实现的协议版本，不访问队列或 PHP，可供 PHP 启动前握手。
+/readyz 才检查运行依赖；缺少表、政策或 PHP capability 会返回 503。
+迁移角色不能依赖 worker ready，PHP Web 的 bootstrap 也只能等待静态 meta；
+PHP 启动后再让 daemon 等待 worker ready，避免首次启动闭环。
 
 ## Native realtime notification delivery
 
