@@ -17,6 +17,7 @@ import (
 )
 
 type ProjectionConfig struct {
+	SourceScan      *SourceScanConfig   `json:"sourceScan,omitempty"`
 	Rebuild         bool                `json:"rebuild,omitempty"`
 	Deliveries      []ProjectionBackend `json:"deliveries,omitempty"`
 	SourceOutboxDSN string              `json:"sourceOutboxDSN,omitempty"`
@@ -29,6 +30,7 @@ type projectionAcceptor interface {
 	Accept(context.Context, *contracts.SearchProjection, []projection.Target) (*projection.Receipt, error)
 }
 type ProjectionIngress struct {
+	SourceScanner   *SourceScanRuntime
 	Rebuilder       projectionRebuilder
 	SourceOutbox    *sql.DB
 	Inspector       projectionInspector
@@ -68,6 +70,13 @@ func OpenProjection(ctx context.Context, cfg *ProjectionConfig, token string) (*
 		"SELECT namespace,phid,revision,envelope FROM search_projection_head LIMIT 0",
 		"SELECT namespace,backendID,generationID,phid,revision,eventID,status,createdEpoch,leaseOwner,leaseEpoch,leaseExpires,leaseRenewals,attempts,nextAttempt,lastError,appliedEpoch FROM search_projection_delivery LIMIT 0",
 	}
+	if cfg.SourceScan != nil && !cfg.Rebuild {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("source scanning requires opt-in rebuild")
+	}
+	if cfg.SourceScan != nil {
+		probes = append(probes, "SELECT namespace,jobID,backendID,generationID,catalog,createdEpoch FROM search_projection_source_job LIMIT 0", "SELECT namespace,jobID,className,upperID,cursorID,status,pages,materialized,missing,noEngine,leaseOwner,leaseEpoch,leaseExpires,nextAttempt FROM search_projection_source_shard LIMIT 0")
+	}
 	if cfg.Rebuild {
 		if len(cfg.Deliveries) == 0 {
 			_ = db.Close()
@@ -99,10 +108,11 @@ func registerProjectionRoutes(app fiber.Router, deps *Deps) {
 	}
 	g := app.Group("/api/search/projections", auth.Token(deps.Token, auth.WithQueryToken(false)))
 	g.Get("/capabilities", func(c fiber.Ctx) error {
-		return httpx.OK(c, fiber.Map{"projectionVersion": 1, "namespace": deps.Projection.Namespace, "maxDocumentBytes": projection.MaxDocumentBytes, "batch": false, "durableAcceptance": true, "backendDelivery": deps.Projection.BackendDelivery, "inspection": deps.Projection.Inspector != nil, "rebuild": deps.Projection.Rebuilder != nil, "sourceScan": false, "readActivation": false, "receiptStatus": []string{"accepted", "superseded"}, "targets": deps.Projection.Targets})
+		return httpx.OK(c, fiber.Map{"projectionVersion": 1, "namespace": deps.Projection.Namespace, "maxDocumentBytes": projection.MaxDocumentBytes, "batch": false, "durableAcceptance": true, "backendDelivery": deps.Projection.BackendDelivery, "inspection": deps.Projection.Inspector != nil, "rebuild": deps.Projection.Rebuilder != nil, "sourceScan": deps.Projection.SourceScanner != nil, "readActivation": false, "receiptStatus": []string{"accepted", "superseded"}, "targets": deps.Projection.Targets})
 	})
 	registerProjectionInspection(g, deps.Projection)
 	registerProjectionRebuild(g, deps.Projection)
+	registerSourceScanRoutes(g, deps.Projection)
 	g.Post("", func(c fiber.Ctx) error {
 		event, err := projection.Decode(c.Body())
 		if err != nil {

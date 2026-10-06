@@ -517,6 +517,90 @@ paths:
         '404': {description: Job not found or rebuild disabled}
         '503': {description: Control database unavailable}
 
+  /api/search/projections/source-scans:
+    post:
+      tags: [index]
+      summary: Freeze registered business-source ranges into durable scan shards
+      description: Requires opt-in sourceScan and rebuild configuration. Completion never authorizes activation.
+      operationId: createSourceScan
+      security: [{ServiceTokenHeader: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [jobID, backendID, generationID]
+              properties:
+                jobID: {type: string, maxLength: 64}
+                backendID: {type: string, maxLength: 64}
+                generationID: {type: string, maxLength: 64}
+      responses:
+        '200':
+          description: Persisted job; repeats retain the original ranges
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/SourceScanJob'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {description: Job ID already bound to another target}
+        '503': {description: Source or control database unavailable}
+  /api/search/projections/source-scans/{jobID}:
+    get:
+      tags: [index]
+      summary: Read durable source scan cursors and counts
+      operationId: getSourceScan
+      security: [{ServiceTokenHeader: []}]
+      parameters:
+        - in: path
+          name: jobID
+          required: true
+          schema: {type: string, maxLength: 64}
+      responses:
+        '200':
+          description: Persisted source scan job
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/SourceScanJob'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '503': {description: Control database unavailable}
+
+  /api/search/projections/source-scans/{jobID}/check:
+    post:
+      tags: [index]
+      summary: Persist an exact current-revision delivery checkpoint after source range completion
+      description: Repairs a missing linked control job. Does not verify uncaptured business changes or authorize activation.
+      operationId: checkSourceScan
+      security: [{ServiceTokenHeader: []}]
+      parameters:
+        - in: path
+          name: jobID
+          required: true
+          schema: {type: string, maxLength: 64}
+      responses:
+        '200':
+          description: Source progress and optional persisted control checkpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {$ref: '#/components/schemas/SourceScanCheck'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {description: Linked repair target conflict}
+        '503': {description: Control database unavailable}
+
 components:
 
   securitySchemes:
@@ -537,6 +621,56 @@ components:
 
   schemas:
 
+    SourceScanCheck:
+      type: object
+      required: [job, transportCaughtUp, sourceCoverageVerified, activationAllowed]
+      properties:
+        job: {$ref: '#/components/schemas/SourceScanJob'}
+        control: {$ref: '#/components/schemas/RebuildCheck'}
+        transportCaughtUp: {type: boolean}
+        sourceCoverageVerified: {type: boolean, enum: [false]}
+        activationAllowed: {type: boolean, enum: [false]}
+    SourceScanJob:
+      type: object
+      required: [namespace, jobID, backendID, generationID, catalog, shards, sourceScanComplete, sourceCoverageVerified, activationAllowed]
+      properties:
+        namespace: {type: string}
+        jobID: {type: string}
+        backendID: {type: string}
+        generationID: {type: string}
+        controlRebuildJobID: {type: string, description: Stable linked control repair job}
+        sourceScanComplete: {type: boolean, description: Captured eligible ID ranges visited only}
+        sourceCoverageVerified: {type: boolean, enum: [false]}
+        activationAllowed: {type: boolean, enum: [false]}
+        catalog:
+          type: object
+          properties:
+            sourceScanVersion: {type: integer, enum: [1]}
+            namespace: {type: string}
+            serializerVersion: {type: string}
+            scope: {type: string, enum: [registered-lisk-fulltext]}
+            sourceCoverageVerified: {type: boolean, enum: [false]}
+            unsupportedClasses: {type: array, items: {type: string}}
+            sources:
+              type: array
+              items:
+                type: object
+                properties:
+                  className: {type: string}
+                  upperID: {type: string, pattern: '^(0|[1-9][0-9]*)$'}
+        shards:
+          type: array
+          items:
+            type: object
+            properties:
+              className: {type: string}
+              upperID: {type: string}
+              cursorID: {type: string}
+              status: {type: string, enum: [scanning, complete]}
+              pages: {type: integer, minimum: 0}
+              materialized: {type: integer, minimum: 0}
+              missing: {type: integer, minimum: 0}
+              noEngine: {type: integer, minimum: 0}
     RebuildJob:
       type: object
       properties:

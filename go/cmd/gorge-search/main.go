@@ -82,6 +82,20 @@ func main() {
 			(&projection.MySQLStore{DB: controlDB}).RunRebuilds(relayCtx, ingress.Namespace, fmt.Sprintf("rebuild-%d", time.Now().UnixNano()), ingress.Targets)
 		}()
 	}
+	if cfg.Projection != nil && cfg.Projection.SourceScan != nil {
+		provider, err := search.NewSourceProvider(cfg.Projection.SourceScan, os.Getenv("GORGE_SEARCH_SOURCE_TOKEN"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "gorge-search: invalid source scan configuration")
+			os.Exit(1)
+		}
+		store := &projection.MySQLStore{DB: controlDB}
+		ingress.SourceScanner = &search.SourceScanRuntime{Store: store, Provider: provider}
+		relayWG.Add(1)
+		go func() {
+			defer relayWG.Done()
+			store.RunSourceScans(relayCtx, ingress.Namespace, fmt.Sprintf("source-%d", time.Now().UnixNano()), ingress.Targets, provider)
+		}()
+	}
 	for _, worker := range workers {
 		relayWG.Add(1)
 		go func() { defer relayWG.Done(); worker.Run(relayCtx) }()

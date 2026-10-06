@@ -379,7 +379,8 @@ source-present suppression, post-source-commit recovery, atomic publication
 rollback, replay, no-intent absence, source table errors, caller rollback, poison
 row isolation, and the actual destruction engine's pre-intent/crash behavior.
 Real process termination and cross-database concurrent restoration remain
-additional production acceptance tests; the rebuild controller is still absent.
+additional production acceptance tests. The controllers below cover bounded
+source ranges and control transport, not production activation.
 
 ## Durable generation backfill (opt-in)
 
@@ -424,8 +425,9 @@ Backend acceptance is not a refresh/query-equivalence guarantee.
 `sourceCoverageVerified:false` and `activationAllowed:false` are deliberate and
 cannot be enabled by the API. Missing business objects that have never emitted a
 projection are invisible to this scan. There is no live-read activation endpoint.
-Authoritative domain-class enumeration, bounded source scanning/materialization,
-dirty-intent barriers, backend query comparison, activation and rollback remain
+The bounded source scanner below adds registered Lisk class enumeration and
+materialization. Complete domain coverage, dirty-intent barriers, backend query
+comparison, activation and rollback remain
 required before retiring synchronous PHP indexing. Job/check/receipt retention
 and cancellation are not implemented; keep their rows during shadow rollout.
 
@@ -433,3 +435,82 @@ The real MySQL suite covers partial-page fault injection, restart replay,
 concurrent claims, target conflicts, pending/applied checkpoints, late/new-version
 repair, and expired-lease takeover. These validate the control transport boundary;
 this change does not claim to have tested a real ES rebuild or production cutover.
+
+
+## Durable business-source scan (opt-in)
+
+Apply `resources/sql/search/source-scan.sql` to the Go control database. Enable
+`projection.rebuild:true` and `projection.sourceScan:{"conduitURL":"http://your-conduit-gateway"}`
+with a configured, bound delivery target. Set `GORGE_SEARCH_SOURCE_TOKEN` to the
+PHP `gorge.conduit.token` value. PHP must enable both `gorge.search.source-scan`
+and `gorge.search.projection-shadow`; both default false. Its existing search
+projection/outbox migration is required. Startup probes both new control tables.
+
+The header-authenticated `POST /api/search/projections/source-scans` takes
+`{"jobID":"source-g2","backendID":"es-shadow","generationID":"g2"}`.
+`GET /api/search/projections/source-scans/source-g2` reports durable progress.
+A repeated job/target returns the original catalog and cursor without calling
+PHP again. Changing that job's target conflicts. There is no activation endpoint.
+
+PHP `search.source` enumerates registered fulltext classes backed by Lisk tables
+with numeric `id` and auxiliary PHID, listing unsupported classes separately.
+It captures each table's primary `MAX(id)` as a decimal string; Go freezes those
+ranges into independent durable shards. PHP reads each page from the primary,
+locks each PHID using the indexing/deletion lock, reloads the row and builds its
+domain document. It publishes an immutable projection and source outbox receipt
+before returning the materialized envelope. No PHP prepare/execute worker is used.
+
+Pages contain at most 32 rows, a 3 MiB estimated payload budget and a 10-second
+soft budget checked between objects. A single document over 2 MiB fails the page.
+Go bounds the HTTP response to 4 MiB and the page operation to 20 seconds inside
+a 30-second lease. Ownership/epoch/expiry fence cursor commits. All page events
+must reach the inbox before progress advances; partial capture, partial acceptance
+or a lost response safely replays. Stable job/class/ID/revision receipts schedule
+the target even when original receipts already belong to another generation.
+Failures defer the shard 30 seconds; removing its configured target pauses it.
+
+Missing rows and objects without an engine produce explicit counts, never
+synthetic tombstones. Source/table/engine errors keep the cursor pending.
+`sourceScanComplete` means only the captured ID ranges were visited. It does not
+mean unsupported classes, deletions, backend delivery, query equality or all
+business dependencies are covered. Source upper bounds are not a cross-database
+snapshot; engine/extension dependency queries retain their existing consistency.
+New IDs above the upper bound and late inserts into scanned gaps require another
+job or normal source capture. All eligible production classes still require
+compatibility validation; the real PHP fixture validates the protocol and failure
+boundary rather than every domain engine. `sourceCoverageVerified:false` and
+`activationAllowed:false` remain unconditional.
+
+Disposable MySQL tests cover partial capture/acceptance, idempotent retries,
+frozen ranges, retargeting receipts, expired lease takeover and provider errors.
+PHP tests cover primary range bounds, missing/no-engine handling, pagination,
+payload prefixes and token/feature guards; Go validates a real PHP page sample.
+No production data or live Elasticsearch cutover is exercised by these tests.
+
+
+### Source completion and incremental control repair
+
+The final source shard now commits its terminal cursor and creation of a stable
+`controlRebuildJobID` in one control-database transaction. Parent-row locking
+serializes simultaneous shard completions; an insertion failure leaves the
+source cursor pending. The existing rebuild runner then continuously repairs
+missing current-revision deliveries every 60 seconds, including events accepted
+after source scanning and authoritative deletion projections. It uses the same
+bound target and separate inbox receipts; no new schema is required beyond the
+source-scan and rebuild schemas above.
+
+`POST /api/search/projections/source-scans/{jobID}/check` reports the source job
+and, after range completion, persists a control rebuild checkpoint. It also
+repairs a missing linked rebuild for source jobs completed by an older scanner.
+`transportCaughtUp` requires completed source ranges, a control job in
+`awaiting-delivery`, and applied receipts for every exact current control-head
+revision. Later accepted events invalidate that observation. Incomplete source
+scans return `transportCaughtUp:false` without a control checkpoint.
+
+This check does not inspect uncommitted or unexported business changes, deferred
+PHP indexing tasks, pending deletion intents, backend refresh, or query results.
+It is not a global dirty-intent barrier. The source outbox relay must remain
+running, and domain mutation capture/commit integration is still required before
+any live cutover. Coverage and activation flags remain false even when control
+transport has caught up. Tests simulate receipt states; they do not assert real
+Elasticsearch application or refresh.

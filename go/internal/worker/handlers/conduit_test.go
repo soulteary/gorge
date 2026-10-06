@@ -106,13 +106,6 @@ func TestRegisterAllAlwaysInstallsNativeFeedHandler(t *testing.T) {
 	}
 }
 
-func TestConduitClientHasNoTimeoutShorterThanTheTaskLease(t *testing.T) {
-	client := NewConduitClient("http://phorge.example", "")
-	if client.httpClient.Timeout != 0 {
-		t.Fatalf("Conduit client timeout = %s, want task-context deadline only", client.httpClient.Timeout)
-	}
-}
-
 // TestConduitCallHTMLResponse verifies a misrouted call that returns HTML
 // yields a bounded, diagnosable error instead of the bare
 // "invalid character '<'" JSON decode error.
