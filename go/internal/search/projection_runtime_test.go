@@ -54,18 +54,30 @@ func TestProjectionIngressToElasticsearchIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	defer func() {
+		if err := admin.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	name := fmt.Sprintf("gorge_delivery_%d", time.Now().UnixNano())
 	if _, err = admin.Exec("CREATE DATABASE " + name); err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Exec("DROP DATABASE " + name)
+	defer func() {
+		if _, err := admin.Exec("DROP DATABASE " + name); err != nil {
+			t.Error(err)
+		}
+	}()
 	dbcfg.DBName = name
 	db, err := sql.Open("mysql", dbcfg.FormatDSN())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	for _, ddl := range strings.Split(projection.Schema, ";") {
 		if strings.TrimSpace(ddl) != "" {
 			if _, err = db.Exec(ddl); err != nil {
@@ -82,7 +94,9 @@ func TestProjectionIngressToElasticsearchIntegration(t *testing.T) {
 		req, _ := http.NewRequest("DELETE", endpoint+"/"+name, nil)
 		resp, e := http.DefaultClient.Do(req)
 		if e == nil {
-			resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}()
 	target := projection.Target{BackendID: "es", GenerationID: "g1"}
@@ -91,7 +105,11 @@ func TestProjectionIngressToElasticsearchIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer control.Close()
+	defer func() {
+		if err := control.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	workers, err := PrepareProjectionDelivery(context.Background(), cfg, nil, control)
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +136,9 @@ func TestProjectionIngressToElasticsearchIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refresh.Body.Close()
+	if err := refresh.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if ids, err := backend.Search(&contracts.SearchQuery{}); err != nil || len(ids) != 1 || ids[0] != event.PHID {
 		t.Fatalf("backend not applied %v %v", ids, err)
 	}

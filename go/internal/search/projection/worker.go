@@ -115,7 +115,7 @@ func (s *MySQLStore) BindTarget(ctx context.Context, namespace string, target Ta
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `INSERT INTO search_projection_target(namespace,backendID,generationID,configHash,indexUUID) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE backendID=backendID`, namespace, target.BackendID, target.GenerationID, hash, indexUUID)
 	if err != nil {
 		return err

@@ -19,7 +19,9 @@ func TestReadOnlyStatusAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
 			if resp.StatusCode != 401 {
 				t.Fatalf("query/headerless auth accepted %d", resp.StatusCode)
 			}
@@ -31,7 +33,9 @@ func TestReadOnlyStatusAuth(t *testing.T) {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
 		if resp.StatusCode != 200 {
 			t.Fatalf("authorized status rejected %d", resp.StatusCode)
 		}
@@ -45,7 +49,9 @@ func TestReadOnlyStatusAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != 405 && resp.StatusCode != 404 {
 		t.Fatal("status API accepted mutation")
 	}

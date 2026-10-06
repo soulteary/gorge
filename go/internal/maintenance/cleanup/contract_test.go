@@ -16,7 +16,11 @@ func TestPHPExportCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	e, err := Decode(f)
 	if err != nil {
 		t.Fatal(err)

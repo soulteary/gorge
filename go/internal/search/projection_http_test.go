@@ -59,7 +59,9 @@ func TestProjectionIngressBoundary(t *testing.T) {
 			}
 			if tc.status == 200 {
 				var receipt projection.Receipt
-				json.Unmarshal(envelope(t, body).Data, &receipt)
+				if err := json.Unmarshal(envelope(t, body).Data, &receipt); err != nil {
+					t.Fatal(err)
+				}
 				if receipt.Status != "accepted" {
 					t.Fatal("receipt claimed wrong state")
 				}

@@ -112,7 +112,7 @@ func validatePlan(ctx context.Context, q planQuerier, spec Spec, cutoff int64, l
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	columns, err := rows.Columns()
 	if err != nil {
 		return err

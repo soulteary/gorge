@@ -33,18 +33,30 @@ func TestMySQLDurableProjectionIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	defer func() {
+		if err := admin.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	name := fmt.Sprintf("gorge_search_test_%d", time.Now().UnixNano())
 	if _, err = admin.Exec("CREATE DATABASE " + name); err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Exec("DROP DATABASE " + name)
+	defer func() {
+		if _, err := admin.Exec("DROP DATABASE " + name); err != nil {
+			t.Error(err)
+		}
+	}()
 	cfg.DBName = name
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	for _, ddl := range strings.Split(Schema, ";") {
 		if strings.TrimSpace(ddl) != "" {
 			if _, err = db.Exec(ddl); err != nil {

@@ -60,7 +60,7 @@ func (s *MySQLStore) EventStatus(ctx context.Context, namespace, id string) (*Ev
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result := &EventStatus{Deliveries: []DeliveryState{}}
 	var raw string
 	if err = tx.QueryRowContext(ctx, `SELECT response FROM search_projection_inbox WHERE namespace=? AND eventID=?`, namespace, id).Scan(&raw); err != nil {
@@ -112,7 +112,7 @@ func (s *MySQLStore) DeliveryStats(ctx context.Context, namespace string, target
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result := &DeliveryStats{Targets: []TargetStats{}}
 	if err = tx.QueryRowContext(ctx, "SELECT UNIX_TIMESTAMP()").Scan(&result.ObservedEpoch); err != nil {
 		return nil, err

@@ -48,7 +48,7 @@ func run() error {
 		db.SetMaxOpenConns(3)
 		db.SetMaxIdleConns(2)
 		db.SetConnMaxLifetime(5 * time.Minute)
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		store.DBs[role] = db
 	}
 	if len(store.DBs) == 0 {
@@ -89,7 +89,7 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			e, err := cleanup.Decode(f)
 			if err != nil {
 				return err

@@ -67,7 +67,9 @@ func TestProjectionConflictVerification(t *testing.T) {
 				if tc.name == "missing marker" {
 					delete(meta, "deleted")
 				}
-				json.NewEncoder(w).Encode(map[string]any{"_id": e.PHID, "found": true, "_version": tc.version, "_source": map[string]any{"_gorge": meta}})
+				if err := json.NewEncoder(w).Encode(map[string]any{"_id": e.PHID, "found": true, "_version": tc.version, "_source": map[string]any{"_gorge": meta}}); err != nil {
+					t.Error(err)
+				}
 			}))
 			defer srv.Close()
 			b := New(engine.BackendDef{Hosts: []string{srv.URL}, Index: "shadow", Version: 8, Options: map[string]string{"projection": "true"}})
@@ -86,12 +88,17 @@ func TestProjectionTombstoneAndUnversionedGuard(t *testing.T) {
 	e := projectionEvent(t, "3", true)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
 		meta := body["_gorge"].(map[string]any)
 		if r.Method != "PUT" || meta["deleted"] != true || body["title"] != nil {
 			t.Error("delete was not full replacement tombstone")
 		}
-		json.NewEncoder(w).Encode(map[string]any{"_id": e.PHID, "_version": 3, "result": "updated", "_shards": map[string]any{"failed": 0}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"_id": e.PHID, "_version": 3, "result": "updated", "_shards": map[string]any{"failed": 0}}); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 	b := New(engine.BackendDef{Hosts: []string{srv.URL}, Index: "shadow", Version: 8, Options: map[string]string{"projection": "true"}})
@@ -118,7 +125,11 @@ func TestElasticsearchProjectionRuntime(t *testing.T) {
 	if err := b.InitIndex([]string{"TASK"}); err != nil {
 		t.Fatal(err)
 	}
-	defer b.projectionRequest(context.Background(), "DELETE", b.baseURL(endpoint), nil)
+	defer func() {
+		if code, _, err := b.projectionRequest(context.Background(), "DELETE", b.baseURL(endpoint), nil); err != nil || code != 200 {
+			t.Errorf("delete index %d %v", code, err)
+		}
+	}()
 	if uuid, err := b.ProjectionIndexUUID(ctx); err != nil || uuid == "" {
 		t.Fatalf("preflight: %s %v", uuid, err)
 	}
@@ -142,7 +153,9 @@ func TestElasticsearchProjectionRuntime(t *testing.T) {
 	if _, err := b.ApplyProjection(ctx, projectionEvent(t, "3", false), target); err != nil {
 		t.Fatal(err)
 	}
-	b.projectionRequest(ctx, "POST", b.baseURL(endpoint)+"/_refresh", nil)
+	if code, _, err := b.projectionRequest(ctx, "POST", b.baseURL(endpoint)+"/_refresh", nil); err != nil || code != 200 {
+		t.Fatalf("refresh %d %v", code, err)
+	}
 	if phids, err := b.Search(&contracts.SearchQuery{}); err != nil || len(phids) != 1 {
 		t.Fatalf("restore not visible: %v %v", phids, err)
 	}
@@ -154,7 +167,10 @@ func TestProjectionUnknownSubmissionReplay(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "PUT" {
 			if !committed.Swap(true) {
-				io.Copy(io.Discard, r.Body)
+				if _, err := io.Copy(io.Discard, r.Body); err != nil {
+					t.Error(err)
+					return
+				}
 				select {
 				case <-r.Context().Done():
 				case <-time.After(2 * time.Second):
@@ -164,7 +180,9 @@ func TestProjectionUnknownSubmissionReplay(t *testing.T) {
 			w.WriteHeader(409)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"_id": event.PHID, "found": true, "_version": 4, "_source": map[string]any{"_gorge": map[string]any{"namespace": event.Namespace, "generation": "g1", "hash": event.PayloadHash, "deleted": false}}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"_id": event.PHID, "found": true, "_version": 4, "_source": map[string]any{"_gorge": map[string]any{"namespace": event.Namespace, "generation": "g1", "hash": event.PayloadHash, "deleted": false}}}); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 	backend := New(engine.BackendDef{Hosts: []string{srv.URL}, Index: "shadow", Version: 8, Options: map[string]string{"projection": "true"}})

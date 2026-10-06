@@ -118,7 +118,7 @@ func (s *Store) Import(ctx context.Context, p Policy) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, "INSERT IGNORE INTO "+table+" (collectorID,policyJSON,policyHash,lastError) VALUES (?,?,?,'')", p.ID, string(b), hash)
 	if err != nil {
 		return err
@@ -151,7 +151,7 @@ func (s *Store) SetOwner(ctx context.Context, id, owner string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	st, err := lock(ctx, tx, id)
 	if err != nil {
 		return err
@@ -190,7 +190,7 @@ func (s *Store) Claim(ctx context.Context, id, owner string, force bool) (Lease,
 	if err != nil {
 		return Lease{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	st, err := lock(ctx, tx, id)
 	if err != nil {
 		return Lease{}, err
@@ -248,7 +248,7 @@ func (s *Store) Batch(ctx context.Context, l Lease, limit int) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	st, err := lock(ctx, tx, l.ID)
 	if err != nil {
 		return 0, err
@@ -319,7 +319,7 @@ func (s *Store) Finish(ctx context.Context, l Lease, status string, cause error)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	st, err := lock(ctx, tx, l.ID)
 	if err != nil {
 		return err
@@ -379,7 +379,7 @@ func (s *Store) DryRun(ctx context.Context, id string) ([]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := []uint64{}
 	for rows.Next() {
 		var id uint64

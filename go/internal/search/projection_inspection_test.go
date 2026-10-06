@@ -70,7 +70,12 @@ func TestProjectionSourceInspectionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		mock.ExpectClose()
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	mock.ExpectQuery("SELECT UNIX_TIMESTAMP").WillReturnError(errors.New("secret source DSN"))
 	srv := httpx.New(httpx.Config{})
 	RegisterRoutes(srv.App(), &Deps{Token: testToken, Projection: &ProjectionIngress{Store: &fakeAcceptor{}, Inspector: &fakeInspector{}, SourceOutbox: db, Namespace: "default", Targets: []projection.Target{{BackendID: "es", GenerationID: "g1"}}}})

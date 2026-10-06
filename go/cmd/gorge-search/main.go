@@ -39,7 +39,7 @@ func main() {
 		os.Exit(1)
 	}
 	if controlDB != nil {
-		defer controlDB.Close()
+		defer func() { _ = controlDB.Close() }()
 	}
 	workers, err := search.PrepareProjectionDelivery(context.Background(), cfg.Projection, cfg.Backends, controlDB)
 	if err != nil {
@@ -58,7 +58,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "gorge-search: invalid search outbox database configuration")
 			os.Exit(1)
 		}
-		defer func() { stopRelay(); relayWG.Wait(); source.Close() }()
+		defer func() { stopRelay(); relayWG.Wait(); _ = source.Close() }()
 		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		rows, err := source.QueryContext(checkCtx, "SELECT eventID,payload,attempts,nextAttempt,deliveredEpoch,lastError FROM search_gorgeoutbox LIMIT 0")
 		cancel()
@@ -66,7 +66,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "gorge-search: search outbox database or schema unavailable")
 			os.Exit(1)
 		}
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "gorge-search: search outbox database or schema unavailable")
+			os.Exit(1)
+		}
 		ingress.SourceOutbox = source
 		relay := &projection.Relay{Source: source, Store: &projection.MySQLStore{DB: controlDB}, Namespace: ingress.Namespace, Targets: ingress.Targets}
 		relayWG.Add(1)

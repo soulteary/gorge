@@ -69,10 +69,13 @@ func OpenProjection(ctx context.Context, cfg *ProjectionConfig, token string) (*
 	for _, query := range probes {
 		rows, e := db.QueryContext(checkCtx, query)
 		if e != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, nil, fmt.Errorf("projection control database or schema unavailable")
 		}
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("projection control database or schema unavailable")
+		}
 	}
 	return &ProjectionIngress{Inspector: &projection.MySQLStore{DB: db}, Store: &projection.MySQLStore{DB: db}, Namespace: cfg.Namespace, Targets: append([]projection.Target(nil), cfg.Targets...)}, db, nil
 }

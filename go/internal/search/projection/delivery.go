@@ -46,7 +46,7 @@ func (s *MySQLStore) Claim(ctx context.Context, namespace string, target Target,
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	d := &Delivery{Target: target, Namespace: namespace, Owner: owner}
 	err = tx.QueryRowContext(ctx, `SELECT phid,revision,eventID,leaseEpoch,attempts FROM search_projection_delivery
  WHERE namespace=? AND backendID=? AND generationID=? AND nextAttempt<=UNIX_TIMESTAMP()

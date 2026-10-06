@@ -108,7 +108,7 @@ func (b *Backend) projectionRequest(ctx context.Context, method, uri string, bod
 	if err != nil {
 		return 0, nil, fmt.Errorf("projection backend request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024+1))
 	if err != nil || len(raw) > 4*1024*1024 {
 		return 0, nil, fmt.Errorf("invalid projection backend response")

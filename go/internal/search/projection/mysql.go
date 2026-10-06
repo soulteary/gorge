@@ -96,7 +96,7 @@ func (s *MySQLStore) Accept(ctx context.Context, event *contracts.SearchProjecti
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `INSERT INTO search_projection_inbox(namespace,eventID,envelopeHash,envelope,response) VALUES(?,?,?,?,'') ON DUPLICATE KEY UPDATE eventID=eventID`, event.Namespace, event.EventID, eventHash, string(encoded))
 	if err != nil {
 		return nil, err

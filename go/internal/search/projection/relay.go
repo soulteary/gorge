@@ -53,7 +53,7 @@ func (r *Relay) Once(ctx context.Context) error {
 	for rows.Next() {
 		var e pending
 		if err = rows.Scan(&e.id, &e.raw, &e.attempts); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		batch = append(batch, e)
