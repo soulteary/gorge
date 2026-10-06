@@ -152,3 +152,110 @@ handler 把 `*PermanentError` 映射到 422 + `ERR_PERMANENT_FAILURE`，其余�
 **后端失败不是 500。** 500 在本域只意味着「服务自己出了问题」，投递失败一律落在 422 或 502。
 
 **新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。**
+
+## Durable native email delivery (v1)
+
+Opt-in native orchestration supplements the existing synchronous `/send` API.
+PHP keeps domain preparation (recipients, subscriptions, routing, threading and
+attachment authorization). Gorge owns an immutable delivery identity, the
+submission ledger and queue retry scheduling. Provider acceptance is not proof
+of delivery to a recipient inbox.
+
+The PHP producer commits a mail record and `metamta_gorgeoutbox` on the same
+connection. A source relay uses queue inbox acceptance. `GorgeMailDeliveryWorker`
+prepares through `mail.delivery`, persists the snapshot through `/api/mailer/prepare`,
+and atomically exports one `GorgeMailSubmitWorker` followup. That task contains
+only `mailID` and `deliveryID`, never base64 attachments. Submission uses
+`/api/mailer/execute`; retries do not regenerate content or call PHP worker.execute.
+A separate `authorize` call checks the prepared recipient decision before each
+submission. Changes cancel still-pending snapshots rather than sending stale
+recipient content. The shared execution-policy file gates global silent mode.
+
+`gorge_mail_delivery` and `gorge_mail_attempt` live alongside mail metadata in the
+metamta database. Payload hash collisions return 409. States are prepared,
+submitting, retry_wait, accepted, failed, unknown, expired and cancelled. Expired
+submitting ownership becomes unknown, never another send. A terminal outcome and
+`projectionPending=1` commit together: this indexed ledger flag is the result
+outbox, rather than a fourth table. A worker projector applies monotonic result
+revisions through PHP, then conditionally clears the flag. Acknowledgment failure,
+queue cancellation or task archival does not erase that receipt.
+
+Native delivery uses one provider attempt per dispatcher call, at most 12 ledger
+attempts, exponential delay with jitter, and a 24-hour producer deadline. Only
+explicitly confirmed nonacceptance can retry or fail over. HTTP 401/403 isolate
+backend configuration failures, 429 is retryable, and unclassified errors,
+including transport ambiguity and 5xx responses without a nonacceptance guarantee,
+become unknown. SMTP connections honor cancellation; lost DATA acknowledgment is
+unknown and failed QUIT after a positive DATA acknowledgment remains accepted.
+Unknown results require review; neither Message-ID nor a queue receipt promises
+exactly-once SMTP delivery.
+
+Configuration:
+
+- `GORGE_MAILER_DELIVERY_DSN`: metamta MySQL database; required to expose native
+  endpoints. A nonempty mailer service token is required.
+- `GORGE_MAILER_DELIVERY_CONCURRENCY`: per-process native request concurrency,
+  default 4, allowed 1..64. This is not an account-wide rate budget.
+- `GORGE_WORKER_MAILER_URL`, `GORGE_WORKER_MAILER_TOKEN`: native mailer connection.
+- `GORGE_WORKER_MAIL_OUTBOX_DSN`: same metamta database; enables source relay and
+  independent terminal-result projection.
+- `GORGE_WORKER_FEED_POLICY_FILE`: existing shared silent-policy authority.
+- `GORGE_MAIL_DELIVERY_MODE=native`: deployment builder enables new PHP email
+  producers. Default legacy preserves the existing producer during rollout.
+
+Deploy migrations before enabling producers. Read `phorge-fork/DOCKER.md` for
+bounded historic-mail claiming and rollback. Do not remove the legacy worker
+until existing unclaimed email and non-email task classes have been drained.
+The first version retains inline attachments and does not automatically resolve
+ambiguous provider submissions. Provider-specific idempotency/query APIs,
+large-file references and account-wide rate budgets remain separate extensions.
+
+### Recovery and projection follow-up
+
+`20261006.metamta.03.gorgerecovery.sql` upgrades existing v1 ledgers: it backfills
+snapshot deadlines and adds indexed expiry/recovery and projection retry fields.
+The mailer independently settles stale submissions to unknown and pending expired
+snapshots to expired every five seconds, even if their queue task was cancelled.
+It also closes the matching abandoned attempt audit; recovery never sends mail.
+
+Projection failures now defer the individual row with bounded exponential backoff,
+so broken early records cannot monopolize the first 32 results. Observe
+`projectionAttempts`, `projectionNextAttempt` and `projectionLastError`.
+Worker readiness negotiates `/api/mailer/delivery-capabilities` and verifies the
+projection schema, rather than accepting a healthy synchronous-only mailer.
+
+New snapshots pin the PHP-selected `mailerURI` and `adapterKey`; the configured
+worker rejects a different route. Accepted audit retains the PHP adapter key and
+stores the Go provider key separately. Sent actor/routing audit is promoted only
+on provider acceptance. Repeated cancellation returns its persisted result;
+a concurrent submission is reread without permitting a new send.
+Queue task cancellation only stops that wakeup: use the mailer's cancellation
+endpoint to cancel a still-pending delivery itself.
+
+### Read-only operational inspection
+
+`GET /api/mailer/delivery?deliveryID=...` requires the mailer service token and
+returns metadata without sending, authorizing, cancelling or changing the ledger.
+It is available only with native delivery enabled. Use `curl --get --data-urlencode`
+for identities containing slashes:
+
+```sh
+curl --get "$GORGE_WORKER_MAILER_URL/api/mailer/delivery" \
+  -H "X-Service-Token: $GORGE_WORKER_MAILER_TOKEN" \
+  --data-urlencode 'deliveryID=mail/PHID-MAIL-example/1'
+```
+
+The response carries authoritative result state/revision, provider receipt when
+present, deadline and submission start time, projection pending/retry metadata,
+and the latest twelve attempt audits in descending attempt order. A prepared
+snapshot has an empty attempts array; an unfinished attempt has a null
+`finishedEpoch`. Message bodies, addresses, attachment data and the snapshot
+payload are excluded. Ledger and audits use one repeatable-read transaction,
+bounded to five seconds. Missing identities return 404; store failures return
+503 without changing the outcome.
+
+For `unknown`, inspect attempt timestamps and consult provider logs before any
+manual resend. This API does not turn an ambiguous result into a safe retry.
+For accepted results with `projectionPending=true`, troubleshoot the PHP Conduit
+connection and projection retry metadata; resubmitting the email does not repair
+result projection. Timestamps are Unix seconds, and zero means no scheduled time.

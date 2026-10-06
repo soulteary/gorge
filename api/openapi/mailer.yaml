@@ -23,10 +23,12 @@ info:
     mode that otherwise looks completely healthy while every message fails.
 
     The schemas under `components.schemas` mirror
-    `go/internal/contracts/mailer.go`, which is the single source of truth
+    `go/internal/contracts/mailer.go` and `mail_delivery.go`, which define
+    the send and native delivery wire contracts. Operational inspection is
+    defined in `go/internal/mailer/inspection.go`. These contracts are
     shared by the Go service, the PHP adapter and the contract fixtures under
     `tests/contract/mailer/`.
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -49,11 +51,13 @@ paths:
       summary: Send one email
       description: |
         Hands the message to the configured backends in descending priority
-        order, retrying a backend a few times before failing over to the next.
+        order. Only failures confirmed safe to retry can repeat a submission;
+        backend failures confirmed safe to fail over can select another backend.
 
         The failover stops at the first *permanent* rejection: that describes
         the message rather than the backend, so another backend would only
-        produce the same answer more slowly.
+        produce the same answer more slowly. Unknown acceptance also stops
+        retries and failover, to avoid duplicate delivery.
 
         This endpoint is synchronous and holds no queue. Phorge's worker queue
         is the authoritative retry loop, which is why the retries here are
@@ -190,6 +194,144 @@ paths:
         '200':
           $ref: '#/components/responses/HealthOK'
 
+  /api/mailer/prepare:
+    post:
+      tags: [mailer]
+      summary: Persist a prepared immutable email without sending
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      description: Available only when GORGE_MAILER_DELIVERY_DSN is configured. Requires a nonempty service token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailDeliveryRequest'
+      responses:
+        '200':
+          description: Durable delivery result in the data envelope; accepted means provider acceptance.
+        '409':
+          description: Immutable identity conflict or cancellation too late.
+        '503':
+          description: Outcome unavailable; retry the same identity.
+
+  /api/mailer/deliver:
+    post:
+      tags: [mailer]
+      summary: Submit or replay an immutable email
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      description: Available only when GORGE_MAILER_DELIVERY_DSN is configured. Requires a nonempty service token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailDeliveryRequest'
+      responses:
+        '200':
+          description: Durable delivery result in the data envelope; accepted means provider acceptance.
+        '409':
+          description: Immutable identity conflict or cancellation too late.
+        '503':
+          description: Outcome unavailable; retry the same identity.
+
+  /api/mailer/execute:
+    post:
+      tags: [mailer]
+      summary: Submit a previously stored delivery by identity
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      description: Available only when GORGE_MAILER_DELIVERY_DSN is configured. Requires a nonempty service token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailExecutionRequest'
+      responses:
+        '200':
+          description: Durable delivery result in the data envelope; accepted means provider acceptance.
+        '409':
+          description: Immutable identity conflict or cancellation too late.
+        '503':
+          description: Outcome unavailable; retry the same identity.
+
+  /api/mailer/cancel:
+    post:
+      tags: [mailer]
+      summary: Cancel a prepared or retry-wait delivery
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      description: Available only when GORGE_MAILER_DELIVERY_DSN is configured. Requires a nonempty service token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailCancellationRequest'
+      responses:
+        '200':
+          description: Durable delivery result in the data envelope; accepted means provider acceptance.
+        '409':
+          description: Immutable identity conflict or cancellation too late.
+        '503':
+          description: Outcome unavailable; retry the same identity.
+
+  /api/mailer/delivery-capabilities:
+    get:
+      tags: [mailer]
+      summary: Verify native ledger schema, recovery and backend readiness
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: Data contains schemaVersion 1 and recovery true.
+        '503':
+          description: Ledger upgrade or provider configuration incomplete.
+
+  /api/mailer/delivery:
+    get:
+      tags: [mailer]
+      summary: Inspect durable delivery state without sending or modifying it
+      description: Available only in native mode. Excludes message contents and recipient addresses. Accepted means provider acceptance, not inbox delivery. Reads ledger and attempts in one consistent transaction with a five-second timeout.
+      operationId: inspectDelivery
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      parameters:
+        - in: query
+          name: deliveryID
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        '200':
+          description: Operational metadata in the data envelope. At most the latest twelve attempts, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DeliveryInspection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: Delivery inspection unavailable; no delivery state was changed.
+
 components:
 
   securitySchemes:
@@ -209,6 +351,41 @@ components:
         `X-Service-Token` is absent.
 
   schemas:
+
+    DeliveryInspection:
+      type: object
+      required: [result, deadline, startedEpoch, projectionPending, projectionAttempts, projectionNextAttempt, projectionLastError, attempts]
+      properties:
+        result:
+          type: object
+          required: [deliveryID, state, revision, attempt, nextAttempt]
+          properties:
+            deliveryID: {type: string}
+            state:
+              type: string
+              enum: [prepared, submitting, retry_wait, accepted, failed, unknown, expired, cancelled]
+            revision: {type: integer}
+            attempt: {type: integer}
+            nextAttempt: {type: integer, format: int64}
+            mailerKey: {type: string}
+            messageId: {type: string}
+        deadline: {type: integer, format: int64}
+        startedEpoch: {type: integer, format: int64}
+        projectionPending: {type: boolean}
+        projectionAttempts: {type: integer}
+        projectionNextAttempt: {type: integer, format: int64}
+        projectionLastError: {type: string}
+        attempts:
+          type: array
+          maxItems: 12
+          items:
+            type: object
+            required: [attempt, startedEpoch, finishedEpoch, outcome]
+            properties:
+              attempt: {type: integer}
+              startedEpoch: {type: integer, format: int64}
+              finishedEpoch: {type: integer, format: int64, nullable: true}
+              outcome: {type: string}
 
     Address:
       type: object
@@ -410,6 +587,31 @@ components:
       description: |
         Bare probe payload, deliberately outside the `{data, error}` envelope.
 
+    MailDeliveryRequest:
+      type: object
+      required: [schemaVersion, deliveryID, mailID, deadline, message]
+      properties:
+        schemaVersion: {type: integer, enum: [1]}
+        deliveryID: {type: string, maxLength: 128}
+        mailID: {type: integer, format: int64, minimum: 1}
+        deadline: {type: integer, format: int64, description: Unix seconds}
+        message: {$ref: '#/components/schemas/EmailMessage'}
+        mailerKeys: {type: array, items: {type: string}}
+        mailerURI: {type: string, description: PHP-selected service route}
+        adapterKey: {type: string, description: PHP adapter identity}
+        allowSend: {type: boolean, description: Execution gate excluded from immutable hash}
+    MailExecutionRequest:
+      type: object
+      required: [deliveryID, allowSend]
+      properties:
+        deliveryID: {type: string}
+        allowSend: {type: boolean}
+    MailCancellationRequest:
+      type: object
+      required: [deliveryID]
+      properties:
+        deliveryID: {type: string}
+
   responses:
 
     HealthOK:
@@ -502,7 +704,7 @@ components:
         re-queued.
 
         What produces it, per backend: an SMTP 5xx reply; an HTTP 4xx from SES,
-        SendGrid, Mailgun or Postmark, **except 429**, since rate limiting says
+        SendGrid, Mailgun or Postmark, **except 401, 403 and 429**, since rate limiting says
         "not now" rather than "not ever"; a sendmail exit code from the
         `EX_NOUSER` / `EX_DATAERR` / `EX_NOHOST` family. Anything unrecognised
         is reported as transient instead, because dropping mail costs more than

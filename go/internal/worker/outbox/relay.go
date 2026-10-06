@@ -19,6 +19,7 @@ type Queue interface {
 type Relay struct {
 	DB    *sql.DB
 	Queue Queue
+	Table string
 }
 
 func (r *Relay) Run(ctx context.Context) {
@@ -36,7 +37,15 @@ func (r *Relay) Run(ctx context.Context) {
 	}
 }
 func (r *Relay) Once(ctx context.Context) error {
-	rows, err := r.DB.QueryContext(ctx, `SELECT eventID, payload, attempts FROM feed_gorgeoutbox WHERE deliveredEpoch IS NULL AND nextAttempt <= ? ORDER BY id LIMIT 32`, time.Now().Unix())
+	table := r.Table
+	if table == "" {
+		table = "feed_gorgeoutbox"
+	}
+	if table != "feed_gorgeoutbox" && table != "metamta_gorgeoutbox" {
+		return fmt.Errorf("unsupported outbox repository")
+	}
+
+	rows, err := r.DB.QueryContext(ctx, `SELECT eventID, payload, attempts FROM `+table+` WHERE deliveredEpoch IS NULL AND nextAttempt <= ? ORDER BY id LIMIT 32`, time.Now().Unix())
 	if err != nil {
 		return err
 	}
@@ -74,7 +83,7 @@ func (r *Relay) Once(ctx context.Context) error {
 		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		var updateErr error
 		if err == nil {
-			_, updateErr = r.DB.ExecContext(reportCtx, `UPDATE feed_gorgeoutbox SET deliveredEpoch = ?, queueTaskID = ?, lastError = '' WHERE eventID = ? AND deliveredEpoch IS NULL`, time.Now().Unix(), task.ID, e.id)
+			_, updateErr = r.DB.ExecContext(reportCtx, `UPDATE `+table+` SET deliveredEpoch = ?, queueTaskID = ?, lastError = '' WHERE eventID = ? AND deliveredEpoch IS NULL`, time.Now().Unix(), task.ID, e.id)
 		} else {
 			// Keep every failed event visible and retryable, without allowing one bad
 			// event to block the rest of the batch. Never log payloads or credentials.
@@ -83,7 +92,7 @@ func (r *Relay) Once(ctx context.Context) error {
 				message = message[:1024]
 			}
 			wait := min(3600, 1<<min(e.attempts+1, 12))
-			_, updateErr = r.DB.ExecContext(reportCtx, `UPDATE feed_gorgeoutbox SET attempts = attempts + 1, nextAttempt = ?, lastError = ? WHERE eventID = ? AND deliveredEpoch IS NULL`, time.Now().Unix()+int64(wait), message, e.id)
+			_, updateErr = r.DB.ExecContext(reportCtx, `UPDATE `+table+` SET attempts = attempts + 1, nextAttempt = ?, lastError = ? WHERE eventID = ? AND deliveredEpoch IS NULL`, time.Now().Unix()+int64(wait), message, e.id)
 			slog.Warn("outbox event pending", "eventID", e.id, "attempts", e.attempts+1)
 		}
 		cancel()

@@ -73,8 +73,8 @@ func TestClassifyProviderStatus(t *testing.T) {
 		{200, false, false},
 		{202, false, false},
 		{400, true, true},
-		{401, true, true},
-		{403, true, true},
+		{401, true, false},
+		{403, true, false},
 		{422, true, true},
 		{429, true, false},
 		{500, true, false},
@@ -129,15 +129,16 @@ func TestSendmailClassifiesExitCodes(t *testing.T) {
 		name      string
 		exitCode  int
 		permanent bool
+		retryable bool
 	}{
-		{"EX_NOUSER", 67, true},
-		{"EX_DATAERR", 65, true},
-		{"EX_NOHOST", 68, true},
-		{"EX_TEMPFAIL", 75, false},
-		{"EX_OSERR", 71, false},
-		// An unrecognised code is transient on purpose: retrying needlessly
-		// costs worker cycles, while a wrong "permanent" drops the mail.
-		{"unknown", 3, false},
+		{"EX_NOUSER", 67, true, false},
+		{"EX_DATAERR", 65, true, false},
+		{"EX_NOHOST", 68, true, false},
+		{"EX_NOPERM", 77, false, true},
+		{"EX_CONFIG", 78, false, true},
+		{"EX_TEMPFAIL", 75, false, false},
+		{"EX_OSERR", 71, false, false},
+		{"unknown", 3, false, false},
 	}
 
 	a, err := newSendmailAdapter(map[string]string{"path": stubSendmail(t)})
@@ -156,7 +157,21 @@ func TestSendmailClassifiesExitCodes(t *testing.T) {
 			if IsPermanent(sendErr) != tc.permanent {
 				t.Errorf("expected permanent=%v, got %v", tc.permanent, sendErr)
 			}
+			if CanRetry(sendErr) != tc.retryable {
+				t.Errorf("expected retryable=%v, got %v", tc.retryable, sendErr)
+			}
 		})
+	}
+}
+
+func TestSendmailMissingExecutableCanRetry(t *testing.T) {
+	a, err := newSendmailAdapter(map[string]string{"path": filepath.Join(t.TempDir(), "missing-sendmail")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Send(context.Background(), testMessage())
+	if !CanRetry(err) {
+		t.Fatalf("unstarted process must permit retry: %v", err)
 	}
 }
 

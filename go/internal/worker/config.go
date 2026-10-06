@@ -30,6 +30,9 @@ type Config struct {
 	ConduitURL             string
 	ConduitToken           string
 	TaskClassFilter        []string
+	MailOutboxDSN          string
+	MailerURL              string
+	MailerToken            string
 	OutboxDSN              string
 	NotificationPolicyFile string
 	NotificationMode       string
@@ -57,6 +60,9 @@ func LoadFromEnv() *Config {
 		NotificationMode:       config.EnvStr("auto", "GORGE_WORKER_NOTIFICATION_MODE"),
 		NotificationPolicyFile: config.EnvStr("", "GORGE_WORKER_NOTIFICATION_POLICY_FILE"),
 		FeedPolicyFile:         config.EnvStr("", "GORGE_WORKER_FEED_POLICY_FILE"),
+		MailOutboxDSN:          config.EnvStr("", "GORGE_WORKER_MAIL_OUTBOX_DSN"),
+		MailerURL:              config.EnvStr("", "GORGE_WORKER_MAILER_URL"),
+		MailerToken:            config.EnvStr("", "GORGE_WORKER_MAILER_TOKEN"),
 		OutboxDSN:              config.EnvStr("", "GORGE_WORKER_OUTBOX_DSN"),
 		TaskClassFilter:        splitCSV(config.EnvStr("", "GORGE_WORKER_TASK_CLASS_FILTER")),
 	}

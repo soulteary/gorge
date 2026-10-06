@@ -195,7 +195,9 @@ jobs:
         env:
           GORGE_TEST_REDIS_ADDR: 127.0.0.1:6379
           GORGE_TEST_MYSQL_DSN: root:execution-test-only@tcp(127.0.0.1:3306)/
-        run: go test ./internal/taskqueue -run 'TestExecution(Redis|MySQL)Integration' -v
+        run: |
+          go test ./internal/taskqueue -run 'TestExecution(Redis|MySQL)Integration' -v
+          go test -race ./internal/mailer -run 'Test(MailDelivery|DeliveryInspection)MySQLIntegration' -v
 
   worker-lifecycle:
     name: Worker heartbeat and relay races

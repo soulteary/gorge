@@ -12,7 +12,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"github.com/soulteary/gorge/go/internal/contracts"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -30,6 +33,11 @@ func main() {
 	client := worker.NewClient(cfg.TaskQueueURL, cfg.TaskQueueToken)
 
 	registry := worker.NewRegistry()
+	unavailableMail := func(context.Context, *contracts.Task, json.RawMessage) error {
+		return &worker.YieldError{Duration: 60, Msg: "native mail handler unavailable"}
+	}
+	registry.Register("GorgeMailDeliveryWorker", unavailableMail)
+	registry.Register("GorgeMailSubmitWorker", unavailableMail)
 	handlers.RegisterWithFeedPolicy(registry, cfg.ConduitURL, cfg.ConduitToken, cfg.FeedPolicyFile, client)
 
 	if err := handlers.RegisterNotificationMode(registry, cfg.NotificationPolicyFile, cfg.NotificationMode); err != nil {
@@ -37,6 +45,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.MailerURL != "" {
+		if cfg.ConduitURL == "" || cfg.ConduitToken == "" || cfg.MailerToken == "" || cfg.FeedPolicyFile == "" {
+			fmt.Fprintln(os.Stderr, "native mail requires conduit, nonempty service tokens and execution policy")
+			os.Exit(1)
+		}
+		conduit := handlers.NewConduitClient(cfg.ConduitURL, cfg.ConduitToken)
+		registry.Register("GorgeMailDeliveryWorker", handlers.NewMailPreparationHandler(conduit, cfg.MailerURL, cfg.MailerToken))
+		registry.Register("GorgeMailSubmitWorker", handlers.NewMailSubmitHandler(conduit, cfg.MailerURL, cfg.MailerToken, cfg.FeedPolicyFile))
+	}
+	var mailDB *sql.DB
+	if cfg.MailOutboxDSN != "" {
+		if cfg.MailerURL == "" {
+			fmt.Fprintln(os.Stderr, "mail outbox requires native handlers")
+			os.Exit(1)
+		}
+		var err error
+		mailDB, err = sql.Open("mysql", cfg.MailOutboxDSN)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "invalid mail outbox DSN")
+			os.Exit(1)
+		}
+		defer mailDB.Close()
+	}
 	consumer := worker.NewConsumer(client, registry, cfg)
 
 	var outboxDB *sql.DB
@@ -74,6 +105,23 @@ func main() {
 				}
 				rows.Close()
 			}
+			if mailDB != nil {
+				rows, err := mailDB.QueryContext(ctx, "SELECT eventID FROM metamta_gorgeoutbox LIMIT 1")
+				if err != nil {
+					return fmt.Errorf("mail outbox schema unavailable")
+				}
+				rows.Close()
+				rows, err = mailDB.QueryContext(ctx, "SELECT deliveryID,projectionAttempts,projectionNextAttempt FROM gorge_mail_delivery LIMIT 1")
+				if err != nil {
+					return fmt.Errorf("mail projection schema unavailable")
+				}
+				rows.Close()
+			}
+			if cfg.MailerURL != "" {
+				if err := handlers.ValidateMailDeliveryService(ctx, cfg.MailerURL, cfg.MailerToken); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 	})
@@ -93,6 +141,34 @@ func main() {
 		go func() { defer relayWG.Done(); (&outbox.Relay{DB: outboxDB, Queue: client}).Run(ctx) }()
 	}
 
+	if mailDB != nil {
+		relayWG.Add(1)
+		go func() {
+			defer relayWG.Done()
+			(&outbox.Relay{DB: mailDB, Queue: client, Table: "metamta_gorgeoutbox"}).Run(ctx)
+		}()
+	}
+	if mailDB != nil {
+		relayWG.Add(1)
+		go func() {
+			defer relayWG.Done()
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					report, cancel := context.WithTimeout(ctx, 30*time.Second)
+					err := handlers.ProjectMailResultsOnce(report, mailDB, handlers.NewConduitClient(cfg.ConduitURL, cfg.ConduitToken))
+					cancel()
+					if err != nil {
+						slog.Error("mail result projection pending", "error", err)
+					}
+				}
+			}
+		}()
+	}
 	looping := make(chan struct{})
 	go func() {
 		defer close(looping)

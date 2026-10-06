@@ -9,6 +9,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"strconv"
+	"time"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
@@ -42,87 +43,81 @@ func newSMTPAdapter(opts map[string]string) (*smtpAdapter, error) {
 
 func (a *smtpAdapter) Type() string { return "smtp" }
 
-// Send transmits the message over SMTP.
-//
-// ctx is only consulted before the transaction starts: net/smtp predates
-// context and offers no way to cancel one in flight. The dispatcher's retry
-// loop is where cancellation actually takes effect for this backend.
+// Send uses a cancellable connection. Only a completed DATA response proves
+// acceptance. QUIT failures after acceptance must not cause a resend.
 func (a *smtpAdapter) Send(ctx context.Context, msg *contracts.EmailMessage) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-
-	addr := net.JoinHostPort(a.host, strconv.Itoa(a.port))
-	raw := buildMIME(msg)
-
-	var auth smtp.Auth
-	if a.user != "" {
-		auth = smtp.PlainAuth("", a.user, a.password, a.host)
-	}
-
-	var err error
-	switch a.protocol {
-	case "ssl", "tls":
-		err = a.sendTLS(addr, auth, msg.From.Address, recipients(msg), raw)
-	default:
-		err = smtp.SendMail(addr, auth, msg.From.Address, recipients(msg), raw)
-	}
-
-	// SMTP has no message id to report back; the receiving MTA mints one.
-	return "", classifySMTPError(err)
-}
-
-// classifySMTPError applies the reply-code rule RFC 5321 defines: a 5xx is a
-// permanent negative completion — unknown mailbox, relay refused, message
-// rejected — while a 4xx is explicitly "try again later". Anything without a
-// reply code at all is a connection or TLS failure, which is transient by the
-// same reasoning.
-func classifySMTPError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var replyErr *textproto.Error
-	if errors.As(err, &replyErr) && replyErr.Code >= 500 && replyErr.Code < 600 {
-		return &PermanentError{Err: fmt.Errorf("smtp: %w", err)}
-	}
-	return fmt.Errorf("smtp: %w", err)
-}
-
-// sendTLS runs the transaction over an implicit TLS connection (port 465), the
-// one case net/smtp's SendMail cannot do on its own.
-func (a *smtpAdapter) sendTLS(addr string, auth smtp.Auth, from string, to []string, raw []byte) error {
-	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: a.host})
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(a.host, strconv.Itoa(a.port)))
 	if err != nil {
-		return fmt.Errorf("tls dial: %w", err)
+		return "", &SafeRetryError{Err: err}
+	}
+	defer conn.Close()
+	rawConn := conn
+	stop := context.AfterFunc(ctx, func() { rawConn.Close() })
+	defer stop()
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+	if a.protocol == "ssl" || a.protocol == "tls" {
+		secured := tls.Client(conn, &tls.Config{ServerName: a.host, MinVersion: tls.VersionTLS12})
+		if err := secured.HandshakeContext(ctx); err != nil {
+			return "", &SafeRetryError{Err: err, Backend: true}
+		}
+		conn = secured
 	}
 	client, err := smtp.NewClient(conn, a.host)
 	if err != nil {
-		return fmt.Errorf("smtp client: %w", err)
+		return "", &SafeRetryError{Err: err}
 	}
-	defer func() { _ = client.Close() }()
-
-	if auth != nil {
-		if err := client.Auth(auth); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
+	defer client.Close()
+	if a.protocol != "ssl" && a.protocol != "tls" {
+		if ok, _ := client.Extension("STARTTLS"); ok {
+			if err := client.StartTLS(&tls.Config{ServerName: a.host, MinVersion: tls.VersionTLS12}); err != nil {
+				return "", &SafeRetryError{Err: err, Backend: true}
+			}
 		}
 	}
-	if err := client.Mail(from); err != nil {
-		return fmt.Errorf("smtp mail: %w", err)
+	if a.user != "" {
+		if err := client.Auth(smtp.PlainAuth("", a.user, a.password, a.host)); err != nil {
+			return "", &SafeRetryError{Err: err, Backend: true}
+		}
 	}
-	for _, r := range to {
+	if err := client.Mail(msg.From.Address); err != nil {
+		return "", classifySMTPError(err)
+	}
+	// Do not submit DATA if any recipient was rejected: the accepted RCPTs
+	// have not received message content and can safely participate in a retry.
+	for _, r := range recipients(msg) {
 		if err := client.Rcpt(r); err != nil {
-			return fmt.Errorf("smtp rcpt %s: %w", r, err)
+			return "", classifySMTPError(err)
 		}
 	}
 	w, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("smtp data: %w", err)
+		return "", classifySMTPError(err)
 	}
-	if _, err := w.Write(raw); err != nil {
-		return fmt.Errorf("smtp write: %w", err)
+	if _, err = w.Write(buildMIME(msg)); err != nil {
+		return "", fmt.Errorf("smtp data write outcome unknown: %w", err)
 	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("smtp close data: %w", err)
+	if err = w.Close(); err != nil {
+		var reply *textproto.Error
+		if errors.As(err, &reply) {
+			return "", classifySMTPError(err)
+		}
+		return "", fmt.Errorf("smtp data acceptance unknown: %w", err)
 	}
-	return client.Quit()
+	_ = client.Quit()
+	return "", nil
+}
+
+func classifySMTPError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var reply *textproto.Error
+	if errors.As(err, &reply) && reply.Code >= 500 && reply.Code < 600 {
+		return &PermanentError{Err: fmt.Errorf("smtp: %w", err)}
+	}
+	return &SafeRetryError{Err: fmt.Errorf("smtp: %w", err)}
 }

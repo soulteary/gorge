@@ -1,12 +1,16 @@
 // Package mailer is the outbound email domain: it takes one message from
 // Phorge and hands it to whichever configured backend accepts it first. It owns
-// no queue and no retry authority — Phorge's worker queue keeps both. See
+// a synchronous compatibility API and opt-in durable delivery orchestration. See
 // docs/modules/mailer.md.
 package mailer
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
@@ -32,6 +36,7 @@ type Deps struct {
 	Dispatcher *Dispatcher
 	Token      string
 	BodyLimit  int
+	Delivery   *DeliveryService
 }
 
 // RegisterRoutes mounts the mailer endpoints.
@@ -43,7 +48,42 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g.Use(auth.Token(deps.Token))
 
 	g.Post("/send", sendMail(deps))
+	if deps.Delivery != nil {
+		g.Post("/deliver", deliverMail(deps))
+		g.Post("/prepare", prepareMail(deps))
+		g.Post("/execute", executeMail(deps))
+		g.Post("/cancel", cancelMail(deps))
+		g.Get("/delivery", inspectMail(deps))
+		g.Get("/delivery-capabilities", func(c fiber.Ctx) error {
+			ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+			defer cancel()
+			if err := deps.Delivery.Ready(ctx); err != nil {
+				return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "native delivery schema unavailable")
+			}
+			if err := deps.Delivery.Dispatcher.Ready(); err != nil {
+				return httpx.Fail(c, 503, CodeSendFailed, "no native delivery backend")
+			}
+			return httpx.OK(c, map[string]any{"schemaVersion": 1, "recovery": true})
+		})
+	}
 	g.Get("/mailers", listMailers(deps))
+}
+
+func inspectMail(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		id := c.Query("deliveryID")
+		if id == "" || len(id) > 128 {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid delivery identity")
+		}
+		out, err := deps.Delivery.Inspect(c.Context(), id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return httpx.Fail(c, 404, httpx.CodeNotFound, "delivery not found")
+		}
+		if err != nil {
+			return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "delivery inspection unavailable")
+		}
+		return httpx.OK(c, out)
+	}
 }
 
 func sendMail(deps *Deps) fiber.Handler {
@@ -114,4 +154,89 @@ func truncateUTF8(s string, maxBytes int) string {
 		maxBytes--
 	}
 	return s[:maxBytes]
+}
+
+func deliverMail(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		var req contracts.MailDeliveryRequest
+		if err := c.Bind().Body(&req); err != nil {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid delivery request")
+		}
+		if req.SchemaVersion != 1 || req.DeliveryID == "" || len(req.DeliveryID) > 128 || req.MailID <= 0 || req.Deadline <= 0 || req.Message.From.Address == "" || len(req.Message.To) == 0 {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid delivery snapshot")
+		}
+		out, err := deps.Delivery.Deliver(c.Context(), req)
+		if errors.Is(err, ErrDeliveryConflict) {
+			return httpx.Fail(c, 409, "ERR_DELIVERY_CONFLICT", "delivery identity collision")
+		}
+		if err != nil {
+			return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "delivery outcome unavailable; retry same identity")
+		}
+		return httpx.OK(c, out)
+	}
+}
+
+func prepareMail(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		var req contracts.MailDeliveryRequest
+		if err := c.Bind().Body(&req); err != nil || req.SchemaVersion != 1 || req.MailID <= 0 || req.DeliveryID == "" || len(req.DeliveryID) > 128 || req.Deadline <= 0 || req.Message.From.Address == "" || len(req.Message.To) == 0 {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid prepared snapshot")
+		}
+		allow := false
+		req.AllowSend = &allow
+		out, err := deps.Delivery.Deliver(c.Context(), req)
+		if errors.Is(err, ErrDeliveryConflict) {
+			return httpx.Fail(c, 409, "ERR_DELIVERY_CONFLICT", "delivery identity collision")
+		}
+		if err != nil {
+			return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "delivery store unavailable")
+		}
+		return httpx.OK(c, out)
+	}
+}
+func executeMail(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		var ref struct {
+			DeliveryID string `json:"deliveryID"`
+			AllowSend  *bool  `json:"allowSend"`
+		}
+		if err := c.Bind().Body(&ref); err != nil || ref.DeliveryID == "" || ref.AllowSend == nil {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid execution request")
+		}
+		ctx, cancel := context.WithTimeout(c.Context(), 90*time.Second)
+		defer cancel()
+		var raw []byte
+		if err := deps.Delivery.DB.QueryRowContext(ctx, "SELECT payload FROM gorge_mail_delivery WHERE deliveryID=?", ref.DeliveryID).Scan(&raw); err != nil {
+			return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "delivery snapshot unavailable")
+		}
+		var req contracts.MailDeliveryRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "invalid stored snapshot")
+		}
+		req.AllowSend = ref.AllowSend
+		out, err := deps.Delivery.Deliver(ctx, req)
+		if err != nil {
+			return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "retry same delivery identity")
+		}
+		return httpx.OK(c, out)
+	}
+}
+
+func cancelMail(deps *Deps) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		var ref struct {
+			DeliveryID string `json:"deliveryID"`
+		}
+		if err := c.Bind().Body(&ref); err != nil || ref.DeliveryID == "" {
+			return httpx.Fail(c, 400, httpx.CodeBadRequest, "invalid delivery identity")
+		}
+		out, err := deps.Delivery.Cancel(c.Context(), ref.DeliveryID)
+		if errors.Is(err, ErrDeliveryCancelConflict) || errors.Is(err, sql.ErrNoRows) {
+			return httpx.Fail(c, 409, "ERR_DELIVERY_CANCEL", "delivery cannot be cancelled")
+		}
+		if err != nil {
+			return httpx.Fail(c, 503, "ERR_DELIVERY_STORE", "cancellation store unavailable")
+		}
+		return httpx.OK(c, out)
+	}
 }

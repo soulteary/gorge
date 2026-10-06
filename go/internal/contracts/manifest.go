@@ -72,6 +72,7 @@ type DomainContract struct {
 // dozens. They are repository-relative: the checker joins them onto whatever
 // PHORGE_FORK_DIR points at.
 const (
+	phpMetaMail       = "src/applications/metamta/storage/PhabricatorMetaMTAMail.php"
 	phpMailerClient   = "src/infrastructure/cluster/PhabricatorGorgeMailerClient.php"
 	phpSearchClient   = "src/infrastructure/cluster/PhabricatorGorgeSearchClient.php"
 	phpTaskQueueClnt  = "src/infrastructure/cluster/PhabricatorGorgeTaskQueueClient.php"
@@ -113,6 +114,12 @@ func mailerContract() DomainContract {
 	return DomainContract{
 		Domain: "mailer",
 		Routes: []ContractItem{
+			{Name: "/api/mailer/delivery", Note: "Authenticated read-only operational inspection; no PHP caller."},
+			{Name: "/api/mailer/delivery-capabilities", Note: "Native Go worker readiness negotiates mail ledger and recovery support."},
+			{Name: "/api/mailer/prepare", Note: "Native Go preparation handler persists PHP-exported snapshot; PHP does not call this route."},
+			{Name: "/api/mailer/execute", Note: "Native Go submission handler references a durable snapshot."},
+			{Name: "/api/mailer/deliver", Note: "Authenticated immutable delivery API for Go clients."},
+			{Name: "/api/mailer/cancel", Note: "Native Go policy gate cancels pending delivery."},
 			{Name: "/api/mailer/send", PHPFiles: []string{phpMailerClient}},
 			{Name: "/api/mailer/mailers", PHPFiles: []string{phpMailerClient}},
 		},
@@ -128,6 +135,16 @@ func mailerContract() DomainContract {
 			},
 		},
 		WireFields: []ContractItem{
+			{Name: "deliveryID", PHPFiles: []string{phpMetaMail}},
+			{Name: "mailID", PHPFiles: []string{phpMetaMail}},
+			{Name: "deadline", PHPFiles: []string{phpMetaMail}},
+			{Name: "schemaVersion", PHPFiles: []string{phpMetaMail}},
+			{Name: "mailerURI", PHPFiles: []string{phpMetaMail}},
+			{Name: "adapterKey", PHPFiles: []string{phpMetaMail}},
+			{Name: "revision", PHPFiles: []string{phpMetaMail}},
+			{Name: "state", PHPFiles: []string{phpMetaMail}},
+			{Name: "allowSend", Note: "Execution-time Go policy gate, excluded from immutable hash; PHP only prepares domain content."},
+
 			{Name: "message", PHPFiles: []string{phpMailerClient}, Note: "§6.1 the outermost request-envelope key; sendMessage() wraps serializeMessage() under it."},
 			{Name: "mailerKeys", PHPFiles: []string{phpMailerClient}, Note: "§6.1 the other envelope key; restricts delivery to named backends."},
 			{Name: "from", PHPFiles: []string{phpMailerClient}},

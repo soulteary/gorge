@@ -12,16 +12,15 @@ import (
 // Adapter is one delivery backend. Send reports the backend's own message id
 // when it has one; SMTP and sendmail do not, and return "".
 //
-// ctx is the request context. Adapters that speak HTTP hand it to the client so
-// a caller that walks away stops the call in flight; net/smtp has no context
-// support, so the SMTP adapter can only observe cancellation between attempts.
+// ctx bounds network submission. SMTP uses a cancellable connection; HTTP
+// adapters pass it to their transport. Cancellation does not prove nonacceptance.
 type Adapter interface {
 	Type() string
 	Send(ctx context.Context, msg *contracts.EmailMessage) (messageID string, err error)
 }
 
 // PermanentError marks a failure no amount of retrying will fix — a malformed
-// recipient, a rejected sender domain, a revoked API key.
+// recipient or a rejected sender domain. Credentials are backend errors.
 //
 // This is the distinction the whole error path exists for. Phorge's worker
 // queue is the authoritative retry loop, and it re-queues anything that is not
@@ -66,7 +65,13 @@ func classifyProviderStatus(provider string, status int, body []byte) error {
 		return nil
 	}
 	err := fmt.Errorf("%s: HTTP %d: %s", provider, status, string(body))
-	if status >= 400 && status < 500 && status != http.StatusTooManyRequests {
+	if status == 401 || status == 403 {
+		return &SafeRetryError{Err: err, Backend: true}
+	}
+	if status == http.StatusTooManyRequests {
+		return &SafeRetryError{Err: err}
+	}
+	if status >= 400 && status < 500 {
 		return &PermanentError{Err: err}
 	}
 	return err

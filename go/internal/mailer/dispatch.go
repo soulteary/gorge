@@ -82,6 +82,25 @@ func (d *Dispatcher) Ready() error {
 	return nil
 }
 
+// ReadyFor checks configuration without calling a provider. This must happen
+// before claiming a durable submission, including restricted backend keys.
+func (d *Dispatcher) ReadyFor(keys []string) error {
+	if err := d.Ready(); err != nil {
+		return &SafeRetryError{Err: err, Backend: true}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	for _, a := range d.adapters {
+		for _, key := range keys {
+			if a.key == key {
+				return nil
+			}
+		}
+	}
+	return &SafeRetryError{Err: fmt.Errorf("no matching mailers for keys: %v", keys), Backend: true}
+}
+
 // Send delivers msg through the first adapter that accepts it.
 func (d *Dispatcher) Send(ctx context.Context, msg *contracts.EmailMessage) (*contracts.SendResult, error) {
 	return d.SendWith(ctx, msg, nil)
@@ -118,7 +137,7 @@ func (d *Dispatcher) SendWith(ctx context.Context, msg *contracts.EmailMessage, 
 		// A permanent failure is a property of the message, not of the backend,
 		// so trying the next one would only produce the same rejection more
 		// slowly.
-		if IsPermanent(err) {
+		if IsPermanent(err) || !CanRetry(err) {
 			return nil, err
 		}
 		lastErr = err
@@ -150,7 +169,7 @@ func (d *Dispatcher) sendThrough(ctx context.Context, na namedAdapter, msg *cont
 			"mailer", na.key, "type", na.adapter.Type(),
 			"attempt", attempt+1, "permanent", IsPermanent(err), "error", err)
 
-		if IsPermanent(err) {
+		if IsPermanent(err) || !CanRetry(err) {
 			return "", err
 		}
 		lastErr = fmt.Errorf("%s (%s): %w", na.key, na.adapter.Type(), err)

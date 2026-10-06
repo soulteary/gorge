@@ -67,7 +67,7 @@ func (a *testAdapter) Send(_ context.Context, msg *contracts.EmailMessage) (stri
 		if a.failMode == failModePermanent {
 			return "", &PermanentError{Err: err}
 		}
-		return "", err
+		return "", &SafeRetryError{Err: err}
 	}
 
 	a.counter++
