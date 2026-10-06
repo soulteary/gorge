@@ -17,6 +17,7 @@ import (
 // platform subpackage can be lifted into its own module the day the services
 // are split out of this repository.
 var forbiddenPrefixes = []string{
+	"github.com/soulteary/gorge/go/internal/integrations",
 	"github.com/soulteary/gorge/go/internal/render",
 	"github.com/soulteary/gorge/go/internal/diff",
 	"github.com/soulteary/gorge/go/internal/notification",

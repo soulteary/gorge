@@ -1,0 +1,46 @@
+{
+  "listen": ":8210",
+  "token": "REPLACE_WITH_SERVICE_TOKEN",
+  "dsn": "integration_user:REPLACE@tcp(database:3306)/phorge_integrations?parseTime=true",
+  "conduitURI": "http://conduit:8150",
+  "conduitToken": "REPLACE_WITH_CONDUIT_TOKEN",
+  "inbound": [
+    "mailgun",
+    "postmark",
+    "sendgrid",
+    "raw"
+  ],
+  "factDSN": "fact_writer:REPLACE@tcp(database:3306)/phabricator_fact?parseTime=true",
+  "targets": {
+    "twilio-main": {
+      "type": "twilio",
+      "url": "https://api.twilio.com/2010-04-01",
+      "user": "REPLACE_ACCOUNT_SID",
+      "secret": "REPLACE_AUTH_TOKEN",
+      "from": "+15550000001"
+    },
+    "sns-main": {
+      "type": "sns",
+      "url": "https://sns.us-east-1.amazonaws.com",
+      "user": "REPLACE_ACCESS_KEY",
+      "secret": "REPLACE_SECRET_KEY",
+      "region": "us-east-1"
+    },
+    "asana-main": {
+      "type": "asana",
+      "url": "https://app.asana.com/api/1.0"
+    },
+    "jira-main": {
+      "type": "jira",
+      "url": "https://jira.example.com",
+      "consumerKey": "REPLACE_CONSUMER_KEY",
+      "privateKey": "REPLACE_RSA_PRIVATE_KEY_PEM"
+    },
+    "github-main": {
+      "type": "github",
+      "url": "https://api.github.com"
+    }
+  },
+  "inboxRetentionDays": 30,
+  "relayWorkers": 4
+}

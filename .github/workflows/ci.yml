@@ -272,3 +272,26 @@ jobs:
       - name: Verify ownership cancellation and relay replay
         working-directory: go
         run: go test -race ./internal/worker/...
+
+  integrations-runtime:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: integrations-contract-only
+        ports: ['3306:3306']
+        options: --health-cmd "mysqladmin ping -pintegrations-contract-only" --health-interval 5s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Create disposable integration schema
+        run: mysql -h127.0.0.1 -uroot -pintegrations-contract-only -e 'CREATE DATABASE gorge_integrations_test'
+      - name: Verify effect, inbox and fact transaction contracts
+        working-directory: go
+        env:
+          GORGE_TEST_INTEGRATIONS_DSN: root:integrations-contract-only@tcp(127.0.0.1:3306)/gorge_integrations_test?parseTime=true
+        run: go test -race -count=1 ./internal/integrations ./cmd/gorge-integrations
