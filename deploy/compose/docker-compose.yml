@@ -19,6 +19,28 @@ x-service-defaults: &service-defaults
 
 services:
 
+  maintenance:
+    <<: *service-defaults
+    profiles: [maintenance]
+    build:
+      context: ../../go
+      args:
+        SERVICE: gorge-maintenance
+        PORT: 8200
+    image: ghcr.io/soulteary/gorge:maintenance-${GORGE_IMAGE_TAG:-latest}
+    read_only: true
+    environment:
+      GORGE_LISTEN_ADDR: ':8200'
+      GORGE_SERVICE_TOKEN: ${GORGE_MAINTENANCE_TOKEN:-}
+      GORGE_MAINTENANCE_CACHE_DSN: ${GORGE_MAINTENANCE_CACHE_DSN:-}
+      GORGE_MAINTENANCE_CONDUIT_DSN: ${GORGE_MAINTENANCE_CONDUIT_DSN:-}
+      GORGE_MAINTENANCE_DAEMON_DSN: ${GORGE_MAINTENANCE_DAEMON_DSN:-}
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8200/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   image:
     <<: *service-defaults
     profiles: [image]

@@ -32,6 +32,7 @@
 | webhook | `gorge-webhook` | `:8160` | [`modules/webhook.md`](modules/webhook.md) | 已迁入 |
 | taskqueue | `gorge-taskqueue` | `:8090` | [`modules/taskqueue.md`](modules/taskqueue.md) | 已迁入 |
 | worker | `gorge-worker` | `:8170` | [`modules/worker.md`](modules/worker.md) | 已迁入 |
+| maintenance | `gorge-maintenance` | `:8200` | [`modules/maintenance.md`](modules/maintenance.md) | 可灰度，执行权默认 PHP |
 | db-api | `gorge-db-api` | `:8080` | [`modules/dbapi.md`](modules/dbapi.md) | 已迁入 |
 | conduit | `gorge-conduit` | `:8150` | [`modules/conduit.md`](modules/conduit.md) | 已迁入 |
 | gitea | `gorge-gitea` | `:8180` | [`modules/gitea.md`](modules/gitea.md) | 已迁入 |

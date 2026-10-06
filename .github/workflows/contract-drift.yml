@@ -33,6 +33,8 @@ on:
   pull_request:
     branches: [ main, develop ]
     paths:
+      - 'go/internal/maintenance/**'
+      - 'go/cmd/gorge-maintenance/**'
       - 'go/internal/contracts/**'
       - 'go/internal/doccheck/**'
       - 'go/internal/mailer/**'
@@ -45,6 +47,8 @@ on:
   push:
     branches: [ main ]
     paths:
+      - 'go/internal/maintenance/**'
+      - 'go/cmd/gorge-maintenance/**'
       - 'go/internal/contracts/**'
       - 'go/internal/doccheck/**'
       - 'go/internal/mailer/**'
@@ -107,3 +111,56 @@ jobs:
         env:
           PHORGE_FORK_DIR: ${{ github.workspace }}/phorge-fork
         run: go test ./internal/doccheck -run 'TestManifestMatches' -count=1 -v
+
+  cleanup:
+    name: Cleanup paired PHP export and MySQL contracts
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: gorge-contract-only
+        ports: ['3306:3306']
+        options: --health-cmd "mysqladmin ping -pgorge-contract-only" --health-interval 5s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.GORGE_REF }}
+          path: gorge
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.PHORGE_REPO }}
+          ref: ${{ env.PHORGE_REF }}
+          path: phorge-fork
+      - uses: actions/checkout@v6
+        with:
+          repository: phorgeit/arcanist
+          ref: 6f3726694752fb9cb08207070a4d7f68163784e1
+          path: arcanist
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mysqli, mbstring
+          coverage: none
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: gorge/go/go.mod
+          cache-dependency-path: gorge/go/go.sum
+      - name: Execute PHP guard and export actual policies
+        working-directory: phorge-fork
+        env:
+          GORGE_TEST_ARCANIST_DIR: ${{ github.workspace }}/arcanist
+          GORGE_TEST_MYSQL_PORT: '3306'
+          GORGE_TEST_MYSQL_PASSWORD: gorge-contract-only
+          GORGE_TEST_CLEANUP_EXPORT: ${{ runner.temp }}/cleanup-export.json
+        run: php tests/contract/cleanup/runtime.php
+      - name: Execute paired Go contracts without skipped fixtures
+        working-directory: gorge/go
+        env:
+          PHORGE_FORK_DIR: ${{ github.workspace }}/phorge-fork
+          GORGE_TEST_CLEANUP_EXPORT: ${{ runner.temp }}/cleanup-export.json
+          GORGE_TEST_MYSQL_DSN: root:gorge-contract-only@tcp(127.0.0.1:3306)/
+        run: |
+          test -s "$GORGE_TEST_CLEANUP_EXPORT"
+          test -f "$PHORGE_FORK_DIR/resources/sql/autopatches/20261006.cache.01.gorgecleanup.sql"
+          go test -race -count=1 -v ./internal/maintenance/... ./cmd/gorge-maintenance

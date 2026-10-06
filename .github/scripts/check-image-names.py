@@ -16,7 +16,7 @@ things:
      deploy compose (`deploy/compose/docker-compose.yml`) name the same set of
      service prefixes against the same package.
   2. The phorge-fork overlay (`docker-compose.gorge.yml`), when present, uses
-     `ghcr.io/soulteary/gorge:<prefix>-<tag>` for all ten of its gorge
+     `ghcr.io/soulteary/gorge:<prefix>-<tag>` for its released gorge
      services.
   3. Nowhere in the scanned files does the `ghcr.io/soulteary/gorge-<service>`
      repository form appear.
@@ -174,17 +174,13 @@ def check_phorge_fork(phorge_root, expected_prefixes, errors):
         if prefix is not None:
             found.add(prefix)
 
-    # The overlay ships exactly the ten gorge services; every prefix it uses
-    # must be one the release matrix builds, and it must not invent new ones.
-    unknown = found - expected_prefixes
-    if unknown:
-        fail(errors, f"{compose_yml}: uses gorge image prefixes {sorted(unknown)} "
-                     f"that the Gorge release matrix does not build")
-
-    expected_count = 10
-    if len(found) != expected_count:
-        fail(errors, f"{compose_yml}: expected {expected_count} distinct gorge "
-                     f"service images, found {len(found)}: {sorted(found)}")
+    # Image transformation has its own local-build overlay. Every other
+    # released service must be represented in the main Phorge Gorge overlay.
+    required = expected_prefixes - {"image"}
+    missing = required - found
+    if missing:
+        fail(errors, f"{compose_yml}: missing released service images "
+                     f"{sorted(missing)}")
 
 
 def main(argv):

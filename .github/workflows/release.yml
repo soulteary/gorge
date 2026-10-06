@@ -39,6 +39,9 @@ jobs:
       matrix:
         include:
           # port is the listener the image's built-in HEALTHCHECK probes.
+          - service: gorge-maintenance
+            tag_prefix: maintenance
+            port: 8200
           - service: gorge-image
             tag_prefix: image
             port: 8190

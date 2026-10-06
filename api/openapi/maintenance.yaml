@@ -1,0 +1,61 @@
+openapi: 3.0.3
+info:
+  title: Gorge Maintenance API
+  version: 1.0.0
+  description: Read-only cleanup status. Policies and ownership are changed only by the local CLI. Cleanup templates are fixed and fenced in MySQL transactions.
+servers:
+  - url: http://localhost:8200
+paths:
+  /api/maintenance/collectors:
+    get:
+      security: [{ServiceToken: []}]
+      responses:
+        '200':
+          description: Collector state in the platform envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Collector'}
+                  error: {type: object, nullable: true}
+        '401': {description: Missing or invalid header token}
+        '503': {description: ERR_CLEANUP_UNAVAILABLE}
+  /api/maintenance/metrics:
+    get:
+      security: [{ServiceToken: []}]
+      responses:
+        '200':
+          description: Prometheus text for deleted rows, last success epoch and consecutive failures
+          content:
+            text/plain:
+              schema: {type: string}
+        '401': {description: Missing or invalid header token}
+        '503': {description: ERR_CLEANUP_UNAVAILABLE}
+components:
+  securitySchemes:
+    ServiceToken:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+  schemas:
+    Collector:
+      type: object
+      properties:
+        id: {type: string}
+        owner: {type: string, enum: [php, gorge, paused]}
+        ownerEpoch: {type: integer, format: int64}
+        fence: {type: integer, format: int64}
+        policyHash: {type: string}
+        leaseOwner: {type: string}
+        leaseExpires: {type: integer, format: int64}
+        nextRun: {type: integer, format: int64}
+        cycleCutoff: {type: integer, format: int64}
+        deletedRows: {type: integer, format: int64}
+        lastSuccess: {type: integer, format: int64}
+        status: {type: string}
+        failures: {type: integer}
+        lastError: {type: string}
