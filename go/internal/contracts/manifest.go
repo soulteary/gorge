@@ -94,6 +94,7 @@ const (
 // tooling) always get a fresh copy they can not accidentally mutate for others.
 func Manifest() []DomainContract {
 	return []DomainContract{
+		imageContract(),
 		mailerContract(),
 		searchContract(),
 		webhookContract(),
@@ -533,4 +534,24 @@ func ReverseScanFiles() []ReverseScanFile {
 			Note:            "§10.1 the Lisk column schema. 'columns' is the key schema's own structural key, not a column name.",
 		},
 	}
+}
+
+// Image computation is binary; metadata and protocol pins remain JSON.
+func imageContract() DomainContract {
+	php := "src/infrastructure/cluster/PhabricatorGorgeImageClient.php"
+	check := "src/applications/config/check/PhabricatorGorgeImageSetupCheck.php"
+	file := "src/applications/files/storage/PhabricatorFile.php"
+	return DomainContract{Domain: "image", Routes: []ContractItem{
+		{Name: "/api/image/stats", Note: "Go computation-cache observability; no PHP adapter consumes this route."},
+		{Name: "/api/image/transform", PHPFiles: []string{php}},
+		{Name: "/api/image/probe", PHPFiles: []string{php}},
+		{Name: "/api/image/capabilities", PHPFiles: []string{php}},
+	}, WireFields: []ContractItem{
+		{Name: "width", PHPFiles: []string{file}}, {Name: "height", PHPFiles: []string{file}},
+		{Name: "mimeType", Note: "Probe metadata; PHP validates returned image bytes independently."},
+		{Name: "frames", Note: "Probe reports frame count; no PHP literal consumer yet."},
+		{Name: "animationStatus", Note: "Probe reports static/animated; PHP specifies policy in request."},
+		{Name: "protocolVersion", PHPFiles: []string{check}}, {Name: "recipeRevision", PHPFiles: []string{check}},
+		{Name: "recipes", PHPFiles: []string{check}},
+	}}
 }

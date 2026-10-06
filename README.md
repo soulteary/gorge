@@ -165,3 +165,7 @@ CI 带 `paths` 过滤（`go/**`、`tests/**`、`.github/workflows/**`），纯 P
 ## 许可证
 
 Apache License 2.0，见 [LICENSE](LICENSE)。
+
+
+图片计算支持可选 `gorge-image` 服务（8190），包含五种缩略图预设、probe、GIF策略和有界计算缓存。
+默认不切换 Phorge；参阅 [图片模块与灰度说明](docs/modules/image.md)。

@@ -1,0 +1,937 @@
+[
+    {
+        "Width": 1,
+        "Height": 1,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1,
+            "CropHeight": 1,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 1,
+        "Height": 1,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1,
+            "CropHeight": 1,
+            "CopyWidth": 1,
+            "CopyHeight": 1,
+            "OffsetX": 139,
+            "OffsetY": 104
+        }
+    },
+    {
+        "Width": 1,
+        "Height": 1,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 100,
+            "Height": 100,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1,
+            "CropHeight": 1,
+            "CopyWidth": 1,
+            "CopyHeight": 1,
+            "OffsetX": 49,
+            "OffsetY": 49
+        }
+    },
+    {
+        "Width": 1,
+        "Height": 1,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 220,
+            "Height": 220,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1,
+            "CropHeight": 1,
+            "CopyWidth": 1,
+            "CopyHeight": 1,
+            "OffsetX": 109,
+            "OffsetY": 109
+        }
+    },
+    {
+        "Width": 1,
+        "Height": 1,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 526,
+            "Height": 526,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1,
+            "CropHeight": 1,
+            "CopyWidth": 526,
+            "CopyHeight": 526,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 16,
+        "Height": 9,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 3,
+            "CropY": 0,
+            "CropWidth": 9,
+            "CropHeight": 9,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 16,
+        "Height": 9,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 16,
+            "CropHeight": 9,
+            "CopyWidth": 16,
+            "CopyHeight": 9,
+            "OffsetX": 132,
+            "OffsetY": 100
+        }
+    },
+    {
+        "Width": 16,
+        "Height": 9,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 100,
+            "Height": 56,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 16,
+            "CropHeight": 9,
+            "CopyWidth": 16,
+            "CopyHeight": 9,
+            "OffsetX": 42,
+            "OffsetY": 23
+        }
+    },
+    {
+        "Width": 16,
+        "Height": 9,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 220,
+            "Height": 123,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 16,
+            "CropHeight": 9,
+            "CopyWidth": 16,
+            "CopyHeight": 9,
+            "OffsetX": 102,
+            "OffsetY": 57
+        }
+    },
+    {
+        "Width": 16,
+        "Height": 9,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 526,
+            "Height": 295,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 16,
+            "CropHeight": 9,
+            "CopyWidth": 526,
+            "CopyHeight": 295,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 9,
+        "Height": 16,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 0,
+            "CropY": 3,
+            "CropWidth": 9,
+            "CropHeight": 9,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 9,
+        "Height": 16,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 9,
+            "CropHeight": 16,
+            "CopyWidth": 9,
+            "CopyHeight": 16,
+            "OffsetX": 135,
+            "OffsetY": 97
+        }
+    },
+    {
+        "Width": 9,
+        "Height": 16,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 56,
+            "Height": 100,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 9,
+            "CropHeight": 16,
+            "CopyWidth": 9,
+            "CopyHeight": 16,
+            "OffsetX": 23,
+            "OffsetY": 42
+        }
+    },
+    {
+        "Width": 9,
+        "Height": 16,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 123,
+            "Height": 220,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 9,
+            "CropHeight": 16,
+            "CopyWidth": 9,
+            "CopyHeight": 16,
+            "OffsetX": 57,
+            "OffsetY": 102
+        }
+    },
+    {
+        "Width": 9,
+        "Height": 16,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 295,
+            "Height": 526,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 9,
+            "CropHeight": 16,
+            "CopyWidth": 295,
+            "CopyHeight": 526,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 1000,
+        "Height": 10,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 495,
+            "CropY": 0,
+            "CropWidth": 10,
+            "CropHeight": 10,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 1000,
+        "Height": 10,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 360,
+            "CropY": 0,
+            "CropWidth": 280,
+            "CropHeight": 10,
+            "CopyWidth": 280,
+            "CopyHeight": 10,
+            "OffsetX": 0,
+            "OffsetY": 100
+        }
+    },
+    {
+        "Width": 1000,
+        "Height": 10,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 100,
+            "Height": 25,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1000,
+            "CropHeight": 10,
+            "CopyWidth": 100,
+            "CopyHeight": 1,
+            "OffsetX": 0,
+            "OffsetY": 12
+        }
+    },
+    {
+        "Width": 1000,
+        "Height": 10,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 220,
+            "Height": 55,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1000,
+            "CropHeight": 10,
+            "CopyWidth": 220,
+            "CopyHeight": 2,
+            "OffsetX": 0,
+            "OffsetY": 26
+        }
+    },
+    {
+        "Width": 1000,
+        "Height": 10,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 526,
+            "Height": 131,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 1000,
+            "CropHeight": 10,
+            "CopyWidth": 526,
+            "CopyHeight": 5,
+            "OffsetX": 0,
+            "OffsetY": 63
+        }
+    },
+    {
+        "Width": 10,
+        "Height": 1000,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 0,
+            "CropY": 495,
+            "CropWidth": 10,
+            "CropHeight": 10,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 10,
+        "Height": 1000,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 395,
+            "CropWidth": 10,
+            "CropHeight": 210,
+            "CopyWidth": 10,
+            "CopyHeight": 210,
+            "OffsetX": 135,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 10,
+        "Height": 1000,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 25,
+            "Height": 100,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 10,
+            "CropHeight": 1000,
+            "CopyWidth": 1,
+            "CopyHeight": 100,
+            "OffsetX": 12,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 10,
+        "Height": 1000,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 55,
+            "Height": 220,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 10,
+            "CropHeight": 1000,
+            "CopyWidth": 2,
+            "CopyHeight": 220,
+            "OffsetX": 26,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 10,
+        "Height": 1000,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 131,
+            "Height": 526,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 10,
+            "CropHeight": 1000,
+            "CopyWidth": 5,
+            "CopyHeight": 526,
+            "OffsetX": 63,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 101,
+        "Height": 77,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 12,
+            "CropY": 0,
+            "CropWidth": 77,
+            "CropHeight": 77,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 101,
+        "Height": 77,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 101,
+            "CropHeight": 77,
+            "CopyWidth": 101,
+            "CopyHeight": 77,
+            "OffsetX": 89,
+            "OffsetY": 66
+        }
+    },
+    {
+        "Width": 101,
+        "Height": 77,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 100,
+            "Height": 76,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 101,
+            "CropHeight": 77,
+            "CopyWidth": 100,
+            "CopyHeight": 76,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 101,
+        "Height": 77,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 220,
+            "Height": 167,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 101,
+            "CropHeight": 77,
+            "CopyWidth": 101,
+            "CopyHeight": 77,
+            "OffsetX": 59,
+            "OffsetY": 45
+        }
+    },
+    {
+        "Width": 101,
+        "Height": 77,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 526,
+            "Height": 401,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 101,
+            "CropHeight": 77,
+            "CopyWidth": 526,
+            "CopyHeight": 401,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 77,
+        "Height": 101,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 0,
+            "CropY": 12,
+            "CropWidth": 77,
+            "CropHeight": 77,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 77,
+        "Height": 101,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 77,
+            "CropHeight": 101,
+            "CopyWidth": 77,
+            "CopyHeight": 101,
+            "OffsetX": 101,
+            "OffsetY": 54
+        }
+    },
+    {
+        "Width": 77,
+        "Height": 101,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 76,
+            "Height": 100,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 77,
+            "CropHeight": 101,
+            "CopyWidth": 76,
+            "CopyHeight": 100,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 77,
+        "Height": 101,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 167,
+            "Height": 220,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 77,
+            "CropHeight": 101,
+            "CopyWidth": 77,
+            "CopyHeight": 101,
+            "OffsetX": 45,
+            "OffsetY": 59
+        }
+    },
+    {
+        "Width": 77,
+        "Height": 101,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 401,
+            "Height": 526,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 77,
+            "CropHeight": 101,
+            "CopyWidth": 401,
+            "CopyHeight": 526,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 640,
+        "Height": 480,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 80,
+            "CropY": 0,
+            "CropWidth": 480,
+            "CropHeight": 480,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 640,
+        "Height": 480,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 640,
+            "CropHeight": 480,
+            "CopyWidth": 280,
+            "CopyHeight": 210,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 640,
+        "Height": 480,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 100,
+            "Height": 75,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 640,
+            "CropHeight": 480,
+            "CopyWidth": 100,
+            "CopyHeight": 75,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 640,
+        "Height": 480,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 220,
+            "Height": 165,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 640,
+            "CropHeight": 480,
+            "CopyWidth": 220,
+            "CopyHeight": 165,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 640,
+        "Height": 480,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 526,
+            "Height": 394,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 640,
+            "CropHeight": 480,
+            "CopyWidth": 526,
+            "CopyHeight": 394,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 480,
+        "Height": 640,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 0,
+            "CropY": 80,
+            "CropWidth": 480,
+            "CropHeight": 480,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 480,
+        "Height": 640,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 140,
+            "CropWidth": 479,
+            "CropHeight": 360,
+            "CopyWidth": 280,
+            "CopyHeight": 210,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 480,
+        "Height": 640,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 75,
+            "Height": 100,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 480,
+            "CropHeight": 640,
+            "CopyWidth": 75,
+            "CopyHeight": 100,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 480,
+        "Height": 640,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 165,
+            "Height": 220,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 480,
+            "CropHeight": 640,
+            "CopyWidth": 165,
+            "CopyHeight": 220,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 480,
+        "Height": 640,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 394,
+            "Height": 526,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 480,
+            "CropHeight": 640,
+            "CopyWidth": 394,
+            "CopyHeight": 526,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 400,
+        "Height": 400,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 400,
+            "CropHeight": 400,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 400,
+        "Height": 400,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 0,
+            "CropY": 50,
+            "CropWidth": 400,
+            "CropHeight": 300,
+            "CopyWidth": 280,
+            "CopyHeight": 210,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 400,
+        "Height": 400,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 100,
+            "Height": 100,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 400,
+            "CropHeight": 400,
+            "CopyWidth": 100,
+            "CopyHeight": 100,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 400,
+        "Height": 400,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 220,
+            "Height": 220,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 400,
+            "CropHeight": 400,
+            "CopyWidth": 220,
+            "CopyHeight": 220,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 400,
+        "Height": 400,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 526,
+            "Height": 526,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 400,
+            "CropHeight": 400,
+            "CopyWidth": 526,
+            "CopyHeight": 526,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 526,
+        "Height": 263,
+        "Recipe": "profile",
+        "Plan": {
+            "Width": 400,
+            "Height": 400,
+            "CropX": 131,
+            "CropY": 0,
+            "CropWidth": 263,
+            "CropHeight": 263,
+            "CopyWidth": 400,
+            "CopyHeight": 400,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 526,
+        "Height": 263,
+        "Recipe": "pinboard",
+        "Plan": {
+            "Width": 280,
+            "Height": 210,
+            "CropX": 87,
+            "CropY": 0,
+            "CropWidth": 350,
+            "CropHeight": 263,
+            "CopyWidth": 280,
+            "CopyHeight": 210,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 526,
+        "Height": 263,
+        "Recipe": "thumbgrid",
+        "Plan": {
+            "Width": 100,
+            "Height": 50,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 526,
+            "CropHeight": 263,
+            "CopyWidth": 100,
+            "CopyHeight": 50,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 526,
+        "Height": 263,
+        "Recipe": "preview",
+        "Plan": {
+            "Width": 220,
+            "Height": 110,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 526,
+            "CropHeight": 263,
+            "CopyWidth": 220,
+            "CopyHeight": 110,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    },
+    {
+        "Width": 526,
+        "Height": 263,
+        "Recipe": "workcard",
+        "Plan": {
+            "Width": 526,
+            "Height": 263,
+            "CropX": 0,
+            "CropY": 0,
+            "CropWidth": 526,
+            "CropHeight": 263,
+            "CopyWidth": 526,
+            "CopyHeight": 263,
+            "OffsetX": 0,
+            "OffsetY": 0
+        }
+    }
+]

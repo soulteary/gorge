@@ -66,6 +66,7 @@ var contractsDir = filepath.Join(repositoryRoot, "go", "internal", "contracts")
 // constants. The Go-side coverage test scans these for route paths and
 // error-code strings.
 var domainGoSources = map[string]string{
+	"image":     filepath.Join(repositoryRoot, "go", "internal", "imagetransform"),
 	"mailer":    filepath.Join(repositoryRoot, "go", "internal", "mailer"),
 	"search":    filepath.Join(repositoryRoot, "go", "internal", "search"),
 	"webhook":   filepath.Join(repositoryRoot, "go", "internal", "webhook"),

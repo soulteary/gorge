@@ -42,6 +42,9 @@ RUN apk add --no-cache ca-certificates \
   && adduser -D -u 10001 gorge \
   && install -d -o gorge -g gorge -m 0755 /var/lib/gorge/files
 
+RUN if [ "$SERVICE" = "gorge-image" ]; then apk add --no-cache imagemagick imagemagick-jpeg imagemagick-webp; fi
+COPY internal/imagetransform/policy.xml /etc/gorge/image/policy.xml
+
 COPY --from=builder /out/service /usr/local/bin/${SERVICE}
 
 # ENTRYPOINT cannot expand build args, so expose the binary under a stable name.

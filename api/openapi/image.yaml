@@ -1,0 +1,90 @@
+openapi: 3.0.3
+info:
+  title: Gorge image computation
+  version: 1.0.0
+servers:
+  - url: http://localhost:8190
+security:
+  - ServiceToken: []
+paths:
+  /api/image/stats:
+    get:
+      responses:
+        '200':
+          description: Process-local computations, cacheHits, sharedWaits, cacheEntries and cacheBytes.
+  /api/image/capabilities:
+    get:
+      responses:
+        '200':
+          description: Protocol version, recipe/backend revisions, recipes, formats and resource limits.
+        '401':
+          description: Missing or invalid service token.
+  /api/image/probe:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: Envelope data contains detected mimeType, width, height, frames and animationStatus.
+        '413':
+          description: Byte, canvas, frame or cumulative pixel budget exceeded.
+        '415':
+          description: Unsupported image format.
+        '422':
+          description: Invalid image data.
+        '429':
+          description: Image computation slots exhausted; Retry-After is 1 second.
+        '504':
+          description: Image computation timeout.
+  /api/image/transform:
+    post:
+      parameters:
+        - in: query
+          name: revision
+          required: true
+          schema: {type: string, enum: [phorge-v1]}
+        - in: query
+          name: recipe
+          required: true
+          schema: {type: string, enum: [profile, pinboard, thumbgrid, preview, workcard]}
+        - in: query
+          name: animation
+          schema: {type: string, enum: [legacy-static, legacy-preserve], default: legacy-static}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: Encoded image bytes; detected MIME, ETag, recipe/backend revision and width/height response headers. Cache-Control is no-store.
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/gif:
+              schema: {type: string, format: binary}
+            image/webp:
+              schema: {type: string, format: binary}
+        '400':
+          description: Unknown recipe, revision or animation policy.
+        '413':
+          description: Byte, pixel or animation budget exceeded.
+        '415':
+          description: Unsupported format.
+        '422':
+          description: Invalid image or empty raster plan.
+        '429':
+          description: Image execution slots are busy.
+        '504':
+          description: Execution deadline exceeded.
+components:
+  securitySchemes:
+    ServiceToken:
+      type: apiKey
+      in: header
+      name: X-Service-Token

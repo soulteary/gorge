@@ -27,6 +27,7 @@
 | notification | `gorge-notification` | `:22280`（client/WS）+ `:22281`（admin） | [`modules/notification.md`](modules/notification.md) | 已迁入 |
 | mailer | `gorge-mailer` | `:8110` | [`modules/mailer.md`](modules/mailer.md) | 已迁入 |
 | search | `gorge-search` | `:8120` | [`modules/search.md`](modules/search.md) | 已迁入 |
+| image | `gorge-image` | `:8190` | [`modules/image.md`](modules/image.md) | 可灰度，默认未切换 |
 | file-storage | `gorge-file-storage` | `:8100` | [`modules/file-storage.md`](modules/file-storage.md) | 已迁入 |
 | webhook | `gorge-webhook` | `:8160` | [`modules/webhook.md`](modules/webhook.md) | 已迁入 |
 | taskqueue | `gorge-taskqueue` | `:8090` | [`modules/taskqueue.md`](modules/taskqueue.md) | 已迁入 |

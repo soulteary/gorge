@@ -19,6 +19,29 @@ x-service-defaults: &service-defaults
 
 services:
 
+  image:
+    <<: *service-defaults
+    profiles: [image]
+    build:
+      context: ../../go
+      args:
+        SERVICE: gorge-image
+        PORT: 8190
+    image: ghcr.io/soulteary/gorge:image-${GORGE_IMAGE_TAG:-latest}
+    read_only: true
+    mem_limit: 2g
+    cpus: 2
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=512m']
+    environment:
+      GORGE_LISTEN_ADDR: ':8190'
+      GORGE_SERVICE_TOKEN: ${GORGE_SERVICE_TOKEN:-}
+    ports: ['${GORGE_IMAGE_PORT:-8190}:8190']
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8190/readyz']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   # --- render: syntax highlighting and diffs ---
   #
   # Two domains, one service. The diff domain answers /api/diff/* on this same
