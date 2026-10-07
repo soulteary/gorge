@@ -29,6 +29,8 @@
 
 set -uo pipefail
 
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required for structured response checks" >&2; exit 1; }
+
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
 TOKEN="${TOKEN:-}"
 CURL_TIMEOUT="${CURL_TIMEOUT:-10}"
@@ -97,13 +99,10 @@ request() {
 no_leak() {
   local label="$1"
   local pass="${GORGE_DB_MYSQL_PASS:-${MYSQL_PASS:-}}"
-  for needle in 'SELECT ' 'INFORMATION_SCHEMA' 'patch_status' "$pass"; do
-    [ -z "$needle" ] && continue
-    if [[ "$RESP_BODY" == *"$needle"* ]]; then
-      fail "$label leaks internal detail" "found '${needle}' in: ${RESP_BODY}"
-      return 1
-    fi
-  done
+  if ! printf '%s' "$RESP_BODY" | DB_CHECK_PASSWORD="$pass" python3 "$(dirname "${BASH_SOURCE[0]}")/dbapi-response-check.py"; then
+    fail "$label leaks internal detail" 'response rejected by structured check (details redacted)'
+    return 1
+  fi
   return 0
 }
 

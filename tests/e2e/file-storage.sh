@@ -166,12 +166,9 @@ fi
 printf 'hello gorge\000\n\xff\xfe binary' > "$tmp_upload"
 upload_size="$(wc -c < "$tmp_upload" | tr -d ' ')"
 
-request POST "/api/file/blob?name=e2e.bin&mimeType=application%2Foctet-stream" "$tmp_upload" "$TOKEN"
+request POST "/api/file/blob?engine=${ENGINE}&name=e2e.bin&mimeType=application%2Foctet-stream" "$tmp_upload" "$TOKEN"
 handle=''
-# The engine that actually took the bytes, which is not necessarily $ENGINE:
-# the write above names none, so the router picked by priority and may have
-# fallen through. A handle only means anything to the engine that minted it,
-# so every request below uses this rather than $ENGINE.
+# Writes explicitly select ENGINE; retain the returned engine for cleanup.
 wrote_to="$ENGINE"
 if [ "$RESP_STATUS" != '200' ]; then
   fail 'POST /api/file/blob' "status=${RESP_STATUS} body=${RESP_BODY}"
@@ -183,6 +180,9 @@ else
   written_size="$(json_field size)"
   if [ -z "$handle" ] || [ -z "$written_engine" ]; then
     fail 'POST /api/file/blob' "response is missing data.handle or data.engine: ${RESP_BODY}"
+  elif [ "$written_engine" != "$ENGINE" ]; then
+    wrote_to="$written_engine"
+    fail "POST /api/file/blob" "expected engine ${ENGINE}, got ${written_engine}"
   elif [ "$written_size" != "$upload_size" ]; then
     fail 'POST /api/file/blob' "reported size ${written_size}, sent ${upload_size}"
   else
@@ -260,12 +260,15 @@ fi
 # body, which is indistinguishable from a failure to anyone checking whether
 # the body is empty.
 : > "$tmp_upload"
-request POST /api/file/blob "$tmp_upload" "$TOKEN"
+request POST "/api/file/blob?engine=${ENGINE}" "$tmp_upload" "$TOKEN"
 if [ "$RESP_STATUS" != '200' ]; then
   fail 'POST /api/file/blob with an empty file' "status=${RESP_STATUS} body=${RESP_BODY}"
 else
   empty_handle="$(json_field handle)"
   empty_engine="$(json_field engine)"
+  if [ "$empty_engine" != "$ENGINE" ]; then
+    fail "empty-file backend selection" "expected engine ${ENGINE}, got ${empty_engine}"
+  fi
   read_status="$(curl -sS --max-time "$CURL_TIMEOUT" -o "$tmp_download" -w '%{http_code}' \
     -H "X-Service-Token: ${TOKEN}" \
     "${BASE_URL}/api/file/blob?engine=${empty_engine}&handle=${empty_handle}" 2>"$tmp_err")"
