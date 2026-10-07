@@ -129,3 +129,12 @@ CI 要求 `GORGE_CONTRACT_REF` 仓库变量或 workflow_dispatch 的 gorge_ref �
 每次成功验收保存双方 commit、dirty 状态和包含未提交源码的 SHA256，及 Arcanist
 版本/CA 兼容源码摘要。常规 CI 必跑当前 image 与 S3；手动 published-image 检查是额外项。
 本地工作树验收通过不代表远端 CI 已运行，也不代表生产实例满足退役条件。
+
+## Docker 单机栈的可执行运维入口
+
+Phorge 仓库新增 `bin/ops`：backup、verify、restore-test、restore、report 和 archive。
+操作说明与适用拓扑见配对 Phorge 仓库 `scripts/operations/README.md`。
+只支持 bundled 单 MySQL 与命名卷；外部存储/数据库拒绝自动打包。
+restore-test 是隔离 SQL/卷恢复演练，不代表业务完整性验证。
+archive 复制有效备份包并保留源文件；业务账本冷归档仅输出前置条件，不执行删除。
+report 提供 JSON/退出码告警及同物理库容量净增长，不自动注册通知或定时任务。
