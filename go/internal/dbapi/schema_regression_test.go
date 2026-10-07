@@ -409,3 +409,34 @@ func TestSchemaIssuesCompareReplicaWithItsPartitionMaster(t *testing.T) {
 		t.Fatalf("nullable diagnostic = %+v", issue)
 	}
 }
+
+func TestLoadActualSchemaOmitsVisibleEmptyDatabaseLikePhorge(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("INFORMATION_SCHEMA.SCHEMATA").WillReturnRows(
+		sqlmock.NewRows([]string{"SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME"}).
+			AddRow("phorge_retired", "utf8mb4", "utf8mb4_bin"))
+	mock.ExpectQuery("INFORMATION_SCHEMA.TABLES").WithArgs("phorge_retired").WillReturnRows(
+		sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_COLLATION", "ENGINE"}))
+	mock.ExpectQuery("INFORMATION_SCHEMA.COLUMNS").WithArgs("phorge_retired").WillReturnRows(
+		sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME", "EXTRA"}))
+	mock.ExpectQuery("INFORMATION_SCHEMA.STATISTICS").WithArgs("phorge_retired").WillReturnRows(
+		sqlmock.NewRows([]string{"TABLE_NAME", "INDEX_NAME", "SEQ_IN_INDEX", "COLUMN_NAME", "SUB_PART", "NON_UNIQUE", "INDEX_TYPE"}))
+	mock.ExpectClose()
+	ref := &DatabaseRef{Host: "db1", Port: 3306}
+	svc := NewDiffService(&ClusterConfig{Refs: []*DatabaseRef{ref}, Namespace: "phorge"}, "secret")
+	svc.SetConnFactory(mockConnFactory(db))
+	got, err := svc.LoadActualSchema(context.Background(), ref, "phorge_retired")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Children) != 0 {
+		t.Fatalf("empty database reported: %+v", got.Children)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

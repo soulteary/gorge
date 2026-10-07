@@ -105,6 +105,12 @@ func (s *DiffService) loadServerSchema(ctx context.Context, conn *Conn, ref *Dat
 		}
 		dbNode.CharacterSet = database.charset
 		dbNode.Collation = database.collation
+		// Phorge builds its native database nodes from INFORMATION_SCHEMA.TABLES,
+		// so a visible database without tables is absent from that schema tree.
+		// Keep visibility recorded above to avoid treating it as access denied.
+		if len(dbNode.Children) == 0 {
+			continue
+		}
 		server.Children = append(server.Children, dbNode)
 	}
 

@@ -235,7 +235,9 @@ jobs:
           set -euo pipefail
           PATH="$PWD/../arcanist/bin:$PATH"
           # Replay migrations: the bundled quickstart contains retired schemata.
-          ./bin/storage upgrade --force --no-quickstart
+          # Replayed history also creates retired tables. Match the deployment
+          # entrypoint: allow surplus warnings, but still fail other errors.
+          ./bin/storage upgrade --force --no-quickstart --allow-surplus
 
       - name: Build and start gorge-db-api against the same MySQL
         working-directory: gorge/go
