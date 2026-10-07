@@ -192,6 +192,7 @@ jobs:
         with:
           php-version: '8.2'
           extensions: mysqli, mbstring, curl, iconv
+          coverage: none
 
       - name: Set up Go
         uses: actions/setup-go@v6
