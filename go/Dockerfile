@@ -14,7 +14,9 @@ ARG GO_VERSION=1.27
 ARG BUILDER_ALPINE_VERSION=3.24
 ARG ALPINE_VERSION=3.22
 
-FROM golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION} AS builder
+ARG GO_BASE_IMAGE=golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION}
+ARG RUNTIME_BASE_IMAGE=alpine:${ALPINE_VERSION}
+FROM ${GO_BASE_IMAGE} AS builder
 
 # Build-only settings; paths must exist inside the builder image.
 ARG GOPROXY=https://proxy.golang.org,direct
@@ -27,7 +29,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/service ./cmd/${SERVICE}
 
-FROM alpine:${ALPINE_VERSION}
+FROM ${RUNTIME_BASE_IMAGE}
 
 ARG SERVICE=gorge-render
 ARG PORT=8140
