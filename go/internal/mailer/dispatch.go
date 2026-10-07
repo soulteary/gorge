@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
@@ -39,9 +40,17 @@ type namedAdapter struct {
 // in declaration order.
 func NewDispatcher(specs []MailerSpec, retry RetryPolicy) (*Dispatcher, error) {
 	adapters := make([]namedAdapter, 0, len(specs))
+	keys := make(map[string]bool, len(specs))
 
 	nextPriority := -1
 	for _, spec := range specs {
+		if strings.TrimSpace(spec.Key) == "" {
+			return nil, errors.New("mailer key must be nonempty")
+		}
+		if keys[spec.Key] {
+			return nil, fmt.Errorf("duplicate mailer key %q", spec.Key)
+		}
+		keys[spec.Key] = true
 		a, err := NewAdapter(spec)
 		if err != nil {
 			return nil, fmt.Errorf("mailer %q: %w", spec.Key, err)
@@ -111,7 +120,7 @@ func (d *Dispatcher) Send(ctx context.Context, msg *contracts.EmailMessage) (*co
 // narrowing the set, not reordering it. An empty key list means "any".
 func (d *Dispatcher) SendWith(ctx context.Context, msg *contracts.EmailMessage, mailerKeys []string) (*contracts.SendResult, error) {
 	if err := d.Ready(); err != nil {
-		return nil, err
+		return nil, &SafeRetryError{Err: err, Backend: true}
 	}
 
 	var keySet map[string]bool
@@ -129,6 +138,9 @@ func (d *Dispatcher) SendWith(ctx context.Context, msg *contracts.EmailMessage, 
 			continue
 		}
 		matched++
+		if err := ctx.Err(); err != nil {
+			return nil, &SafeRetryError{Err: err}
+		}
 
 		messageID, err := d.sendThrough(ctx, na, msg)
 		if err == nil {
@@ -144,7 +156,7 @@ func (d *Dispatcher) SendWith(ctx context.Context, msg *contracts.EmailMessage, 
 	}
 
 	if matched == 0 {
-		return nil, fmt.Errorf("no matching mailers for keys: %v", mailerKeys)
+		return nil, &SafeRetryError{Err: fmt.Errorf("no matching mailers for keys: %v", mailerKeys), Backend: true}
 	}
 	return nil, fmt.Errorf("all mailers failed, last error: %w", lastErr)
 }
@@ -160,6 +172,9 @@ func (d *Dispatcher) sendThrough(ctx context.Context, na namedAdapter, msg *cont
 	var lastErr error
 
 	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", &SafeRetryError{Err: err}
+		}
 		messageID, err := na.adapter.Send(ctx, msg)
 		if err == nil {
 			return messageID, nil
@@ -178,7 +193,7 @@ func (d *Dispatcher) sendThrough(ctx context.Context, na namedAdapter, msg *cont
 			return "", lastErr
 		}
 		if waitErr := waitBeforeRetry(ctx, d.retry.RetryWait); waitErr != nil {
-			return "", fmt.Errorf("%w (last error: %v)", waitErr, lastErr)
+			return "", &SafeRetryError{Err: fmt.Errorf("%w (last error: %v)", waitErr, lastErr)}
 		}
 	}
 }

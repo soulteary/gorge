@@ -13,9 +13,8 @@ import (
 const fixtureDir = "../../../tests/contract/mailer"
 
 func TestContractFixtures(t *testing.T) {
-	// Three backends, because the wire contract has three outcomes to pin and
-	// only the test adapter can be made to produce the failing two on demand.
-	// The fixtures reach the second and third through mailerKeys.
+	// Separate providers pin acceptance, permanent rejection, proven safe retry
+	// and uncertain submission. Fixtures select them through mailerKeys.
 	//
 	// Retries stay off: they change how long a failure takes, not what it
 	// answers, and a fixture that waited on them would make the suite slow for
@@ -28,6 +27,8 @@ func TestContractFixtures(t *testing.T) {
 				Options: map[string]string{"fail": "permanent"}},
 			MailerSpec{Key: "down", Type: "test", Priority: 10,
 				Options: map[string]string{"fail": "temporary"}},
+			MailerSpec{Key: "unknown", Type: "test", Priority: 5,
+				Options: map[string]string{"fail": "unknown"}},
 		),
 		Token:     contracttest.Token,
 		BodyLimit: DefaultBodyLimit,

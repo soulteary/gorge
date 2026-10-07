@@ -7,16 +7,74 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag for a manual build from main (e.g. latest)'
+        description: 'Existing release tag (YYYY.MM.DD-rN)'
+        required: true
+      phorge_ref:
+        description: 'Matching published Phorge commit SHA (40 characters)'
         required: false
-        default: 'latest'
 
 env:
+  PYTHONDONTWRITEBYTECODE: '1'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  PHORGE_REF: ${{ inputs.phorge_ref || vars.PHORGE_CONTRACT_REF }}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  build-and-push:
+  validate-pair:
+    runs-on: ubuntu-latest
+    permissions: {contents: read}
+    outputs:
+      gorge_sha: ${{ steps.revision.outputs.sha }}
+      phorge_sha: ${{ steps.revision.outputs.phorge }}
+      go_image: ${{ steps.revision.outputs.go_image }}
+      alpine_image: ${{ steps.revision.outputs.alpine_image }}
+    steps:
+      - name: Require a version and exact published pair
+        run: |
+          [[ "$RELEASE_TAG" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}-r[0-9]+$ ]]
+          [[ "$PHORGE_REF" =~ ^[0-9a-fA-F]{40}$ ]]
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          path: gorge
+      - uses: actions/checkout@v6
+        with:
+          repository: soulteary/phorge
+          ref: ${{ env.PHORGE_REF }}
+          path: phorge-fork
+      - id: revision
+        run: |
+          echo "sha=$(git -C gorge rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "phorge=$(git -C phorge-fork rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          images=json.loads(Path('phorge-fork/deploy/acceptance/build-lock.json').read_text())['images']
+          print('go_image='+images['go'])
+          print('alpine_image='+images['alpine'])
+          PY
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: gorge/go/go.mod
+          cache-dependency-path: gorge/go/go.sum
+      - name: Verify the cross-repository contract before building
+        working-directory: gorge/go
+        env:
+          PHORGE_FORK_DIR: ${{ github.workspace }}/phorge-fork
+        run: |
+          go test -count=1 ./internal/doccheck ./cmd/...
+          go vet ./...
+      - name: Test release gate rejection paths
+        working-directory: gorge
+        run: python3 -m unittest discover -s deploy/release -p '*_test.py'
+
+  candidates:
+    needs: validate-pair
     # One image per binary under go/cmd. Adding a service means adding one
     # entry here; the Dockerfile and build context stay the same.
     #
@@ -28,7 +86,7 @@ jobs:
     # since deploy/compose/docker-compose.yml overrides the healthcheck, so
     # the port has to be right here or the published image is wrong in a way
     # local testing will not surface.
-    name: Build and Push ${{ matrix.service }}
+    name: Candidate ${{ matrix.service }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -98,9 +156,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          # A manual release always publishes the current main branch, even if
-          # the workflow was dispatched while viewing another ref.
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+          ref: ${{ needs.validate-pair.outputs.gorge_sha }}
+          path: gorge
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -112,32 +169,123 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          # All service images live in the repository-owned `gorge` package.
-          # The service prefix keeps their manifests independent inside that
-          # package: `render-latest`, `search-2026.09.08-r5`, and so on.
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ matrix.tag_prefix }}-${{ github.ref_name }},enable=${{ github.event_name == 'push' }}
-            type=raw,value=${{ matrix.tag_prefix }}-latest,enable=${{ github.event_name == 'push' }}
-            type=raw,value=${{ matrix.tag_prefix }}-${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.title=${{ matrix.service }}
-
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
-          context: go
+          context: gorge/go
           build-args: |
             SERVICE=${{ matrix.service }}
             PORT=${{ matrix.port }}
+            GO_BASE_IMAGE=${{ needs.validate-pair.outputs.go_image }}
+            RUNTIME_BASE_IMAGE=${{ needs.validate-pair.outputs.alpine_image }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # Candidate tags never move any published release or latest pointer.
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.tag_prefix }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.title=${{ matrix.service }}
+            org.opencontainers.image.revision=${{ needs.validate-pair.outputs.gorge_sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           platforms: linux/amd64,linux/arm64
+      - name: Record the immutable candidate
+        env:
+          CANDIDATE_DIGEST: ${{ steps.build.outputs.digest }}
+          SERVICE_NAME: ${{ matrix.tag_prefix }}
+          SERVICE_PORT: ${{ matrix.port }}
+          GORGE_SHA: ${{ needs.validate-pair.outputs.gorge_sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path(os.environ['SERVICE_NAME']+'.json').write_text(json.dumps({
+              'name': os.environ['SERVICE_NAME'], 'port': int(os.environ['SERVICE_PORT']),
+              'digest': os.environ['CANDIDATE_DIGEST'], 'gorgeCommit': os.environ['GORGE_SHA']}))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-${{ matrix.tag_prefix }}
+          path: ${{ matrix.tag_prefix }}.json
+          if-no-files-found: error
+
+  paired-acceptance:
+    needs: [validate-pair, candidates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions: {contents: read, packages: read}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-pair.outputs.gorge_sha }}
+          path: gorge
+      - uses: actions/checkout@v6
+        with:
+          repository: soulteary/phorge
+          ref: ${{ needs.validate-pair.outputs.phorge_sha }}
+          path: phorge-fork
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/candidates
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Bind complete candidate digests
+        env:
+          GORGE_SHA: ${{ needs.validate-pair.outputs.gorge_sha }}
+        run: |
+          python3 gorge/deploy/release/manifest.py --candidates "$RUNNER_TEMP/candidates" \
+            --repository "$REGISTRY/$IMAGE_NAME" --gorge-sha "$GORGE_SHA" \
+            --output "$RUNNER_TEMP/candidate-images.json"
+      - name: Execute mandatory paired real-backend acceptance
+        run: |
+          python3 phorge-fork/deploy/acceptance/accept.py --gorge-dir "$GITHUB_WORKSPACE/gorge" \
+            --candidate-images "$RUNNER_TEMP/candidate-images.json" --output "$RUNNER_TEMP/acceptance"
+      - name: Produce the verified release manifest
+        env:
+          GORGE_SHA: ${{ needs.validate-pair.outputs.gorge_sha }}
+          PHORGE_SHA: ${{ needs.validate-pair.outputs.phorge_sha }}
+        run: |
+          python3 gorge/deploy/release/manifest.py --candidates "$RUNNER_TEMP/candidates" \
+            --repository "$REGISTRY/$IMAGE_NAME" --gorge-sha "$GORGE_SHA" --phorge-sha "$PHORGE_SHA" \
+            --tag "$RELEASE_TAG" --acceptance "$RUNNER_TEMP/acceptance/delivery-manifest.json" \
+            --output "$RUNNER_TEMP/release-manifest.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paired-release-evidence
+          path: |
+            ${{ runner.temp }}/acceptance
+            ${{ runner.temp }}/release-manifest.json
+          if-no-files-found: error
+
+  publish:
+    needs: [validate-pair, paired-acceptance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The latest read, comparison, and promotion must share one lock across
+    # every version; per-tag workflow locks alone allow older builds to win.
+    concurrency:
+      group: gorge-release-publication
+      cancel-in-progress: false
+    permissions: {contents: write}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-pair.outputs.gorge_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: paired-release-evidence
+          path: release-evidence
+      - name: Publish one complete release pointer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -s release-evidence/release-manifest.json
+          printf '%s\n' 'Deploy the exact paired commits and service digests in release-manifest.json. Independent service latest tags are not promoted.' > "$RUNNER_TEMP/release-body.txt"
+          python3 deploy/release/publish.py --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-body.txt" --manifest release-evidence/release-manifest.json

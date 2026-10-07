@@ -105,7 +105,13 @@ func (b *Backend) Info() contracts.BackendInfo {
 
 // IndexDocument preserves the synchronous API: accepted is not indexed.
 func (b *Backend) IndexDocument(doc *contracts.Document) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.timeout)*time.Second)
+	return b.IndexDocumentContext(context.Background(), doc)
+}
+
+// IndexDocumentContext shares the engine/caller deadline across submission and
+// task confirmation, while retaining this backend's shorter configured timeout.
+func (b *Backend) IndexDocumentContext(ctx context.Context, doc *contracts.Document) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(b.timeout)*time.Second)
 	defer cancel()
 	uid, err := b.SubmitDocument(ctx, doc)
 	if err != nil {

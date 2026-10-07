@@ -5,7 +5,9 @@
 package hub
 
 import (
+	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,12 +16,18 @@ import (
 )
 
 const (
+	// Public WebSocket paths may name arbitrary instances. Bound the retained
+	// registry independently from history and per-connection message budgets.
+	MaxInstances     = 1024
+	MaxInstanceBytes = 512
+
 	// historySizeLimit and historyAgeLimit bound what a reconnecting client can
 	// replay. They match the limits Aphlict enforced, and the age limit is the
 	// one that matters: a client asking to replay more than a minute of traffic
 	// gets whatever is left, not an error.
 	historySizeLimit = 4096
 	historyAgeLimit  = 60 * time.Second
+	historyByteLimit = 16 * 1024 * 1024
 
 	// protocolVersion is the Aphlict wire protocol version, reported verbatim
 	// to Phorge's cluster notification panel. It describes the protocol this
@@ -37,19 +45,22 @@ type historyEntry struct {
 	instance  string
 	timestamp time.Time
 	message   Message
+	bytes     int
 }
 
 // Hub fans messages out to the listeners of an instance and keeps a short
 // replay history. One Hub is shared by both ports of the process: the admin
 // port publishes into it and the client port's listeners read out of it.
 type Hub struct {
-	mu          sync.RWMutex
-	instances   map[string]*listenerList
-	history     []historyEntry
-	nextID      atomic.Uint64
-	startTime   time.Time
-	messagesIn  atomic.Int64
-	messagesOut atomic.Int64
+	mu            sync.RWMutex
+	instances     map[string]*listenerList
+	instanceClock uint64
+	history       []historyEntry
+	historyBytes  int
+	nextID        atomic.Uint64
+	startTime     time.Time
+	messagesIn    atomic.Int64
+	messagesOut   atomic.Int64
 }
 
 // New builds an empty Hub and starts its uptime clock.
@@ -66,6 +77,7 @@ type listenerList struct {
 	mu         sync.RWMutex
 	listeners  map[uint64]*Listener
 	totalCount int64
+	lastUsed   uint64 // protected by Hub.mu, including when the list is idle
 }
 
 func newListenerList() *listenerList {
@@ -112,35 +124,74 @@ func (ll *listenerList) totalCountVal() int64 {
 	return ll.totalCount
 }
 
-// getList returns the instance's list, creating it on first use. The read lock
-// is taken first because every published message and every status request goes
-// through here, while creation happens once per instance.
+// getList only looks up existing listeners. Publication, inspection and cleanup
+// must not allocate a permanent instance for an arbitrary name.
 func (h *Hub) getList(instance string) *listenerList {
 	h.mu.RLock()
-	ll, ok := h.instances[instance]
-	h.mu.RUnlock()
-	if ok {
-		return ll
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if ll, ok = h.instances[instance]; ok {
-		return ll
-	}
-	ll = newListenerList()
-	h.instances[instance] = ll
-	return ll
+	defer h.mu.RUnlock()
+	return h.instances[instance]
 }
 
 // AddListener registers a connection under an instance.
-func (h *Hub) AddListener(instance string, l *Listener) {
-	h.getList(instance).add(l)
+func (h *Hub) AddListener(instance string, l *Listener) error {
+	if len(instance) > MaxInstanceBytes {
+		return ErrResourceLimit
+	}
+	// Registration and eviction are atomic under the hub lock. Lock order is
+	// Hub.mu then listenerList.mu; fan-out never acquires Hub.mu while holding
+	// a listener-list lock.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ll := h.instances[instance]
+	if ll == nil {
+		if len(h.instances) >= MaxInstances && !h.evictIdleInstance() {
+			return ErrResourceLimit
+		}
+		ll = newListenerList()
+		h.instances[strings.Clone(instance)] = ll
+	}
+	h.instanceClock++
+	ll.lastUsed = h.instanceClock
+	ll.add(l)
+	return nil
+}
+
+// evictIdleInstance preserves every active subscription and retained replay
+// message. Only an idle counter cache with no history can be replaced. The
+// scoped historical connection counter resets when that cache is evicted.
+// Caller holds Hub.mu.
+func (h *Hub) evictIdleInstance() bool {
+	h.purgeHistory()
+	withHistory := make(map[string]bool, len(h.history))
+	for _, entry := range h.history {
+		withHistory[entry.instance] = true
+	}
+	var oldest string
+	var candidate *listenerList
+	for instance, ll := range h.instances {
+		if withHistory[instance] || ll.activeCount() != 0 {
+			continue
+		}
+		if candidate == nil || ll.lastUsed < candidate.lastUsed {
+			oldest, candidate = instance, ll
+		}
+	}
+	if candidate == nil {
+		return false
+	}
+	delete(h.instances, oldest)
+	return true
 }
 
 // RemoveListener drops a connection from an instance.
 func (h *Hub) RemoveListener(instance string, id uint64) {
-	h.getList(instance).remove(id)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ll := h.instances[instance]; ll != nil {
+		ll.remove(id)
+		h.instanceClock++
+		ll.lastUsed = h.instanceClock
+	}
 }
 
 // NextID hands out the connection ids that identify listeners in logs.
@@ -152,20 +203,32 @@ func (h *Hub) NextID() uint64 {
 // the instance that subscribes to one of its subscribers. A message with no
 // subscribers goes to everyone, which is how Aphlict broadcasts.
 func (h *Hub) Publish(instance string, msg Message) {
+	if len(instance) > MaxInstanceBytes {
+		return
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
 	h.messagesIn.Add(1)
 
 	h.mu.Lock()
 	h.history = append(h.history, historyEntry{
-		instance:  instance,
+		instance:  strings.Clone(instance),
 		timestamp: time.Now(),
 		message:   msg,
+		bytes:     len(data) + len(instance),
 	})
+	h.historyBytes += len(data) + len(instance)
 	h.purgeHistory()
 	h.mu.Unlock()
 
 	subscribers, _ := ToStringSlice(msg["subscribers"])
 
 	ll := h.getList(instance)
+	if ll == nil {
+		return
+	}
 	for _, l := range ll.snapshot() {
 		if len(subscribers) > 0 && !l.IsSubscribedToAny(subscribers) {
 			continue
@@ -173,21 +236,21 @@ func (h *Hub) Publish(instance string, msg Message) {
 		// A write error means the peer is gone; reap it here rather than
 		// waiting for its read loop to notice, so a dropped connection stops
 		// counting as an active client straight away.
-		if err := l.WriteJSON(msg); err != nil {
+		if err := l.enqueue(data, func() { h.messagesOut.Add(1) }); err != nil {
 			slog.Debug("dropping unreachable listener", "listener", l.id, "instance", instance, "error", err)
 			ll.remove(l.id)
 			l.Close()
 			continue
 		}
-		h.messagesOut.Add(1)
 	}
 }
 
 // GetHistory returns only this instance's messages recorded at or after
 // minAge, oldest first. Both addressed messages and broadcasts are isolated.
 func (h *Hub) GetHistory(instance string, minAge time.Time) []Message {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.purgeHistory()
 
 	var results []Message
 	for _, e := range h.history {
@@ -205,19 +268,17 @@ func (h *Hub) purgeHistory() {
 	}
 
 	keep := 0
-	if len(h.history) > historySizeLimit {
-		keep = len(h.history) - historySizeLimit
-	}
-
 	cutoff := time.Now().Add(-historyAgeLimit)
 	for keep < len(h.history) {
-		if !h.history[keep].timestamp.Before(cutoff) {
+		if len(h.history)-keep <= historySizeLimit && h.historyBytes <= historyByteLimit && !h.history[keep].timestamp.Before(cutoff) {
 			break
 		}
+		h.historyBytes -= h.history[keep].bytes
 		keep++
 	}
 
 	if keep > 0 {
+		clear(h.history[:keep])
 		h.history = h.history[keep:]
 	}
 }
@@ -230,16 +291,19 @@ func (h *Hub) Status(instance string) *contracts.AphlictStatus {
 	ll := h.getList(instance)
 
 	status := &contracts.AphlictStatus{
-		Instance:      instance,
-		Uptime:        int64(time.Since(h.startTime) / time.Millisecond),
-		ClientsActive: ll.activeCount(),
-		ClientsTotal:  ll.totalCountVal(),
-		MessagesIn:    h.messagesIn.Load(),
-		MessagesOut:   h.messagesOut.Load(),
-		Version:       protocolVersion,
+		Instance:    instance,
+		Uptime:      int64(time.Since(h.startTime) / time.Millisecond),
+		MessagesIn:  h.messagesIn.Load(),
+		MessagesOut: h.messagesOut.Load(),
+		Version:     protocolVersion,
+	}
+	if ll != nil {
+		status.ClientsActive = ll.activeCount()
+		status.ClientsTotal = ll.totalCountVal()
 	}
 
-	h.mu.RLock()
+	h.mu.Lock()
+	h.purgeHistory()
 	for _, entry := range h.history {
 		if entry.instance != instance {
 			continue
@@ -250,7 +314,7 @@ func (h *Hub) Status(instance string) *contracts.AphlictStatus {
 			status.HistoryAge = &age
 		}
 	}
-	h.mu.RUnlock()
+	h.mu.Unlock()
 
 	return status
 }

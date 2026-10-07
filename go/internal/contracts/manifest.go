@@ -31,7 +31,7 @@ package contracts
 // spelled out in that item's Note. There are only a handful left and each one
 // was re-verified against the tree: the webhook stats fields (the webhook
 // client contains no wire-key literal at all, it hands the decoded map
-// straight to its caller), the mailer SendResult fields, the search response
+// straight to its caller), the search response
 // count/status, taskqueue's dataID (declared as a Lisk property,
 // `protected $dataID`, never as a quoted key) and the error codes no PHP
 // branch names. Every other item carries files and is verified.
@@ -106,11 +106,10 @@ func Manifest() []DomainContract {
 }
 
 // mailerContract registers §6 of compat/phorge/README.md: the two routes, the
-// two error codes, and the camelCase message field names. The request envelope
+// three error codes, and the camelCase message field names. The request envelope
 // key and every field inside it appear in PhabricatorGorgeMailerClient
-// (sendMessage() builds the envelope, serializeMessage() the body); only the
-// SendResult fields (mailerKey, messageId) carry no files, because the adapter
-// returns the decoded data section to its caller without naming them.
+// (sendMessage() builds and validates the envelope, serializeMessage() the body).
+// SendResult fields are checked by the PHP client before acceptance is recorded.
 func mailerContract() DomainContract {
 	return DomainContract{
 		Domain: "mailer",
@@ -128,14 +127,17 @@ func mailerContract() DomainContract {
 			{
 				Name:     "ERR_PERMANENT_FAILURE",
 				PHPFiles: []string{phpMailerClient},
-				Note:     "§6.2 the one code that changes PHP behaviour: it decides whether the worker re-queues the mail.",
+				Note:     "§6.2 explicit permanent message rejection stops automatic resubmission.",
 			},
 			{
 				Name: "ERR_SEND_FAILED",
-				Note: "§6.2 its temporary-failure counterpart; the PHP side treats any non-permanent code as retryable, so it is not named as a literal.",
+				Note: "§6.2 proven nonacceptance; PHP defaults to retry for this code without naming it as a literal.",
 			},
+			{Name: "ERR_OUTCOME_UNKNOWN", PHPFiles: []string{phpMailerClient}, Note: "§6.2 uncertain submission is retained for reconciliation and must not be automatically re-sent."},
 		},
 		WireFields: []ContractItem{
+			{Name: "error", PHPFiles: []string{phpMailerClient}, Note: "Shared httpx response envelope; PHP validates it before classifying delivery failure."},
+			{Name: "code", PHPFiles: []string{phpMailerClient}, Note: "Shared httpx error discriminator; PHP selects permanent, unknown or safe-retry handling."},
 			{Name: "deliveryID", PHPFiles: []string{phpMetaMail}},
 			{Name: "mailID", PHPFiles: []string{phpMetaMail}},
 			{Name: "deadline", PHPFiles: []string{phpMetaMail}},
@@ -163,8 +165,8 @@ func mailerContract() DomainContract {
 			{Name: "filename", PHPFiles: []string{phpMailerClient}},
 			{Name: "mimeType", PHPFiles: []string{phpMailerClient}},
 			{Name: "data", PHPFiles: []string{phpMailerClient}, Note: "attachment payload, base64 at this layer."},
-			{Name: "mailerKey", Note: "SendResult; the adapter returns the decoded data section without naming this key, so no literal exists to compare."},
-			{Name: "messageId", Note: "SendResult; same as mailerKey — never named in the adapter."},
+			{Name: "mailerKey", PHPFiles: []string{phpMailerClient}, Note: "SendResult; PHP validates the acceptance receipt."},
+			{Name: "messageId", PHPFiles: []string{phpMailerClient}, Note: "SendResult; optional provider receipt validated when present."},
 		},
 	}
 }

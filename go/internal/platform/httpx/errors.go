@@ -44,10 +44,10 @@ func errorHandler(c fiber.Ctx, err error) error {
 	if status >= http.StatusInternalServerError {
 		slog.Error("REQUEST_FAILED",
 			"method", c.Method(),
-			"uri", c.OriginalURL(),
+			"uri", requestLogURI(c),
 			"status", status,
 			"request_id", c.Get(fiber.HeaderXRequestID),
-			"error", err.Error())
+			"error", requestLogError(c, err.Error()))
 	}
 
 	// A handler that already answered owns its response. This is what keeps the

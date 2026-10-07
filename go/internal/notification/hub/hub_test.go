@@ -115,7 +115,9 @@ func TestHubStatusCountsPublishedMessages(t *testing.T) {
 // one instance must not show up in another instance's client counts.
 func TestStatusInstancesAreIndependent(t *testing.T) {
 	h := New()
-	h.AddListener("prod", NewListener(h.NextID(), nil))
+	if err := h.AddListener("prod", NewListener(h.NextID(), nil)); err != nil {
+		t.Fatal(err)
+	}
 
 	if active := h.Status("prod").ClientsActive; active != 1 {
 		t.Errorf("prod: expected 1 active client, got %d", active)
@@ -169,7 +171,9 @@ func TestListenerSubscriptions(t *testing.T) {
 		t.Error("a fresh listener should be subscribed to nothing")
 	}
 
-	l.Subscribe([]string{"PHID-USER-aaa", "PHID-USER-bbb"})
+	if err := l.Subscribe([]string{"PHID-USER-aaa", "PHID-USER-bbb"}); err != nil {
+		t.Fatal(err)
+	}
 	if !l.IsSubscribedToAny([]string{"PHID-USER-bbb", "PHID-USER-zzz"}) {
 		t.Error("expected a match on any of the listed PHIDs")
 	}

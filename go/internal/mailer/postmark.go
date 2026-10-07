@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
@@ -27,6 +26,7 @@ var postmarkPermanentErrorCodes = map[int]string{
 
 type postmarkAdapter struct {
 	accessToken string
+	client      *http.Client
 }
 
 func newPostmarkAdapter(opts map[string]string) (*postmarkAdapter, error) {
@@ -47,36 +47,36 @@ func (a *postmarkAdapter) Send(ctx context.Context, msg *contracts.EmailMessage)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, postmarkEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("postmark: create request: %w", err)
+		return "", &SafeRetryError{Err: fmt.Errorf("postmark: create request: %w", err), Backend: true}
 	}
 	req.Header.Set("X-Postmark-Server-Token", a.accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	_, respBody, err := callProvider("postmark", a.client, req)
 	if err != nil {
-		return "", fmt.Errorf("postmark: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if err := classifyProviderStatus("postmark", resp.StatusCode, respBody); err != nil {
 		return "", err
 	}
 
 	var result struct {
 		MessageID string `json:"MessageID"`
-		ErrorCode int    `json:"ErrorCode"`
+		ErrorCode *int   `json:"ErrorCode"`
 		Message   string `json:"Message"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", fmt.Errorf("postmark: parse response: %w", err)
 	}
-	if result.ErrorCode != 0 {
-		if name, ok := postmarkPermanentErrorCodes[result.ErrorCode]; ok {
-			return "", permanentf("postmark: error %d (%s): %s", result.ErrorCode, name, result.Message)
+	if result.ErrorCode == nil {
+		return "", fmt.Errorf("postmark: missing acceptance result")
+	}
+	if *result.ErrorCode != 0 {
+		if name, ok := postmarkPermanentErrorCodes[*result.ErrorCode]; ok {
+			return "", permanentf("postmark: error %d (%s): %s", *result.ErrorCode, name, result.Message)
 		}
-		return "", fmt.Errorf("postmark: error %d: %s", result.ErrorCode, result.Message)
+		return "", fmt.Errorf("postmark: error %d: %s", *result.ErrorCode, result.Message)
+	}
+	if result.MessageID == "" {
+		return "", fmt.Errorf("postmark: missing accepted message ID")
 	}
 
 	return result.MessageID, nil

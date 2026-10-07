@@ -17,7 +17,9 @@ import (
 	"github.com/soulteary/gorge/go/internal/contracts"
 	"log/slog"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -162,9 +164,10 @@ func main() {
 		NotificationStats: handlers.NotificationStats,
 	})
 
-	// One signal stops both halves: srv.Run returns on SIGINT or SIGTERM, and
-	// cancelling this context is what ends the lease loop.
-	ctx, stopLoop := context.WithCancel(context.Background())
+	// Stop intake as soon as the signal arrives, while HTTP drains concurrently.
+	// Waiting for srv.Run first would add its drain budget to the worker budget.
+	ctx, stopLoop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopLoop()
 	var relayWG sync.WaitGroup
 	if outboxDB != nil {
 		relayWG.Add(1)

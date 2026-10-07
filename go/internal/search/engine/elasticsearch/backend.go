@@ -5,7 +5,9 @@ package elasticsearch
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -35,10 +37,21 @@ type Backend struct {
 	protocol       string
 	roles          map[string]bool
 
-	mu     sync.RWMutex
-	health map[string]bool
-	client *http.Client
+	mu           sync.RWMutex
+	health       map[string]bool
+	recovery     map[string]hostRecovery
+	now          func() time.Time
+	client       *http.Client
+	indexTimeout time.Duration
 }
+
+type hostRecovery struct {
+	failures int
+	retryAt  time.Time
+	probing  bool
+}
+
+var errHostUnavailable = errors.New("elasticsearch host unavailable")
 
 // Defaults applied to a definition that leaves a field empty. The version
 // default of 5 matches Phorge's, and it is load-bearing rather than cosmetic:
@@ -75,6 +88,9 @@ func New(def engine.BackendDef) *Backend {
 		protocol:       def.Protocol,
 		roles:          make(map[string]bool),
 		health:         make(map[string]bool),
+		recovery:       make(map[string]hostRecovery),
+		now:            time.Now,
+		indexTimeout:   engine.DefaultIndexTimeout,
 	}
 	if b.index == "" {
 		b.index = engine.DefaultIndexName
@@ -120,16 +136,32 @@ func (b *Backend) Info() contracts.BackendInfo {
 }
 
 func (b *Backend) hostForRole(role string) (string, error) {
+	return b.selectHost(role, nil)
+}
+
+// selectHost admits one recovery request per unhealthy host after a bounded
+// cooldown. Writes can recover without a read role or a process restart.
+func (b *Backend) selectHost(role string, excluded map[string]bool) (string, error) {
 	if !b.roles[role] {
 		return "", fmt.Errorf("backend does not have role %q", role)
 	}
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	healthy := make([]string, 0, len(b.hosts))
 	for _, h := range b.hosts {
+		if excluded[h] {
+			continue
+		}
 		if b.health[h] {
 			healthy = append(healthy, h)
+			continue
+		}
+		r := b.recovery[h]
+		if !r.probing && !b.now().Before(r.retryAt) {
+			r.probing = true
+			b.recovery[h] = r
+			return h, nil
 		}
 	}
 	if len(healthy) == 0 {
@@ -149,6 +181,24 @@ func (b *Backend) markHealth(host string, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.health[host] = ok
+	if ok {
+		delete(b.recovery, host)
+		return
+	}
+	r := b.recovery[host]
+	r.failures = min(r.failures+1, 6)
+	r.retryAt = b.now().Add(min(time.Second<<(r.failures-1), 30*time.Second))
+	r.probing = false
+	b.recovery[host] = r
+}
+
+func (b *Backend) releaseProbe(host string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r, ok := b.recovery[host]; ok && r.probing {
+		r.probing = false
+		b.recovery[host] = r
+	}
 }
 
 func (b *Backend) baseURL(host string) string {
@@ -215,12 +265,16 @@ func (b *Backend) singleMappingType() string {
 func (b *Backend) supportsIncludeInAll() bool { return b.version < 6 }
 
 func (b *Backend) IndexDocument(doc *contracts.Document) error {
+	return b.IndexDocumentContext(context.Background(), doc)
+}
+
+// IndexDocumentContext bounds failover across the complete host list, rather
+// than granting every node another full client timeout.
+func (b *Backend) IndexDocumentContext(ctx context.Context, doc *contracts.Document) error {
+	ctx, cancel := context.WithTimeout(ctx, b.indexTimeout)
+	defer cancel()
 	if b.projectionMode {
 		return fmt.Errorf("projection index requires versioned writes")
-	}
-	host, err := b.hostForRole("write")
-	if err != nil {
-		return err
 	}
 	spec := b.buildDocSpec(doc)
 	// The type is a path segment only while it is part of the mapping; after
@@ -230,8 +284,34 @@ func (b *Backend) IndexDocument(doc *contracts.Document) error {
 	if !b.usesMappingTypes() {
 		segment = docEndpointType
 	}
-	url := fmt.Sprintf("%s/%s/%s", b.baseURL(host), segment, doc.PHID)
-	return b.doRequest(host, url, http.MethodPut, spec)
+	// A document PUT replaces the same PHID, so trying a different cluster
+	// member after an uncertain response is idempotent. Never retry a 4xx or
+	// repeat a host within this call; index initialization is not retried here.
+	attempted := make(map[string]bool, len(b.hosts))
+	var lastErr error
+	for len(attempted) < len(b.hosts) {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("elasticsearch document write canceled: %w", err)
+		}
+		host, err := b.selectHost("write", attempted)
+		if err != nil {
+			if lastErr != nil {
+				return lastErr
+			}
+			return err
+		}
+		attempted[host] = true
+		url := fmt.Sprintf("%s/%s/%s", b.baseURL(host), segment, doc.PHID)
+		_, err = b.doRequestReadContext(ctx, host, url, http.MethodPut, spec)
+		if !errors.Is(err, errHostUnavailable) {
+			return err
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no hosts for write role")
 }
 
 func (b *Backend) Search(q *contracts.SearchQuery) ([]string, error) {
@@ -421,6 +501,14 @@ func (b *Backend) doRequest(host, url, method string, body any) error {
 // cluster answering correctly about a bad request, and taking a host out of
 // rotation for it would let one malformed document empty the whole table.
 func (b *Backend) doRequestRead(host, url, method string, body any) ([]byte, error) {
+	return b.doRequestReadContext(context.Background(), host, url, method, body)
+}
+
+func (b *Backend) doRequestReadContext(ctx context.Context, host, url, method string, body any) ([]byte, error) {
+	defer b.releaseProbe(host)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var reqBody io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -430,7 +518,7 @@ func (b *Backend) doRequestRead(host, url, method string, body any) ([]byte, err
 		reqBody = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, url, reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -439,21 +527,24 @@ func (b *Backend) doRequestRead(host, url, method string, body any) ([]byte, err
 	resp, err := b.client.Do(req)
 	if err != nil {
 		b.markHealth(host, false)
-		return nil, fmt.Errorf("elasticsearch request failed: %w", err)
+		return nil, fmt.Errorf("%w: request failed: %w", errHostUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		b.markHealth(host, false)
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, fmt.Errorf("%w: read response: %w", errHostUnavailable, err)
 	}
 
 	if resp.StatusCode >= 500 {
 		b.markHealth(host, false)
-		return nil, fmt.Errorf("elasticsearch returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("%w: returned status %d: %s", errHostUnavailable, resp.StatusCode, string(respBody))
 	}
 	if resp.StatusCode >= 400 {
+		// A conclusive rejection also proves a recovering host is responsive.
+		// Release it from cooldown so the next valid document can use it.
+		b.markHealth(host, true)
 		return nil, fmt.Errorf("elasticsearch returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 

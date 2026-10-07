@@ -39,7 +39,7 @@
 
 | 节 | 守住了 | 没守住，以及为什么 |
 |---|---|---|
-| 六、mailer | 清单登记的路由、`ERR_PERMANENT_FAILURE`、请求侧字段名（含最外层信封键 `message`） | `ERR_SEND_FAILED`（PHP 不按字面量分支）、应答的 `mailerKey` / `messageId`（适配器把 `data` 段整个交给调用方，一个键都不点名） |
+| 六、mailer | 清单登记的路由、`ERR_PERMANENT_FAILURE` / `ERR_OUTCOME_UNKNOWN`、请求侧字段名与接受回执 `mailerKey` / `messageId` | `ERR_SEND_FAILED`（PHP 不按字面量分支） |
 | 七、search | 清单登记的路由、四字符常量、文档／查询／统计字段名与信封字段名 | 5 个域级错误码（PHP 无消费者）、应答的 `count` / `status`（PHP 侧从不点名） |
 | 九、webhook | 清单登记的路由与 payload 键 | 9.4–9.6 的回写列（是 `herald_webhookrequest` 的列名、两侧都走 SQL，Go 侧没有 json tag 可锚）、9.8 的统计字段（客户端一个键都不点名）。**9.1 的字节序与键顺序也不在此校验之内**，那是 `TestPayloadIsByteExact` 的事 |
 | 十、taskqueue | 清单登记的路由、API 字段名与 `worker_activetask` 列名 | `dataID`——`PhabricatorWorkerTask` 把它写成属性声明（`protected $dataID;`）而不是 `CONFIG_COLUMN_SCHEMA` 里的带引号键，没有字面量可比 |
@@ -472,7 +472,7 @@ curl -s http://127.0.0.1:22281/status/
 
 ---
 
-## 六、mailer 服务的四条约定 [CI 已守：路由、请求侧字段名与 ERR_PERMANENT_FAILURE；应答的 mailerKey / messageId 未守]
+## 六、mailer 服务的四条约定 [CI 已守：路由、请求与接受回执字段、ERR_PERMANENT_FAILURE / ERR_OUTCOME_UNKNOWN]
 
 **Go 侧**：`go/internal/mailer/`、`go/internal/contracts/mailer.go`
 **PHP 侧**：`PhabricatorMailGorgeAdapter` 与 `PhabricatorGorgeMailerClient`
@@ -497,16 +497,19 @@ curl -s http://127.0.0.1:22281/status/
 | 码 | 状态 | PHP 侧的反应 |
 |---|---|---|
 | `ERR_PERMANENT_FAILURE` | 422 | 抛 `PhabricatorMetaMTAPermanentFailureException`，worker **停止重投**，邮件落 `FAIL` |
-| `ERR_SEND_FAILED` | 502 | 普通异常，worker **重新入队** |
+| `ERR_SEND_FAILED` | 502 | 已确认未接受，普通异常，worker **重新入队** |
+| `ERR_OUTCOME_UNKNOWN` | 502 | 接受结果不确定，worker 保存 `STATUS_UNKNOWN`，**停止自动重投并等待核对** |
 
 两个方向的误判代价不对称，而且都不会有任何一处报错：
 
 - **永久判成临时**：收件人地址写错，Phorge 的 worker 无限重投同一封信。这正是迁入前的实际状态——老代码定义了 `PermanentError` 但七个适配器从不返回它。
 - **临时判成永久**：provider 限流或抖动了一下，本可以在下一次投递成功的信被直接丢掉，且在 Phorge 里的状态看起来就像地址写错了。
 
-Go 区分永久消息拒绝、已确认未接受的 `SafeRetryError` 与不确定提交。HTTP 401/403、sendmail 77/78 属于后端配置错误，429 可以安全重试；未知网络/5xx/执行失败不能在 Dispatcher 中盲目重试或切换。同步 `/send` 仍将非永久失败报为 `ERR_SEND_FAILED`，PHP 外层可重投；原生持久邮件把不确定结果记为 unknown 并要求核对。完整分类见 [mailer](../../docs/modules/mailer.md)。
+Go 区分永久消息拒绝、已确认未接受的 `SafeRetryError` 与不确定提交。HTTP 401/403、sendmail 77/78 属于后端配置错误，429 和发送前拨号失败可以安全重试；提交后的超时、未知网络/5xx/执行失败不能在 Dispatcher 中盲目重试或切换。同步 `/send` 的三类错误与 PHP 持久状态同步：不确定提交使用 `ERR_OUTCOME_UNKNOWN`，PHP 保存 unknown 并停止自动重发；原生持久邮件继续把不确定结果记为 unknown。客户端丢失/无法解析接受回执也不能当作安全重试。完整分类与资源期限见 [mailer](../../docs/modules/mailer.md)。
 
-改动分类规则时，先想清楚要往哪个方向错。`tests/contract/mailer/send-permanent-failure.json` 与 `send-temporary-failure.json` 是成对的，缺一条就只守住了一半。
+legacy PHP worker 必须在网络发送前原子提交 queued → `STATUS_UNKNOWN`，且不能在外层数据库事务中发送。只有明确安全拒绝才恢复 queued；坏回执、发送后的保存失败与进程崩溃保留 unknown，包括发生在实际提交前的崩溃。unknown 需要先核对，再显式 resend，不能自动重新入队。独立连接事务验证由 `tests/contract/worker/mailer_fence.php` 覆盖。
+
+改动分类规则时，先想清楚要往哪个方向错。`tests/contract/mailer/send-permanent-failure.json`、`send-temporary-failure.json` 与 `send-outcome-unknown.json` 分别守住永久拒绝、安全重试和不确定提交，不能合并。
 
 ### 6.3 附件的 base64 编码位置
 
@@ -1226,7 +1229,7 @@ curl -s -H 'X-Service-Token: dev-token' http://127.0.0.1:8080/api/db/setup-issue
 
 **错误码**：平台提供 ERR_BAD_REQUEST、ERR_UNAUTHORIZED、ERR_NOT_FOUND、ERR_METHOD_NOT_ALLOWED、ERR_TOO_LARGE、ERR_INTERNAL。域码与扩展执行冲突码见对应模块，不能维护一份全仓固定总数。httpx.Fail 已应答的域码不会被全局处理器覆写；ERR_INTERNAL 的驱动细节只进日志。
 
-- mailer 的 ERR_PERMANENT_FAILURE 改变 PHP 的重试行为；ERR_SEND_FAILED 用于可重试投递失败，见第六节。
+- mailer 的 ERR_PERMANENT_FAILURE 与 ERR_OUTCOME_UNKNOWN 停止 PHP 自动重投，分别保存永久失败与待核对状态；ERR_SEND_FAILED 只用于已确认未接受的可重试失败，见第六节。
 - search 的操作码进入通用 PHP service exception，用于识别失败类别，不代表存在对应 PHP 分支，见 [findings 第 21 条](../../docs/findings.md)。
 - file-storage 的 ERR_NO_ENGINE 区分没有可用后端与尝试后端失败，见第八节。上传/删除生命周期另有协议错误。
 - db-api 的 ERR_DB_UNREACHABLE、ERR_DB_ACCESS_DENIED 与只读守卫 ERR_READONLY 见第十一节；当前只读路由不会产生写拒绝。

@@ -1,11 +1,17 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
+
+// DefaultIndexTimeout keeps a document write below Phorge's 30-second wait.
+// Context-aware backends share this budget across nodes and backend fan-out.
+const DefaultIndexTimeout = 25 * time.Second
 
 // SearchEngine dispatches one operation over the configured backends,
 // selecting them by role.
@@ -73,6 +79,15 @@ func (se *SearchEngine) BackendInfo() []contracts.BackendInfo {
 // is most prone to: a reindex of a large install would run to completion,
 // report success for every document, and leave the index empty.
 func (se *SearchEngine) IndexDocument(doc *contracts.Document) error {
+	return se.IndexDocumentContext(context.Background(), doc)
+}
+
+// IndexDocumentContext propagates a caller's earlier deadline to backends
+// which support context-aware indexing, while retaining the existing backend
+// interface for integrations which only expose the legacy synchronous method.
+func (se *SearchEngine) IndexDocumentContext(ctx context.Context, doc *contracts.Document) error {
+	ctx, cancel := context.WithTimeout(ctx, DefaultIndexTimeout)
+	defer cancel()
 	var lastErr error
 	written := 0
 	for _, b := range se.backends {
@@ -80,7 +95,18 @@ func (se *SearchEngine) IndexDocument(doc *contracts.Document) error {
 			continue
 		}
 		written++
-		if err := b.IndexDocument(doc); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		if contextual, ok := b.(interface {
+			IndexDocumentContext(context.Context, *contracts.Document) error
+		}); ok {
+			err = contextual.IndexDocumentContext(ctx, doc)
+		} else {
+			err = b.IndexDocument(doc)
+		}
+		if err != nil {
 			lastErr = err
 		}
 	}

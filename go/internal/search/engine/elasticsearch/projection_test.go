@@ -126,7 +126,7 @@ func TestElasticsearchProjectionRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		if code, _, err := b.projectionRequest(context.Background(), "DELETE", b.baseURL(endpoint), nil); err != nil || code != 200 {
+		if code, _, err := b.projectionRequest(context.Background(), endpoint, "DELETE", b.baseURL(endpoint), nil); err != nil || code != 200 {
 			t.Errorf("delete index %d %v", code, err)
 		}
 	}()
@@ -144,7 +144,7 @@ func TestElasticsearchProjectionRuntime(t *testing.T) {
 			t.Fatalf("revision %s: %s %v", step.rev, status, err)
 		}
 	}
-	if code, _, err := b.projectionRequest(ctx, "POST", b.baseURL(endpoint)+"/_refresh", nil); err != nil || code != 200 {
+	if code, _, err := b.projectionRequest(ctx, endpoint, "POST", b.baseURL(endpoint)+"/_refresh", nil); err != nil || code != 200 {
 		t.Fatalf("refresh %d %v", code, err)
 	}
 	if phids, err := b.Search(&contracts.SearchQuery{}); err != nil || len(phids) != 0 {
@@ -153,7 +153,7 @@ func TestElasticsearchProjectionRuntime(t *testing.T) {
 	if _, err := b.ApplyProjection(ctx, projectionEvent(t, "3", false), target); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, err := b.projectionRequest(ctx, "POST", b.baseURL(endpoint)+"/_refresh", nil); err != nil || code != 200 {
+	if code, _, err := b.projectionRequest(ctx, endpoint, "POST", b.baseURL(endpoint)+"/_refresh", nil); err != nil || code != 200 {
 		t.Fatalf("refresh %d %v", code, err)
 	}
 	if phids, err := b.Search(&contracts.SearchQuery{}); err != nil || len(phids) != 1 {
@@ -186,12 +186,15 @@ func TestProjectionUnknownSubmissionReplay(t *testing.T) {
 	}))
 	defer srv.Close()
 	backend := New(engine.BackendDef{Hosts: []string{srv.URL}, Index: "shadow", Version: 8, Options: map[string]string{"projection": "true"}})
+	now := time.Now()
+	backend.now = func() time.Time { return now }
 	target := projection.Target{BackendID: "es", GenerationID: "g1"}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	if _, err := backend.ApplyProjection(ctx, event, target); err == nil {
 		t.Fatal("unknown response treated as applied")
 	}
+	now = now.Add(time.Second)
 	if status, err := backend.ApplyProjection(context.Background(), event, target); err != nil || status != "applied" {
 		t.Fatalf("committed-but-unacknowledged replay: %s %v", status, err)
 	}

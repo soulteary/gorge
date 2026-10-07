@@ -30,14 +30,18 @@ import (
 const (
 	CodePermanentFailure = "ERR_PERMANENT_FAILURE"
 	CodeSendFailed       = "ERR_SEND_FAILED"
+	CodeOutcomeUnknown   = "ERR_OUTCOME_UNKNOWN"
 )
+
+const DefaultSendTimeout = 25 * time.Second
 
 // Deps is everything the mailer routes need to serve a request.
 type Deps struct {
-	Dispatcher *Dispatcher
-	Token      string
-	BodyLimit  int
-	Delivery   *DeliveryService
+	Dispatcher  *Dispatcher
+	Token       string
+	BodyLimit   int
+	Delivery    *DeliveryService
+	SendTimeout time.Duration
 }
 
 // RegisterRoutes mounts the mailer endpoints.
@@ -127,14 +131,23 @@ func sendMail(deps *Deps) fiber.Handler {
 			msg.HTMLBody = truncateUTF8(msg.HTMLBody, deps.BodyLimit)
 		}
 
-		// The request context bounds the whole dispatch, retries included, so a
-		// client that gave up stops the work it was waiting for.
-		result, err := deps.Dispatcher.SendWith(c.Context(), msg, req.MailerKeys)
+		// Fiber's default context has no deadline or disconnect cancellation.
+		// Bound the whole synchronous dispatch explicitly, including retries.
+		timeout := deps.SendTimeout
+		if timeout <= 0 {
+			timeout = DefaultSendTimeout
+		}
+		ctx, cancel := context.WithTimeout(c.Context(), timeout)
+		defer cancel()
+		result, err := deps.Dispatcher.SendWith(ctx, msg, req.MailerKeys)
 		if err != nil {
 			if IsPermanent(err) {
 				return httpx.Fail(c, http.StatusUnprocessableEntity, CodePermanentFailure, err.Error())
 			}
-			return httpx.Fail(c, http.StatusBadGateway, CodeSendFailed, err.Error())
+			if CanRetry(err) {
+				return httpx.Fail(c, http.StatusBadGateway, CodeSendFailed, err.Error())
+			}
+			return httpx.Fail(c, http.StatusBadGateway, CodeOutcomeUnknown, err.Error())
 		}
 
 		return httpx.OK(c, result)

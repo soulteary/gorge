@@ -29,6 +29,7 @@ func main() {
 	messages := hub.New()
 
 	peers := peer.NewList()
+	defer peers.Close()
 	fmt.Fprintf(os.Stderr, "gorge-notification: fingerprint %s\n", peers.Fingerprint())
 	for _, spec := range cfg.Cluster {
 		peers.AddPeer(peer.NewPeer(spec.Host, spec.Port, spec.Protocol))

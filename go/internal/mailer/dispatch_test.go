@@ -37,6 +37,18 @@ func TestNewDispatcherRejectsUnknownType(t *testing.T) {
 	}
 }
 
+func TestNewDispatcherRejectsAmbiguousReceiptIdentity(t *testing.T) {
+	for _, keys := range [][]string{{""}, {" \t\n"}, {"primary", "primary"}} {
+		specs := make([]MailerSpec, 0, len(keys))
+		for _, key := range keys {
+			specs = append(specs, MailerSpec{Key: key, Type: "test"})
+		}
+		if d, err := NewDispatcher(specs, noRetry); err == nil || d != nil {
+			t.Fatalf("ambiguous backend receipt keys must fail before sending: %q", keys)
+		}
+	}
+}
+
 func TestDispatcherSend(t *testing.T) {
 	d := newTestDispatcher(t, MailerSpec{Key: "primary", Type: "test"})
 

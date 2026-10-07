@@ -54,12 +54,10 @@ func IsPermanent(err error) bool {
 // of the right durability, or nil when the call succeeded. SES, SendGrid,
 // Mailgun and Postmark all share these semantics.
 //
-// A 4xx is the provider rejecting this particular message — bad address,
-// unverified sender, bad credentials — and every retry produces the same
-// answer. 429 is the exception, because rate limiting says "not now" rather
-// than "not ever". Everything else, 5xx included, is the provider having a bad
-// moment, which is what the retry loop and the failover to the next adapter
-// exist for.
+// A 4xx explicitly rejects the message. Credentials (401/403) describe a
+// backend configuration failure, and rate limiting (429) permits a later
+// attempt. A 5xx or unexpected redirect cannot prove nonacceptance and must
+// remain unknown, without automatic retries or provider failover.
 func classifyProviderStatus(provider string, status int, body []byte) error {
 	if status >= 200 && status < 300 {
 		return nil

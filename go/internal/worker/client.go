@@ -53,6 +53,7 @@ type apiResponse struct {
 }
 
 var ErrLeaseConflict = errors.New("execution lease conflict")
+var ErrTaskNotFound = errors.New("active task not found")
 
 type apiError struct {
 	Code    string `json:"code"`
@@ -61,6 +62,9 @@ type apiError struct {
 
 // Lease asks the queue for up to limit tasks, presenting this client's owner.
 func (c *Client) Lease(ctx context.Context, limit int, taskClasses []string) ([]*contracts.Task, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("lease limit must be positive")
+	}
 	body, _ := json.Marshal(contracts.LeaseRequest{Limit: limit, TaskClasses: taskClasses})
 	req, err := c.newRequest(ctx, http.MethodPost, "/api/queue/lease", body)
 	if err != nil {
@@ -72,7 +76,32 @@ func (c *Client) Lease(ctx context.Context, limit int, taskClasses []string) ([]
 	if err := c.doJSON(req, &tasks); err != nil {
 		return nil, fmt.Errorf("lease: %w", err)
 	}
+	if len(tasks) > limit {
+		return nil, fmt.Errorf("lease response exceeds requested capacity")
+	}
+	for _, task := range tasks {
+		if task == nil {
+			return nil, fmt.Errorf("lease response contains a null task")
+		}
+	}
 	return tasks, nil
+}
+
+// ActiveTask reads the current fencing token, without claiming or renewing a
+// task. Shutdown recovery may only use it while the owner is still this worker.
+func (c *Client) ActiveTask(ctx context.Context, id int64) (*contracts.Task, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, fmt.Sprintf("/api/queue/tasks/%d", id), nil)
+	if err != nil {
+		return nil, err
+	}
+	var task contracts.Task
+	if err := c.doJSON(req, &task); err != nil {
+		return nil, err
+	}
+	if task.ID != id || task.LeaseExpires == nil {
+		return nil, fmt.Errorf("queue returned an incomplete active task")
+	}
+	return &task, nil
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
@@ -111,6 +140,9 @@ func (c *Client) doJSON(req *http.Request, out any) error {
 	if envelope.Error != nil {
 		if envelope.Error.Code == "ERR_LEASE_CONFLICT" {
 			return ErrLeaseConflict
+		}
+		if envelope.Error.Code == "ERR_NOT_FOUND" && resp.StatusCode == http.StatusNotFound {
+			return ErrTaskNotFound
 		}
 		return fmt.Errorf("api error [%s]: %s", envelope.Error.Code, envelope.Error.Message)
 	}

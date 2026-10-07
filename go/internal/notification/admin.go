@@ -58,8 +58,14 @@ func postMessage(deps *AdminDeps) fiber.Handler {
 		if err := json.Unmarshal(c.Body(), &msg); err != nil {
 			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, err.Error())
 		}
+		if msg == nil {
+			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, "message must be an object")
+		}
 
 		instance := instanceOf(c)
+		if len(instance) > hub.MaxInstanceBytes {
+			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, "instance name exceeds resource limit")
+		}
 		receipt := &contracts.AphlictReceipt{Fingerprint: deps.Peers.Fingerprint()}
 
 		// A message already carrying our fingerprint has been round the cluster
@@ -81,9 +87,13 @@ func postMessage(deps *AdminDeps) fiber.Handler {
 
 func serverStatus(deps *AdminDeps) fiber.Handler {
 	return func(c fiber.Ctx) error {
+		instance := instanceOf(c)
+		if len(instance) > hub.MaxInstanceBytes {
+			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, "instance name exceeds resource limit")
+		}
 		// Bare again, for the same reason: the cluster notification panel reads
 		// these keys off the top level of the body.
-		return c.Status(http.StatusOK).JSON(deps.Hub.Status(instanceOf(c)))
+		return c.Status(http.StatusOK).JSON(deps.Hub.Status(instance))
 	}
 }
 

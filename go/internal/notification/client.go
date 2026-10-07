@@ -1,6 +1,7 @@
 package notification
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,10 @@ const useWebsocketsBody = "HTTP/501 Use Websockets\n"
 
 // defaultReplayAge, in milliseconds, bounds a replay request that names no age.
 const defaultReplayAge = 60000
+
+// The whole replay shares one deadline; a client cannot extend it by making
+// occasional progress. Individual network writes keep their five-second limit.
+const replayTimeout = 30 * time.Second
 
 // ClientDeps is everything the client routes need.
 type ClientDeps struct {
@@ -60,7 +65,11 @@ func serveClient(deps *ClientDeps) fiber.Handler {
 			instance = defaultInstance
 		}
 		listener := hub.NewListener(deps.Hub.NextID(), c.Conn)
-		deps.Hub.AddListener(instance, listener)
+		if err := deps.Hub.AddListener(instance, listener); err != nil {
+			listener.Close()
+			slog.Warn("client instance limit exceeded", "instance_bytes", len(instance), "remote", listener.RemoteAddr())
+			return
+		}
 		slog.Info("client connected",
 			"listener", listener.ID(), "instance", instance, "remote", listener.RemoteAddr())
 
@@ -128,7 +137,9 @@ func readLoop(h *hub.Hub, l *hub.Listener, instance string) {
 		case "subscribe":
 			var phids []string
 			if json.Unmarshal(cmd.Data, &phids) == nil {
-				l.Subscribe(phids)
+				if l.Subscribe(phids) != nil {
+					return
+				}
 			}
 
 		case "unsubscribe":
@@ -143,7 +154,9 @@ func readLoop(h *hub.Hub, l *hub.Listener, instance string) {
 			}
 
 		case "ping":
-			_ = l.WriteJSON(map[string]string{"type": "pong"})
+			if l.WriteJSON(map[string]string{"type": "pong"}) != nil {
+				return
+			}
 		}
 	}
 }
@@ -159,14 +172,21 @@ func replay(h *hub.Hub, l *hub.Listener, instance string, data json.RawMessage) 
 	if json.Unmarshal(data, &opts) != nil || opts.Age == 0 {
 		opts.Age = defaultReplayAge
 	}
+	// The retained history never exceeds one minute. Clamp before converting
+	// to a duration so an arbitrary int64 cannot overflow the replay cutoff.
+	if opts.Age < 0 || opts.Age > defaultReplayAge {
+		opts.Age = defaultReplayAge
+	}
 
 	minAge := time.Now().Add(-time.Duration(opts.Age) * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
 	for _, msg := range h.GetHistory(instance, minAge) {
 		subscribers, _ := hub.ToStringSlice(msg["subscribers"])
 		if len(subscribers) > 0 && !l.IsSubscribedToAny(subscribers) {
 			continue
 		}
-		if err := l.WriteJSON(msg); err != nil {
+		if err := l.WriteJSONContext(ctx, msg); err != nil {
 			return err
 		}
 	}

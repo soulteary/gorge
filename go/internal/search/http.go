@@ -104,7 +104,7 @@ func indexDocument(deps *Deps) fiber.Handler {
 			return httpx.Fail(c, http.StatusBadRequest, httpx.CodeBadRequest, "type is required")
 		}
 
-		if err := deps.Engine.IndexDocument(&doc); err != nil {
+		if err := deps.Engine.IndexDocumentContext(c.Context(), &doc); err != nil {
 			return httpx.Fail(c, http.StatusBadGateway, CodeIndexFailed, err.Error())
 		}
 

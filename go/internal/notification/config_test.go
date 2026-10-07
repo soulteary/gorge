@@ -242,3 +242,10 @@ func TestLoadAcceptsExtraServersOfEachKind(t *testing.T) {
 		t.Errorf("expected 3 servers, got %d", len(cfg.Servers))
 	}
 }
+
+func TestClusterPeerBudget(t *testing.T) {
+	cfg := &Config{Cluster: make([]PeerSpec, 33)}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("unbounded relay peer count accepted")
+	}
+}

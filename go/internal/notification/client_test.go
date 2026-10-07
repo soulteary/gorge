@@ -1,6 +1,7 @@
 package notification
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -166,6 +167,25 @@ func TestWebSocketPingAnswersPong(t *testing.T) {
 	conn := dialTo(t, baseURL, "/")
 
 	syncCommands(t, conn)
+}
+
+func TestHealthyClientReplaysMoreThanQueueCapacity(t *testing.T) {
+	baseURL, messages := newClientServer(t)
+	const count = 1024
+	for i := 0; i < count; i++ {
+		messages.Publish(defaultInstance, hub.Message{"key": fmt.Sprint(i), "body": strings.Repeat("x", 4096)})
+	}
+	conn := dialTo(t, baseURL, "/")
+	sendCommand(t, conn, "replay", nil)
+	sendCommand(t, conn, "ping", nil)
+	for i := 0; i < count; i++ {
+		if got := readMessage(t, conn); got["key"] != fmt.Sprint(i) {
+			t.Fatalf("replay lost message %d: %v", i, got)
+		}
+	}
+	if got := readMessage(t, conn); got["type"] != "pong" {
+		t.Fatalf("replay disconnected a healthy client: %v", got)
+	}
 }
 
 // TestUpgradedResponseIsNotEnvelopedByTheErrorHandler pins the invariant the

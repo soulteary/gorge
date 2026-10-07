@@ -33,15 +33,16 @@ const noNewlineMarker = `\ No newline at end of file`
 
 // maxCells caps the size of the dynamic-programming table lcs allocates.
 //
-// The bound is on the product n*m rather than on either side's line count,
-// because that product is what gets allocated: 100 lines against 100000 is
-// cheap and must not be rejected, while 10000 against 10000 would ask for
-// 800MB. At 4 million cells the table is 32MB of int on a 64-bit build, which
+// Identical prefix and suffix lines are removed before applying this bound.
+// The bound is on the DP allocation (n+1)*(m+1), not the file's line count,
+// because that product is what gets allocated. Two unrelated 10000-line
+// middles would ask for about 800MB. At 4 million cells the table is 32MB of
+// int on a 64-bit build, which
 // is what a single request is allowed to spend.
 //
-// GNU diff has no such ceiling because it runs Myers' O(ND) algorithm rather
-// than a full LCS table. Replacing the algorithm is the real fix; until then
-// this is a guard, not a tuning knob.
+// Large mostly unchanged files therefore spend linear time and memory on their
+// context. A large unrelated middle is still rejected rather than allocating
+// without a budget; this is a guard, not a tuning knob.
 const maxCells = 4_000_000
 
 // ErrTooLarge reports that the two inputs have too many lines between them to
@@ -92,17 +93,43 @@ func Generate(req *contracts.DiffRequest) (*contracts.DiffResult, error) {
 		}, nil
 	}
 
-	if n, m := len(oldLines), len(newLines); n > 0 && m > 0 && n > maxCells/m {
-		// Division rather than multiplication: n*m is what overflows.
-		return nil, ErrTooLarge
+	ops, err := boundedEdits(oldLines, newLines)
+	if err != nil {
+		return nil, err
 	}
-
-	ops := lcs(oldLines, newLines)
 
 	return &contracts.DiffResult{
 		Diff:  formatUnified(oldName, newName, oldLines, newLines, ops),
 		Equal: false,
 	}, nil
+}
+
+// boundedEdits removes identical edges before allocating the LCS table. Edge
+// equality includes newline termination. Full-file context is restored in the
+// script, so parsers retain the original line numbers and complete contents.
+// The cell budget applies to the unresolved middle, including the DP border.
+func boundedEdits(a, b []line) ([]editOp, error) {
+	prefix := 0
+	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(a)-prefix && suffix < len(b)-prefix && a[len(a)-suffix-1] == b[len(b)-suffix-1] {
+		suffix++
+	}
+	am, bm := a[prefix:len(a)-suffix], b[prefix:len(b)-suffix]
+	if n, m := len(am), len(bm); n > 0 && m > 0 && (n >= maxCells || m >= maxCells || n+1 > maxCells/(m+1)) {
+		return nil, ErrTooLarge
+	}
+	ops := make([]editOp, prefix, len(a)+len(b))
+	for i := range ops {
+		ops[i] = opEqual
+	}
+	ops = append(ops, lcs(am, bm)...)
+	for range suffix {
+		ops = append(ops, opEqual)
+	}
+	return ops, nil
 }
 
 // normalizeText mirrors PhabricatorDifferenceEngine::normalizeFile, which
@@ -204,20 +231,19 @@ func lcs(a, b []line) []editOp {
 		return ops
 	}
 
-	// DP table
-	dp := make([][]int, n+1)
-	for i := range dp {
-		dp[i] = make([]int, m+1)
-	}
+	// A contiguous table makes the cell budget an actual bound on table
+	// storage, without one row allocation and slice header per input line.
+	width := m + 1
+	dp := make([]int, (n+1)*width)
 
 	for i := 1; i <= n; i++ {
 		for j := 1; j <= m; j++ {
 			if a[i-1] == b[j-1] {
-				dp[i][j] = dp[i-1][j-1] + 1
-			} else if dp[i-1][j] >= dp[i][j-1] {
-				dp[i][j] = dp[i-1][j]
+				dp[i*width+j] = dp[(i-1)*width+j-1] + 1
+			} else if dp[(i-1)*width+j] >= dp[i*width+j-1] {
+				dp[i*width+j] = dp[(i-1)*width+j]
 			} else {
-				dp[i][j] = dp[i][j-1]
+				dp[i*width+j] = dp[i*width+j-1]
 			}
 		}
 	}
@@ -232,7 +258,7 @@ func lcs(a, b []line) []editOp {
 			ops = append(ops, opEqual)
 			i--
 			j--
-		} else if j > 0 && (i == 0 || dp[i][j-1] >= dp[i-1][j]) {
+		} else if j > 0 && (i == 0 || dp[i*width+j-1] >= dp[(i-1)*width+j]) {
 			ops = append(ops, opInsert)
 			j--
 		} else {

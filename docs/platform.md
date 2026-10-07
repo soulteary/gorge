@@ -23,6 +23,7 @@ Fiber BodyLimit → RequestID → RequestLogger(slog) → Recover(slog) → [域
 
 - **RequestID 复用入站值**。请求头带了 `X-Request-Id` 就透传，没带才生成。一次请求跨越 Phorge 与 Go 服务时保持同一个 id，日志才能串起来。
 - **日志走 `log/slog`**。Fiber Recover 的 `StackTraceHandler` 把 panic、request id 与堆栈写进 slog，与进程其余日志汇合；Recover 随后把错误交给全局 `ErrorHandler` 转成 500 信封。响应体里只有通用文案，所以日志是 panic 现场的**唯一**记录。
+- **query 凭据在日志中脱敏**。访问、错误与 panic 日志共享 URI 清洗器，`token`、`serviceToken`、`access_token`、API key、password、secret 等参数的值替换为 `[REDACTED]`，识别大小写与编码后的键，并保留其他查询字段。错误或 panic 消息重复了请求 URL 或其凭据值时也会脱敏；原有 query token 认证仍保持兼容。
 - **BodyLimit 在 handler 之前生效**。`fiber.Config.BodyLimit` 由 `Config.BodyLimit` 解析得到，超限错误仍经全局错误处理器变成 `ERR_TOO_LARGE`，不会漏出框架默认文本。
 - **优雅关闭**。`Run()` 只是 `return RunAll(s)` 的一层壳。`RunAll` 先为整组 server 预绑定 listener，再交给 `app.Listener`；SIGINT/SIGTERM 或任一 listener 退出后，使用 `ShutdownWithTimeout` 并发排空所有 app，见第 1.4 节。
 

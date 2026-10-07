@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +20,7 @@ type sesAdapter struct {
 	secretKey string
 	region    string
 	endpoint  string
+	client    *http.Client
 }
 
 func newSESAdapter(opts map[string]string) (*sesAdapter, error) {
@@ -59,21 +59,20 @@ func (a *sesAdapter) Send(ctx context.Context, msg *contracts.EmailMessage) (str
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, strings.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("ses: create request: %w", err)
+		return "", &SafeRetryError{Err: fmt.Errorf("ses: create request: %w", err), Backend: true}
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	a.signV4(req, []byte(body), time.Now().UTC())
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, respBody, err := callProvider("ses", a.client, req)
 	if err != nil {
-		return "", fmt.Errorf("ses: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if err := classifyProviderStatus("ses", resp.StatusCode, respBody); err != nil {
-		return "", err
+		// SES confirms SendRawEmail acceptance with a successful status; its
+		// optional message ID need not make an accepted message retryable.
+		if resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", err
+		}
+		return "", nil
 	}
 
 	var result struct {

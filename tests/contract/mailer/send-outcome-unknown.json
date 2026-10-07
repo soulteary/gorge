@@ -1,0 +1,16 @@
+{
+  "name": "uncertain provider submission is 502 ERR_OUTCOME_UNKNOWN",
+  "description": "A timeout or lost acceptance response cannot prove nonacceptance. PHP retains unknown for reconciliation instead of automatically re-sending the message.",
+  "request": {
+    "method": "POST",
+    "path": "/api/mailer/send",
+    "headers": {"Content-Type": "application/json", "X-Service-Token": "contract-token"},
+    "body": "{\"message\":{\"from\":{\"address\":\"noreply@example.com\"},\"to\":[{\"address\":\"rcpt@example.com\"}],\"subject\":\"unknown submission\"},\"mailerKeys\":[\"unknown\"]}"
+  },
+  "expect": {
+    "status": 502,
+    "jsonHas": ["error.code", "error.message"],
+    "jsonEquals": {"error.code": "ERR_OUTCOME_UNKNOWN"},
+    "jsonAbsent": ["data"]
+  }
+}

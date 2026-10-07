@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
@@ -15,6 +14,7 @@ const sendGridEndpoint = "https://api.sendgrid.com/v3/mail/send"
 
 type sendGridAdapter struct {
 	apiKey string
+	client *http.Client
 }
 
 func newSendGridAdapter(opts map[string]string) (*sendGridAdapter, error) {
@@ -35,20 +35,18 @@ func (a *sendGridAdapter) Send(ctx context.Context, msg *contracts.EmailMessage)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sendGridEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("sendgrid: create request: %w", err)
+		return "", &SafeRetryError{Err: fmt.Errorf("sendgrid: create request: %w", err), Backend: true}
 	}
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, _, err := callProvider("sendgrid", a.client, req)
 	if err != nil {
-		return "", fmt.Errorf("sendgrid: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if err := classifyProviderStatus("sendgrid", resp.StatusCode, respBody); err != nil {
-		return "", err
+		// SendGrid's successful HTTP status is the acceptance receipt; a
+		// diagnostic body failure cannot undo an already accepted message.
+		if resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", err
+		}
 	}
 
 	// SendGrid accepts asynchronously and answers 202 with an empty body; the

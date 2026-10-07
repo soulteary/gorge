@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -239,5 +241,89 @@ func TestToStringSlice(t *testing.T) {
 				t.Errorf("len = %d, want %d", len(got), tt.want)
 			}
 		})
+	}
+}
+
+type budgetTransport func(*http.Request) (*http.Response, error)
+
+func (f budgetTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSlowPeerHasBoundedQueueAndCannotDelayHealthyPeer(t *testing.T) {
+	slow, fast := NewPeer("slow", 1, "http"), NewPeer("fast", 2, "http")
+	defer slow.Close()
+	defer fast.Close()
+	var requests atomic.Int32
+	entered := make(chan struct{})
+	canceled := make(chan struct{})
+	slow.client.Transport = budgetTransport(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		close(entered)
+		<-r.Context().Done()
+		close(canceled)
+		return nil, r.Context().Err()
+	})
+	received := make(chan []byte, 1)
+	fast.client.Transport = budgetTransport(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		received <- body
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"fingerprint":"abcdefghijklmnop"}`)), Header: make(http.Header)}, nil
+	})
+	peers := NewList()
+	defer peers.Close()
+	peers.AddPeer(slow)
+	peers.AddPeer(fast)
+	for i := 0; i < relayQueueFrames+20; i++ {
+		peers.BroadcastMessage("prod & private", map[string]any{"key": i})
+		select {
+		case <-received:
+		case <-time.After(time.Second):
+			t.Fatalf("healthy peer delayed at %d", i)
+		}
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("slow peer not exercised")
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("slow peer created parallel relays: %d", requests.Load())
+	}
+	slow.queueMu.Lock()
+	queued := len(slow.queue)
+	bytes := slow.queuedBytes
+	slow.queueMu.Unlock()
+	if queued > relayQueueFrames || bytes > relayQueueBytes {
+		t.Fatal("relay budget exceeded")
+	}
+	peers.Close()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("close did not cancel pending peer I/O")
+	}
+}
+
+func TestOversizedPeerReceiptCannotSetFingerprint(t *testing.T) {
+	p := NewPeer("peer", 1, "http")
+	defer p.Close()
+	p.client.Transport = budgetTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"fingerprint":"` + strings.Repeat("x", maxReceiptBytes) + `"}`)), Header: make(http.Header)}, nil
+	})
+	p.BroadcastMessage("prod", map[string]any{"type": "notification"})
+	if p.Fingerprint() != "" {
+		t.Fatal("oversized receipt accepted")
+	}
+}
+
+func TestRelayRejectsPayloadBeyondByteBudget(t *testing.T) {
+	p := NewPeer("peer", 1, "http")
+	defer p.Close()
+	if p.enqueue("prod", make([]byte, relayQueueBytes+1)) {
+		t.Fatal("oversized relay retained")
+	}
+	p.queueMu.Lock()
+	defer p.queueMu.Unlock()
+	if p.queuedBytes != 0 || len(p.queue) != 0 {
+		t.Fatal("rejected payload consumed queue capacity")
 	}
 }

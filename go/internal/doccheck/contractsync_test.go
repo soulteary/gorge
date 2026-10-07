@@ -58,7 +58,7 @@ import (
 const phorgeForkEnv = "PHORGE_FORK_DIR"
 
 // contractsDir is where the domain contract structs live, relative to the
-// repository root. Their json tags are the Go half of every wire field.
+// repository root. Shared response-envelope tags live in platform/httpx.
 var contractsDir = filepath.Join(repositoryRoot, "go", "internal", "contracts")
 
 // domainGoSources maps each manifest domain to the Go package directory whose
@@ -376,41 +376,42 @@ func collectJSONTags(t *testing.T) map[string]bool {
 	t.Helper()
 	tags := map[string]bool{}
 
-	entries, err := os.ReadDir(contractsDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	fset := token.NewFileSet()
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
-			continue
-		}
-		if strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
-		}
-		path := filepath.Join(contractsDir, entry.Name())
-		file, err := parser.ParseFile(fset, path, nil, 0)
+	for _, dir := range []string{contractsDir, filepath.Join(repositoryRoot, "go", "internal", "platform", "httpx")} {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
+			t.Fatal(err)
 		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			field, ok := n.(*ast.Field)
-			if !ok || field.Tag == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
+				continue
+			}
+			if strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			file, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				field, ok := n.(*ast.Field)
+				if !ok || field.Tag == nil {
+					return true
+				}
+				// field.Tag.Value includes the surrounding backticks.
+				raw := strings.Trim(field.Tag.Value, "`")
+				jsonTag := reflect.StructTag(raw).Get("json")
+				if jsonTag == "" {
+					return true
+				}
+				name := strings.Split(jsonTag, ",")[0]
+				if name != "" && name != "-" {
+					tags[name] = true
+				}
 				return true
-			}
-			// field.Tag.Value includes the surrounding backticks.
-			raw := strings.Trim(field.Tag.Value, "`")
-			jsonTag := reflect.StructTag(raw).Get("json")
-			if jsonTag == "" {
-				return true
-			}
-			name := strings.Split(jsonTag, ",")[0]
-			if name != "" && name != "-" {
-				tags[name] = true
-			}
-			return true
-		})
+			})
+		}
 	}
 
 	if len(tags) == 0 {

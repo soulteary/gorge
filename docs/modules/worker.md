@@ -17,6 +17,12 @@ Worker 始终按 `GORGE_WORKER_POLL_INTERVAL_MS`（默认 1000ms）轮询队列�
 轮询间隔、并发数和领取批量必须大于 0，空闲日志间隔不能为负数；
 不合法的配置会在连接业务依赖前明确退出，避免 ticker panic 或任务处理卡住。
 
+每次仅领取 `min(LeaseLimit, MaxWorkers - 当前占用槽位)` 个任务。每个任务独立执行、心跳和收尾，短任务完成后会立即触发补槽；一个长任务不会再阻塞整批下一次领取。队列返回超出请求上限或 null task 时拒绝该响应，避免在本地等待槽位的任务失去心跳。
+
+取消运行上下文只停止新领取，已接受的任务继续持有心跳并在独立的排空预算内完成；租约冲突、过期和续租失败仍取消相应 handler 并阻止旧 owner 收尾。`GORGE_WORKER_DRAIN_TIMEOUT_SEC` 默认 30 秒，0 回落到默认，上限 3600 秒。预算到期取消 handler 与心跳，再给独立归档报告最多 10 秒及取消清理 1 秒；忽略 context 的 handler 不能无限阻止进程退出。部署停止宽限必须大于该预算与报告/清理时间，默认预算配合 45 秒停止宽限。
+
+取消并不证明 PHP 或外部供应商的副作用已停止。排空到期使用现有 fenced `Resolve outcome=failure` 将仍归本 worker 的任务永久归档，阻止自动重领；这是需人工核对的行政隔离，不表示明确业务失败，也不表示副作用已回滚。取消时刷新同 owner 的当前有效 lease token，以应对续租已经提交但回执丢失；不能归档已归另一个 worker 的任务。归档网络失败或 ownership 已失效会明确记录“归档未确认”，仍可能走原有崩溃/租约恢复路径，不能声称持久化 unknown 或安全重投。
+
 ## 原生 Feed 与 Outbox 配置
 
 `GORGE_WORKER_OUTBOX_DSN`：可选 MySQL 驱动 DSN，指向 Phorge feed 数据库。

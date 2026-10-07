@@ -35,7 +35,7 @@ func (b *Backend) ApplyProjection(ctx context.Context, e *contracts.SearchProjec
 	}
 	body["_gorge"] = map[string]any{"namespace": e.Namespace, "generation": target.GenerationID, "hash": e.PayloadHash, "deleted": e.Operation == "delete"}
 	uri := b.baseURL(host) + "/_doc/" + e.PHID
-	code, raw, err := b.projectionRequest(ctx, http.MethodPut, uri+"?version_type=external&version="+e.Revision, body)
+	code, raw, err := b.projectionRequest(ctx, host, http.MethodPut, uri+"?version_type=external&version="+e.Revision, body)
 	if err != nil {
 		return "", err
 	}
@@ -56,7 +56,7 @@ func (b *Backend) ApplyProjection(ctx context.Context, e *contracts.SearchProjec
 	if code != 409 {
 		return "", fmt.Errorf("projection backend HTTP %d", code)
 	}
-	code, raw, err = b.projectionRequest(ctx, http.MethodGet, uri, nil)
+	code, raw, err = b.projectionRequest(ctx, host, http.MethodGet, uri, nil)
 	if err != nil {
 		return "", err
 	}
@@ -90,7 +90,13 @@ func (b *Backend) ApplyProjection(ctx context.Context, e *contracts.SearchProjec
 	}
 	return "", fmt.Errorf("projection revision conflict")
 }
-func (b *Backend) projectionRequest(ctx context.Context, method, uri string, body any) (int, []byte, error) {
+func (b *Backend) projectionRequest(ctx context.Context, host, method, uri string, body any) (int, []byte, error) {
+	// Projection uses a bounded, context-aware response reader, but shares host
+	// selection with ordinary reads. Every exit must release a recovery probe.
+	defer b.releaseProbe(host)
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
 	var encoded []byte
 	var err error
 	if body != nil {
@@ -106,13 +112,16 @@ func (b *Backend) projectionRequest(ctx context.Context, method, uri string, bod
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.client.Do(req)
 	if err != nil {
+		b.markHealth(host, false)
 		return 0, nil, fmt.Errorf("projection backend request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024+1))
 	if err != nil || len(raw) > 4*1024*1024 {
+		b.markHealth(host, false)
 		return 0, nil, fmt.Errorf("invalid projection backend response")
 	}
+	b.markHealth(host, resp.StatusCode < 500)
 	return resp.StatusCode, raw, nil
 }
 
@@ -123,7 +132,7 @@ func (b *Backend) ProjectionIndexUUID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	code, raw, err := b.projectionRequest(ctx, http.MethodGet, b.baseURL(host)+"/_settings", nil)
+	code, raw, err := b.projectionRequest(ctx, host, http.MethodGet, b.baseURL(host)+"/_settings", nil)
 	if err != nil {
 		return "", err
 	}
@@ -140,7 +149,7 @@ func (b *Backend) ProjectionIndexUUID(ctx context.Context) (string, error) {
 	// The root response distinguishes actual server versions from config guesses.
 	base := b.baseURL(host)
 	base = base[:len(base)-len(b.index)]
-	code, raw, err = b.projectionRequest(ctx, http.MethodGet, base, nil)
+	code, raw, err = b.projectionRequest(ctx, host, http.MethodGet, base, nil)
 	if err != nil {
 		return "", err
 	}
@@ -152,7 +161,7 @@ func (b *Backend) ProjectionIndexUUID(ctx context.Context) (string, error) {
 	if code != 200 || json.Unmarshal(raw, &server) != nil || len(server.Version.Number) < 2 || server.Version.Number[:2] != strconv.Itoa(b.version)+"." {
 		return "", fmt.Errorf("projection Elasticsearch version mismatch")
 	}
-	code, raw, err = b.projectionRequest(ctx, http.MethodGet, b.baseURL(host)+"/_mapping", nil)
+	code, raw, err = b.projectionRequest(ctx, host, http.MethodGet, b.baseURL(host)+"/_mapping", nil)
 	if err != nil {
 		return "", err
 	}

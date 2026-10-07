@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -66,6 +67,7 @@ type fakeQueue struct {
 	mu sync.Mutex
 
 	pending          []*contracts.Task
+	activeTasks      map[int64]*contracts.Task
 	completed        []int64
 	failed           []int64
 	yielded          []int64
@@ -84,13 +86,18 @@ func (q *fakeQueue) handler() http.HandlerFunc {
 		case "/api/queue/lease":
 			q.leaseCount++
 			_ = json.NewDecoder(r.Body).Decode(&q.lastLease)
-			tasks := q.pending
+			count := min(len(q.pending), q.lastLease.Limit)
+			tasks := q.pending[:count]
 			for _, task := range tasks {
 				expiry := time.Now().Add(time.Hour).Unix()
 				task.LeaseOwner = r.Header.Get("X-Lease-Owner")
 				task.LeaseExpires = &expiry
+				if q.activeTasks == nil {
+					q.activeTasks = make(map[int64]*contracts.Task)
+				}
+				q.activeTasks[task.ID] = task
 			}
-			q.pending = nil
+			q.pending = q.pending[count:]
 			writeData(w, tasks)
 		case "/api/queue/finalize":
 			q.completeAttempts++
@@ -105,6 +112,7 @@ func (q *fakeQueue) handler() http.HandlerFunc {
 			var req contracts.FinalizeRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			q.completed = append(q.completed, req.TaskID)
+			delete(q.activeTasks, req.TaskID)
 			writeData(w, map[string]string{"status": "ok"})
 		case "/api/queue/renew":
 			var req contracts.RenewRequest
@@ -124,9 +132,22 @@ func (q *fakeQueue) handler() http.HandlerFunc {
 				q.yielded = append(q.yielded, req.TaskID)
 			} else {
 				q.failed = append(q.failed, req.TaskID)
+				if req.Outcome == "failure" {
+					delete(q.activeTasks, req.TaskID)
+				}
 			}
 			writeData(w, map[string]string{"status": "ok"})
 		default:
+			if strings.HasPrefix(r.URL.Path, "/api/queue/tasks/") {
+				id, _ := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/api/queue/tasks/"), 10, 64)
+				if task := q.activeTasks[id]; task != nil {
+					writeData(w, task)
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+					_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "ERR_NOT_FOUND"}})
+				}
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}
@@ -396,5 +417,96 @@ idle:
 				return
 			}
 		}
+	}
+}
+
+// A long-running task must occupy only its own slot, and graceful shutdown
+// must drain accepted tasks without cancelling their ownership heartbeat.
+func TestConsumerRefillsFreeSlotAndDrainsOnStop(t *testing.T) {
+	q, client := newFakeQueue(t, []*contracts.Task{{ID: 1, TaskClass: "A"}, {ID: 2, TaskClass: "A"}, {ID: 3, TaskClass: "A"}})
+	release := make(chan struct{})
+	longStarted := make(chan struct{})
+	thirdStarted := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	registry := NewRegistry()
+	registry.Register("A", func(ctx context.Context, task *contracts.Task, _ json.RawMessage) error {
+		switch task.ID {
+		case 1:
+			close(longStarted)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case 3:
+			close(thirdStarted)
+		}
+		return nil
+	})
+	cfg := testConfig()
+	cfg.MaxWorkers = 2
+	cfg.LeaseLimit = 10
+	consumer := NewConsumer(client, registry, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); consumer.Run(ctx) }()
+	select {
+	case <-longStarted:
+	case <-time.After(time.Second):
+		t.Fatal("long task not started")
+	}
+	select {
+	case <-thirdStarted:
+	case <-time.After(time.Second):
+		t.Fatal("free slot waited for the long task's batch")
+	}
+	q.mu.Lock()
+	limit := q.lastLease.Limit
+	q.mu.Unlock()
+	if limit > cfg.MaxWorkers {
+		t.Fatalf("leased beyond idle capacity: %d", limit)
+	}
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("shutdown abandoned its accepted long task")
+	case <-time.After(50 * time.Millisecond):
+	}
+	q.mu.Lock()
+	leases := q.leaseCount
+	q.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	q.mu.Lock()
+	after := q.leaseCount
+	q.mu.Unlock()
+	if after != leases {
+		t.Fatal("shutdown continued leasing")
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("drained consumer did not stop")
+	}
+	if consumer.Stats().Processed != 3 {
+		t.Fatalf("accepted tasks not finalized on drain: %+v", consumer.Stats())
+	}
+}
+
+func TestClientRejectsLeaseBeyondCapacityAndNullTask(t *testing.T) {
+	for _, data := range []string{`[{"id":1},{"id":2}]`, `[null]`} {
+		t.Run(data, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":` + data + `}`))
+			}))
+			defer srv.Close()
+			if _, err := NewClient(srv.URL, "").Lease(context.Background(), 1, nil); err == nil {
+				t.Fatal("malformed lease accepted")
+			}
+		})
 	}
 }

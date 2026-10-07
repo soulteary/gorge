@@ -100,6 +100,9 @@ func LoadFromFile(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if len(c.Cluster) > 32 {
+		return fmt.Errorf("notification cluster must contain at most 32 peers")
+	}
 	var hasClient, hasAdmin bool
 	for _, spec := range c.Servers {
 		switch spec.Type {

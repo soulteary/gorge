@@ -6,6 +6,7 @@ package peer
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -13,7 +14,9 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,7 +30,16 @@ const (
 	// degradable, so an unreachable peer must cost a bounded wait rather than
 	// pile goroutines up behind a stalled connection.
 	broadcastTimeout = 5 * time.Second
+	maxPeers         = 32
+	relayQueueFrames = 64
+	relayQueueBytes  = 4 * 1024 * 1024
+	maxReceiptBytes  = 64 * 1024
 )
+
+type relay struct {
+	instance string
+	data     []byte
+}
 
 // Peer is another notification server's admin port.
 type Peer struct {
@@ -39,17 +51,29 @@ type Peer struct {
 	fingerprint string
 	mu          sync.RWMutex
 	client      *http.Client
+	queue       chan relay
+	queueMu     sync.Mutex
+	queuedBytes int
+	startOnce   sync.Once
+	closeOnce   sync.Once
+	ctx         context.Context
+	cancel      context.CancelFunc
+	dropped     atomic.Uint64
 }
 
 // NewPeer describes a peer's admin port.
 func NewPeer(host string, port int, protocol string) *Peer {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Peer{
 		Host:     host,
 		Port:     port,
 		Protocol: protocol,
 		client: &http.Client{
-			Timeout: broadcastTimeout,
+			Timeout:       broadcastTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
+		queue: make(chan relay, relayQueueFrames),
+		ctx:   ctx, cancel: cancel,
 	}
 }
 
@@ -75,9 +99,12 @@ func (p *Peer) BroadcastMessage(instance string, message map[string]any) {
 	if err != nil {
 		return
 	}
+	p.send(instance, data)
+}
 
-	url := fmt.Sprintf("%s://%s:%d/?instance=%s", p.Protocol, p.Host, p.Port, instance)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+func (p *Peer) send(instance string, data []byte) {
+	address := fmt.Sprintf("%s://%s:%d/?instance=%s", p.Protocol, p.Host, p.Port, url.QueryEscape(instance))
+	req, err := http.NewRequestWithContext(p.ctx, http.MethodPost, address, bytes.NewReader(data))
 	if err != nil {
 		return
 	}
@@ -90,7 +117,13 @@ func (p *Peer) BroadcastMessage(instance string, message map[string]any) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReceiptBytes+1))
+	if err != nil || len(body) > maxReceiptBytes {
+		return
+	}
 	var receipt struct {
 		Fingerprint string `json:"fingerprint"`
 	}
@@ -98,6 +131,47 @@ func (p *Peer) BroadcastMessage(instance string, message map[string]any) {
 		p.setFingerprint(receipt.Fingerprint)
 	}
 }
+
+// enqueue isolates peers: one ordered relay writer per peer, with a bounded
+// count and byte budget. Saturated peers drop new realtime messages, not local
+// deliveries or another peer's work. This is not a durable delivery queue.
+func (p *Peer) enqueue(instance string, data []byte) bool {
+	p.startOnce.Do(func() { go p.run() })
+	p.queueMu.Lock()
+	defer p.queueMu.Unlock()
+	if p.ctx.Err() != nil || p.queuedBytes+len(data) > relayQueueBytes {
+		return false
+	}
+	select {
+	case p.queue <- relay{instance, data}:
+		p.queuedBytes += len(data)
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Peer) run() {
+	for {
+		if p.ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-p.ctx.Done():
+			return
+		case next := <-p.queue:
+			if p.ctx.Err() != nil {
+				return
+			}
+			p.send(next.instance, next.data)
+			p.queueMu.Lock()
+			p.queuedBytes -= len(next.data)
+			p.queueMu.Unlock()
+		}
+	}
+}
+
+func (p *Peer) Close() { p.closeOnce.Do(p.cancel) }
 
 // List is this server's own fingerprint plus the peers it relays to.
 type List struct {
@@ -118,7 +192,20 @@ func NewList() *List {
 func (pl *List) AddPeer(p *Peer) {
 	pl.mu.Lock()
 	defer pl.mu.Unlock()
+	if len(pl.peers) >= maxPeers {
+		p.Close()
+		return
+	}
 	pl.peers = append(pl.peers, p)
+}
+
+// Close cancels pending relay I/O when the owning notification service stops.
+func (pl *List) Close() {
+	pl.mu.RLock()
+	defer pl.mu.RUnlock()
+	for _, p := range pl.peers {
+		p.Close()
+	}
 }
 
 // Fingerprint reports this server's own fingerprint.
@@ -148,6 +235,10 @@ func (pl *List) AddFingerprint(message map[string]any) bool {
 // it. Relays run concurrently because one unreachable peer must not delay the
 // others by its whole timeout.
 func (pl *List) BroadcastMessage(instance string, message map[string]any) {
+	data, err := json.Marshal(message)
+	if err != nil {
+		return
+	}
 	touched, _ := toStringSlice(message["touched"])
 	touchSet := make(map[string]struct{}, len(touched))
 	for _, t := range touched {
@@ -167,7 +258,11 @@ func (pl *List) BroadcastMessage(instance string, message map[string]any) {
 				continue
 			}
 		}
-		go p.BroadcastMessage(instance, message)
+		if !p.enqueue(instance, data) {
+			if count := p.dropped.Add(1); count == 1 || count%128 == 0 {
+				slog.Warn("peer relay budget exhausted", "host", p.Host, "port", p.Port, "dropped", count)
+			}
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
@@ -43,10 +44,17 @@ func (a *sendmailAdapter) Send(ctx context.Context, msg *contracts.EmailMessage)
 	args := append([]string{"-oi", "-f", msg.From.Address, "--"}, recipients(msg)...)
 	cmd := exec.CommandContext(ctx, a.path, args...)
 	cmd.Stdin = bytes.NewReader(buildMIME(msg))
+	// A forked delivery helper can inherit these pipes after the main process
+	// is killed. Bound waiting for its EOF independently of submission time.
+	cmd.WaitDelay = time.Second
+	var output sendmailOutput
+	cmd.Stdout, cmd.Stderr = &output, &output
 
-	output, err := cmd.CombinedOutput()
-	if err == nil {
+	err := cmd.Run()
+	if err == nil || (cmd.ProcessState != nil && cmd.ProcessState.Success()) {
 		// Local delivery reports no message id.
+		// Exit 0 confirms acceptance even when inherited diagnostic pipes do
+		// not close. Losing diagnostics cannot undo that accepted receipt.
 		return "", nil
 	}
 
@@ -65,8 +73,19 @@ func (a *sendmailAdapter) Send(ctx context.Context, msg *contracts.EmailMessage)
 		}
 		if name, ok := permanentExitCodes[exitErr.ExitCode()]; ok {
 			return "", permanentf("sendmail: exit %d (%s): %s",
-				exitErr.ExitCode(), name, string(output))
+				exitErr.ExitCode(), name, output.buffer.String())
 		}
 	}
-	return "", fmt.Errorf("sendmail: %w: %s", err, string(output))
+	return "", fmt.Errorf("sendmail: %w: %s", err, output.buffer.String())
+}
+
+// Drain all diagnostics without retaining unbounded output in memory.
+// os/exec serializes writes when stdout and stderr share the same writer.
+type sendmailOutput struct{ buffer bytes.Buffer }
+
+func (w *sendmailOutput) Write(p []byte) (int, error) {
+	if remaining := int(ProviderResponseLimit) - w.buffer.Len(); remaining > 0 {
+		_, _ = w.buffer.Write(p[:min(len(p), remaining)])
+	}
+	return len(p), nil
 }

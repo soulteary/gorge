@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 
@@ -17,6 +16,7 @@ type mailgunAdapter struct {
 	apiKey      string
 	domain      string
 	apiHostname string
+	client      *http.Client
 }
 
 func newMailgunAdapter(opts map[string]string) (*mailgunAdapter, error) {
@@ -50,19 +50,13 @@ func (a *mailgunAdapter) Send(ctx context.Context, msg *contracts.EmailMessage) 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, buf)
 	if err != nil {
-		return "", fmt.Errorf("mailgun: create request: %w", err)
+		return "", &SafeRetryError{Err: fmt.Errorf("mailgun: create request: %w", err), Backend: true}
 	}
 	req.SetBasicAuth("api", a.apiKey)
 	req.Header.Set("Content-Type", contentType)
 
-	resp, err := http.DefaultClient.Do(req)
+	_, respBody, err := callProvider("mailgun", a.client, req)
 	if err != nil {
-		return "", fmt.Errorf("mailgun: request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if err := classifyProviderStatus("mailgun", resp.StatusCode, respBody); err != nil {
 		return "", err
 	}
 

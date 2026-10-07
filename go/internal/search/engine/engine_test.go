@@ -1,11 +1,36 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
 )
+
+type contextualTestBackend struct {
+	SearchBackend
+	calls int
+}
+
+func (b *contextualTestBackend) IndexDocumentContext(ctx context.Context, _ *contracts.Document) error {
+	b.calls++
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestIndexContextDeadlineIsSharedAcrossBackends(t *testing.T) {
+	first := &contextualTestBackend{SearchBackend: newTestBackend(t, BackendDef{Roles: []string{"write"}})}
+	second := &contextualTestBackend{SearchBackend: newTestBackend(t, BackendDef{Roles: []string{"write"}})}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	err := New([]SearchBackend{first, second}).IndexDocumentContext(ctx, &contracts.Document{PHID: "PHID-TASK-budget", Type: "TASK"})
+	if !errors.Is(err, context.DeadlineExceeded) || first.calls != 1 || second.calls != 0 {
+		t.Fatalf("deadline not propagated/shared: first=%d second=%d err=%v", first.calls, second.calls, err)
+	}
+}
 
 func newTestBackend(t *testing.T, def BackendDef) *TestBackend {
 	t.Helper()

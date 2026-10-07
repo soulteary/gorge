@@ -24,6 +24,9 @@ func (c *Config) Validate() error {
 	if c.IdleTimeoutSec < 0 {
 		return fmt.Errorf("GORGE_WORKER_IDLE_TIMEOUT_SEC must be nonnegative")
 	}
+	if c.DrainTimeoutSec < 0 || c.DrainTimeoutSec > 3600 {
+		return fmt.Errorf("GORGE_WORKER_DRAIN_TIMEOUT_SEC must be between 0 and 3600 (0 uses the default)")
+	}
 	return nil
 }
 
@@ -31,10 +34,11 @@ const (
 	DefaultListenAddr   = ":8170"
 	DefaultTaskQueueURL = "http://gorge-taskqueue:8090"
 
-	DefaultLeaseLimit     = 4
-	DefaultPollIntervalMs = 1000
-	DefaultMaxWorkers     = 4
-	DefaultIdleTimeoutSec = 180
+	DefaultLeaseLimit      = 4
+	DefaultPollIntervalMs  = 1000
+	DefaultMaxWorkers      = 4
+	DefaultIdleTimeoutSec  = 180
+	DefaultDrainTimeoutSec = 30
 )
 
 type Config struct {
@@ -45,6 +49,7 @@ type Config struct {
 	PollIntervalMs         int
 	MaxWorkers             int
 	IdleTimeoutSec         int
+	DrainTimeoutSec        int
 	ConduitURL             string
 	ConduitToken           string
 	TaskClassFilter        []string
@@ -67,10 +72,11 @@ func LoadFromEnv() *Config {
 		TaskQueueURL:   config.EnvStr(DefaultTaskQueueURL, "GORGE_WORKER_TASK_QUEUE_URL"),
 		TaskQueueToken: config.EnvStr("", "GORGE_WORKER_TASK_QUEUE_TOKEN"),
 
-		LeaseLimit:     config.EnvInt(DefaultLeaseLimit, "GORGE_WORKER_LEASE_LIMIT"),
-		PollIntervalMs: config.EnvInt(DefaultPollIntervalMs, "GORGE_WORKER_POLL_INTERVAL_MS"),
-		MaxWorkers:     config.EnvInt(DefaultMaxWorkers, "GORGE_WORKER_MAX_WORKERS"),
-		IdleTimeoutSec: config.EnvInt(DefaultIdleTimeoutSec, "GORGE_WORKER_IDLE_TIMEOUT_SEC"),
+		LeaseLimit:      config.EnvInt(DefaultLeaseLimit, "GORGE_WORKER_LEASE_LIMIT"),
+		PollIntervalMs:  config.EnvInt(DefaultPollIntervalMs, "GORGE_WORKER_POLL_INTERVAL_MS"),
+		MaxWorkers:      config.EnvInt(DefaultMaxWorkers, "GORGE_WORKER_MAX_WORKERS"),
+		IdleTimeoutSec:  config.EnvInt(DefaultIdleTimeoutSec, "GORGE_WORKER_IDLE_TIMEOUT_SEC"),
+		DrainTimeoutSec: config.EnvInt(DefaultDrainTimeoutSec, "GORGE_WORKER_DRAIN_TIMEOUT_SEC"),
 
 		ConduitURL:   config.EnvStr("", "GORGE_WORKER_CONDUIT_URL"),
 		ConduitToken: config.EnvStr("", "GORGE_WORKER_CONDUIT_TOKEN"),

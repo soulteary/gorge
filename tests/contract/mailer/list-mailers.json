@@ -15,8 +15,9 @@
       "data.0.key": "test-mailer",
       "data.0.type": "test",
       "data.1.key": "rejects",
-      "data.2.key": "down"
+      "data.2.key": "down",
+      "data.3.key": "unknown"
     },
-    "jsonAbsent": ["data.3", "error"]
+    "jsonAbsent": ["data.4", "error"]
   }
 }

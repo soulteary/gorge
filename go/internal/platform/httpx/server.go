@@ -117,9 +117,9 @@ func New(cfg Config) *Server {
 		StackTraceHandler: func(c fiber.Ctx, e any) {
 			slog.Error("PANIC_RECOVERED",
 				"method", c.Method(),
-				"uri", c.OriginalURL(),
+				"uri", requestLogURI(c),
 				"request_id", c.Get(fiber.HeaderXRequestID),
-				"error", fmt.Sprintf("%v", e),
+				"error", requestLogError(c, fmt.Sprintf("%v", e)),
 				"stack", string(stackTrace()))
 		},
 	}))
@@ -137,7 +137,7 @@ func requestLogger() fiber.Handler {
 		err := c.Next()
 		slog.Info("REQUEST",
 			"method", c.Method(),
-			"uri", c.OriginalURL(),
+			"uri", requestLogURI(c),
 			"status", c.Response().StatusCode(),
 			"request_id", c.Get(fiber.HeaderXRequestID))
 		return err

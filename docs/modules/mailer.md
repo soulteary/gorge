@@ -15,7 +15,7 @@
 
 **负责**：把一封信交出去，并如实报告「交出去了没有」以及「这次失败还值不值得再试」。七个后端（SMTP / sendmail / SES / SendGrid / Mailgun / Postmark / test）按优先级串成 failover 链。
 
-同步 `/send` 不持久化邮件，短重试由 Dispatcher 执行，外层重试由 worker 队列安排。启用原生持久投递后，Gorge 还负责不可变快照、提交账本、重试与结果恢复；PHP 保留收件人决策与附件授权。两种路径的重试和不确定结果规则不同，见后文。
+同步 `/send` 不持久化邮件，Dispatcher 与 PHP worker 只重试已确认未接受的提交；不确定结果由 PHP 保存为 `STATUS_UNKNOWN`，停止自动重发，等待核对。启用原生持久投递后，Gorge 还负责不可变快照、提交账本、重试与结果恢复；PHP 保留收件人决策与附件授权。
 
 **有外部依赖**，这是它与 render / diff 的结构性差异，也是它单独占一个进程的原因：它持有适配器状态、要连出去打 SMTP 与各家 provider、并且有一个真实的就绪条件可报。按 [`../architecture.md`](../architecture.md) 的分界，它归到 notification 那一侧。
 
@@ -37,7 +37,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 | GET | `/api/mailer/mailers` | 需要 |
 | GET | `/`、`/healthz`、`/readyz` | 不需要（平台层注册） |
 
-上述代码是同步兼容路由摘录。配置 `GORGE_MAILER_DELIVERY_DSN` 后还注册 POST `/api/mailer/deliver`、`/api/mailer/prepare`、`/api/mailer/execute`、`/api/mailer/cancel`，以及 GET `/api/mailer/delivery`、`/api/mailer/operations`、`/api/mailer/delivery-capabilities`；均使用同组 token 鉴权。`Deps` 包含 `Dispatcher`、`Token`、`BodyLimit` 和可选的 `Delivery`。`TestRoutePathsAreStable` 断言这两条路径仍注册着——Phorge 侧 `PhabricatorGorgeMailerClient` 已经在调它们。
+上述代码是同步兼容路由摘录。配置 `GORGE_MAILER_DELIVERY_DSN` 后还注册 POST `/api/mailer/deliver`、`/api/mailer/prepare`、`/api/mailer/execute`、`/api/mailer/cancel`，以及 GET `/api/mailer/delivery`、`/api/mailer/operations`、`/api/mailer/delivery-capabilities`；均使用同组 token 鉴权。`Deps` 包含 `Dispatcher`、`Token`、`BodyLimit`、同步 `SendTimeout` 和可选的 `Delivery`。`TestRoutePathsAreStable` 断言这两条路径仍注册着——Phorge 侧 `PhabricatorGorgeMailerClient` 已经在调它们。
 
 同步模式的服务器配置要点如下；启用原生投递时还会创建数据库连接与恢复循环，并扩展就绪检查：
 
@@ -85,12 +85,18 @@ srv := httpx.New(httpx.Config{
 | 后端 | 永久消息拒绝 | 可安全重试/切换 | 不确定结果 |
 |---|---|---|---|
 | SMTP | 消息阶段明确 5xx | 提交前连接/TLS/认证失败；明确非永久拒绝 | DATA 发送或接受确认丢失；已确认接受后的 QUIT 失败仍算成功 |
-| SES / SendGrid / Mailgun / Postmark | 除 401/403/429 外的 HTTP 4xx | 429；401/403 标为后端配置问题 | 网络失败、5xx、异常成功响应 |
+| SES / SendGrid / Mailgun / Postmark | 除 401/403/429 外的 HTTP 4xx | 拨号失败；429；401/403 标为后端配置问题 | 提交后的网络失败、超时、5xx、无法确认接受的成功响应 |
 | Postmark | `ErrorCode` 300/406/409/422 | 按 HTTP 状态分类 | 其余非零 ErrorCode 或无法解析的响应 |
 | Mailgun | 无效 base64 附件 | 按 HTTP 状态分类 | 不能确认接受状态的失败 |
 | sendmail | 退出码 64/65/66/67/68 | 进程无法启动；77/78 配置或权限错误 | 其他退出/执行错误 |
 
-`Dispatcher` 只对 `SafeRetryError` 重试或切换。未分类失败既不判永久，也不代表可以安全再发。同步 `/send` 把永久错误映射为 422 `ERR_PERMANENT_FAILURE`，其他失败仍是 502 `ERR_SEND_FAILED`，因此其 PHP 外层重试不能提供持久路径的 unknown 保护。原生账本路径将不确定提交记为 unknown，禁止盲目重发；详见后文。
+`Dispatcher` 只对 `SafeRetryError` 重试或切换。未分类失败既不判永久，也不代表可以安全再发。同步 `/send` 将永久错误映射为 422 `ERR_PERMANENT_FAILURE`，已确认未接受的失败映射为 502 `ERR_SEND_FAILED`，不确定提交映射为 502 `ERR_OUTCOME_UNKNOWN`；PHP 将最后一种保存为 unknown 并停止自动重投。取消发生在安全重试的等待阶段时仍是 `ERR_SEND_FAILED`，因为尚未开始下一次提交。原生账本路径继续将不确定提交记为 unknown。
+
+PHP legacy worker 在同步网络调用前先原子地将 queued 改为并提交 `STATUS_UNKNOWN`，不允许在外层数据库事务中发送。明确安全拒绝后才恢复 queued；坏回执、发送后的保存失败和进程崩溃都保留 unknown。因此即使崩溃发生在实际提交前，也会保守停止重投；操作员核对结果后才可以显式 resend。这个 fence 缩小了「邮件已发出但数据库仍排队」导致重复发送的窗口。
+
+同步 dispatch 使用明确的 25 秒总期限，包括适配器内重试与等待。Fiber 默认 `c.Context()` 没有期限，也不随 HTTP 调用方断开取消，不能依靠它限制业务执行。HTTP provider 使用专用 client，单请求上限 20 秒，连接/TLS 上限 5 秒，响应头上限 10 秒/64 KiB，响应体读取上限 64 KiB，并禁止自动跳转。截断或读取错误不会把未知结果变成安全重试；SES 与 SendGrid 已由成功 HTTP 状态确认接受时，丢失可选诊断正文或 message ID 不推翻接受结果，Mailgun/Postmark 缺少完整接受回执则保持 unknown。
+
+sendmail 的 stdout/stderr 诊断保留上限也为 64 KiB；取消进程或父进程退出后，继承输出管道的子进程最多再等待 1 秒。父进程已正常退出 0 时视为接受，丢失诊断不会推翻回执；没有确认接受的取消或执行错误保持 unknown。这个清理余量独立于 25 秒提交期限。
 
 ### 3.4 MIME 构建
 
@@ -118,6 +124,8 @@ srv := httpx.New(httpx.Config{
 
 `Load()` 的取值顺序与 render 域一致：指了配置文件就读文件，否则读环境变量；走文件时先从环境变量预填 `GORGE_SERVICE_TOKEN`，但 JSON 中显式的 `serviceToken` 会覆盖它（包括空值）。这一条在本域比在别处更要紧——mailer 的配置文件里装着这个部署的全部后端凭据。
 
+每个后端必须配置非空、非纯空白且互不重复的 `key`。启动时拒绝缺失或重复身份，避免供应商已接受邮件后，PHP 因不明确的 `mailerKey` 回执将结果隔离为 unknown。
+
 ### 重试默认值是一次刻意的变更
 
 老默认值是 `MaxRetries=250` / `RetryWait=15`，但老代码**从不读它们**。迁入时把它们真正接进发送循环，同一组值会让一次 HTTP 请求最坏阻塞一小时以上，而 PHP 客户端只等 30 秒。所以默认值改为 **2 次 / 2 秒**，发送循环接收 Fiber 的 `c.Context()`；不能据此承诺客户端断开会立刻取消发送。
@@ -126,9 +134,9 @@ srv := httpx.New(httpx.Config{
 
 ## 5. 兼容契约
 
-权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第六节，这里是概述。四条约定：`/api/mailer/*` 两条路径、wire 字段名一律 camelCase、`ERR_PERMANENT_FAILURE` 的语义、附件的 base64 编码位置。
+权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第六节，这里是概述。四条约定：`/api/mailer/*` 两条路径、wire 字段名一律 camelCase、永久失败/安全重试/不确定提交的状态语义、附件的 base64 编码位置。
 
-**最要紧的是 `ERR_PERMANENT_FAILURE`**，因为它在同步发送路径中决定 Phorge 是否停止重试：PHP 客户端把它转成 `PhabricatorMetaMTAPermanentFailureException`，worker 队列见到这个异常才停止重投，其余任何失败都会被重新入队。
+`ERR_PERMANENT_FAILURE` 与 `ERR_OUTCOME_UNKNOWN` 都会停止自动重投，分别表示明确永久拒绝与需要人工核对的不确定提交。`ERR_SEND_FAILED` 只表示可以安全再试。错误分类必须与 PHP 客户端和 worker 的持久状态分支一起更新。
 
 把它收敛进平台码，或者把某个临时失败误报成它，都不会有任何一处报错：前者让写错的收件人地址被永久重投，后者让本可以发出去的信被记成 `FAIL`。两个方向都只在几天后的邮件统计里看得出来。
 
@@ -136,12 +144,13 @@ srv := httpx.New(httpx.Config{
 
 ## 6. 域级错误码
 
-两个，都是迁入前就有、Phorge 侧已经在用的码，定义在 `internal/mailer/http.go`：
+三个，定义在 `internal/mailer/http.go`；unknown 分类与 PHP 的停止重投状态一起引入：
 
 | 码 | 状态 | 含义 |
 |---|---|---|
 | `ERR_PERMANENT_FAILURE` | 422 | 某个后端判定这封信投不出去，重试无用 |
-| `ERR_SEND_FAILED` | 502 | 所有候选后端都临时失败；`mailerKeys` 一个都没匹配上也是它 |
+| `ERR_SEND_FAILED` | 502 | 已确认未接受，可安全重试；没有匹配的 `mailerKeys` 也是它 |
+| `ERR_OUTCOME_UNKNOWN` | 502 | 无法确认接受结果，保留 unknown 等待核对，禁止自动重发 |
 
 它们不会被全局错误处理器改写成 `ERR_INTERNAL`——`httpx.Fail` 一写响应就 committed（见 [`../platform.md`](../platform.md) 第 1.2 节）。
 

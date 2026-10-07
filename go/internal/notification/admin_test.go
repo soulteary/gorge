@@ -49,6 +49,22 @@ func newAdminServer(t *testing.T) (*fiber.App, *hub.Hub, *peer.List) {
 	return app, messages, peers
 }
 
+func TestAdminRejectsOversizedInstanceBeforePublication(t *testing.T) {
+	app, messages, _ := newAdminServer(t)
+	instance := strings.Repeat("x", hub.MaxInstanceBytes+1)
+	for _, rec := range []result{
+		postTo(t, app, "/?instance="+instance, `{"key":"small"}`),
+		getFrom(t, app, "/status/?instance="+instance),
+	} {
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body, httpx.CodeBadRequest) {
+			t.Fatalf("oversized instance was accepted: %+v", rec)
+		}
+	}
+	if status := messages.Status(defaultInstance); status.MessagesIn != 0 || status.HistorySize != 0 {
+		t.Fatalf("rejected publication changed state: %+v", status)
+	}
+}
+
 func dispatch(t *testing.T, app *fiber.App, req *http.Request) result {
 	t.Helper()
 	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})

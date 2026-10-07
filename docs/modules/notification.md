@@ -220,39 +220,23 @@ Upgrade 请求 ──► contrib websocket upgrader ──► 入 hub ──► 
 
 `Hub` 持有「实例 → 连接表」与一段共享 history。
 
-**`getList` 是双重检查锁定。** 先读锁查一次，没有再升写锁查一次然后建。每条发布的消息与每次状态查询都要过这里，而实例创建每个实例只发生一次，所以读多写少的形状值得这个额外分支。
+**实例表有独立预算。** 只有成功登记 WebSocket listener 才会创建实例，发布、状态查询与断连清理只查现有表。连接与发布的实例名最多 512 字节，超长管理请求返回 400，Hub 也拒绝保存超长实例；保存时复制实例名，避免保留整段请求缓冲区。缓存最多 1024 个实例；达到容量时只淘汰没有 listener、也没有可回放 history 的最旧空闲记录。活跃连接与 history 始终保留，全部记录受保护时关闭新增实例连接；现有实例仍可接纳连接。淘汰仅使该空闲实例的累计连接计数归零，重放消息不丢失。登记与淘汰在同一 hub 锁内完成，锁序为 `Hub.mu` → `listenerList.mu`。
 
 **每个实例的连接表自带一把锁**（`listenerList.mu`），所以一个实例的扇出不会阻塞另一个实例。扇出前先 `snapshot()` 把 listener 拷出来再写，否则一个慢客户端会卡住同实例上的每一次投递——而且遍历中修改 map 会直接 panic。
 
-**写失败当场摘除。** `Publish` 里写不动的 listener 直接从表里删掉并 `Close()`，不等它自己的读循环发现。这是 `clients.active` 唯一的自愈路径；不摘的话这个数只会单向增长，而集群面板上看不出这是死连接还是真用户。这条分支恰好也是覆盖率的一处真实缺口（[`../findings.md`](../findings.md) 第 9 条第 1 项）。
+**慢连接隔离。** 发布只向每个 listener 的单 writer 队列入队，不在请求线程等待网络写。每个连接最多排队 64 帧，待写与正在写的编码字节共不超过 4 MiB；超过任一预算时关闭这个连接。唯一 writer 为每次网络写设置 5 秒 deadline。真正写失败也关闭连接，读循环随后摘除 listener；其他浏览器的发布和 pong 不会等待该连接。
 
-**history 有两道上限**：4096 条与 60 秒，跟 Aphlict 一致。清理是惰性的——每次 `Publish` 顺手调一次 `purgeHistory()`，不另起定时器 goroutine，于是清理频率自然跟着流量走。两道上限取更严的那个结果：`keep` 从条数约束算出的起点开始，再往前扫到第一条没过期的。起作用的主要是时间那道——请求重放超过一分钟的客户端拿到的是「剩下的」，不是错误。
+`messages.out` 仅在实时发布帧真正完成 WebSocket 写后增加，不把入队当成浏览器收件。pong、history replay 不计入该历史统计口径。关闭慢连接不会提供持久投递保证，浏览器只能按现有 Aphlict 重连/replay 协议取得仍保留的历史。
 
-写锁只覆盖 `append` 与 `purgeHistory`，**不覆盖扇出**。这是热路径上唯一值得说的一处：网络 I/O 在锁外。
+历史 replay 经同一个 writer 逐帧等待实际写完成，避免正常的数百或数千条历史因为瞬间入队超过 64 帧而被误判成慢连接。整次 replay 共用 30 秒总期限，每次网络写仍有 5 秒期限；到期关闭连接并唤醒等待。实时 Publish 始终使用非阻塞入队，因此一条连接的历史回放不会拖住其他浏览器。
 
-history **不按实例分区**：`Publish` 不记录消息属于哪个实例，`GetHistory` 也不筛。所以一个实例上的客户端重放时，理论上能看到另一个实例的消息（`replay` 只按 `subscribers` 过滤，而无 `subscribers` 的广播消息不被这道过滤挡下）。**这不是移植引入的**——Aphlict 的 `_messageHistory` 挂在 admin server 上，client server 的 `getHistory()` 是去问所有 admin server 再拼起来，同样不分实例。照抄了，没有「顺手修正」，因为改动会让重放行为与被替换的实现不一致。
+**history 有三道上限**：4096 条、60 秒和全部实例合计 16 MiB 消息编码与实例名字节。发布、重放查询和状态查询都会惰性清理，删除条目时清空旧 slice 引用。history 和 replay 按实例过滤；空历史的 `history.age` 仍为 null。超大 replay age 会在转换 duration 前收敛到 60 秒，防止整数溢出。
 
-`Status()` 直接返回 `*contracts.AphlictStatus` 而不是先造一个域内结构再转换，理由与 render 域 `Highlight()` 的选择相同：第二个形状要带自己的 json tag，两者迟早会漂移，而这个形状的键名是 PHP 直接索引的（第 5.3 节）。计数的口径也照抄 Aphlict：`clients.*` 按实例统计（来自 `listenerList`），`messages.*` 是进程全局（`atomic` 计数器），`history.size` 同样是全局。`messages.out` 数的是**投递次数**而不是消息数，一条消息扇给两个订阅者就 +2，所以它通常大于 `messages.in`。
+### 3.7 Listener：单 writer 和订阅预算
 
-`version` 报 8。它描述的是线协议版本而不是本服务的版本，所以只在协议变化时才动。**注意 `phorge-fork` 里那份 Aphlict 报的是 7**，本域比它高一位；PHP 侧只把这个值当集群面板上的一个展示标签（`pht('Version %s', …)`），没有任何一处做比较，所以差异的全部后果就是那一行字。
+订阅 map 由独立锁保护；网络 writer 只读取有界队列，不持有订阅锁。入站 WebSocket frame 不超过 64 KiB，每连接最多 4096 个唯一 PHID，每个 PHID 最长 512 字节。超预算订阅原子拒绝并关闭连接，不保留半次订阅。重复订阅不重复占用名额，unsubscribe 释放名额。
 
-### 3.7 Listener：两把锁不是过度设计
-
-```go
-type Listener struct {
-	id            uint64
-	conn          *websocket.Conn
-	subscriptions map[string]struct{}
-	mu            sync.RWMutex   // 保护 subscriptions
-	writeMu       sync.Mutex     // 串行化写
-}
-```
-
-`writeMu` 必须与 `mu` 分开：底层 WebSocket 连接只允许一个 writer，而本域真的有两个写入方——`Publish` 的扇出，与客户端自己那条读循环发出的回复（pong、重放）。如果复用 `mu`，一次卡住的网络写会同时挡住 `IsSubscribedToAny`，于是整条扇出流水线停在一个慢客户端上。
-
-`subscriptions` 用 `map[string]struct{}` 而不是切片：订阅匹配在每条消息的每个 listener 上都要做一次，O(1) 查找加短路返回，而典型场景是「消息带少量 PHID、listener 只订了自己那一个」。
-
-**Listener 不记自己属于哪个实例。** 迁入前它有这个字段；现在没有了，注释写明了理由——Hub 已经把它挂在某个实例下面，第二份副本只可能与第一份不一致。实例名现在由调用方（`serveClient` 的 defer）持有。
+Aphlict 的 command/message JSON 形状、默认广播、按 PHID 过滤、实例隔离、双端口及 client 的 HTTP 501 响应保持不变。资源预算导致的断连属于可降级边界，不表示用户已读或 exactly-once。
 
 ### 3.8 peer：fingerprint 网格
 
@@ -272,19 +256,13 @@ peer 的 fingerprint 是从它自己的 POST receipt 里**学**来的，所以�
 
 中继失败只 `slog.Warn`，不重试。通知是可降级功能，一条偶发丢失的代价远小于重试逻辑的复杂度——`TestPeerBroadcastSurvivesAnUnreachablePeer` 用一个永不监听的端口压住「不 panic、不阻塞」。
 
+每个 peer 使用一个 relay writer，最多 64 个待发帧，待发及正在投递的编码字节合计最多 4 MiB。每个请求仍有 5 秒总超时；饱和 peer 丢弃新增实时中继，其他 peer 与本机浏览器不受其阻塞。列表最多 32 个 peer，收到的 fingerprint 响应最多 64 KiB，非 200、超限响应与重定向不会更新指纹。实例查询参数进行 URL 编码。服务退出时取消 peer I/O；这个队列仅在内存中，不是持久重试账本。
+
 ### 3.9 并发模型
 
-锁的层级是从外到内的三层，不存在反向获取，所以没有死锁可能：
+Hub 的实例/history 锁、实例连接表锁、订阅锁只保护内存操作；扇出使用连接表快照，不持有这些锁进行网络写。每条连接有一个读循环与一个专用 writer，writer 通过有界队列接收发布、pong 和 replay。队列字节计数由单独锁保护，关闭使用 once；网络写不占用该锁。
 
-```
-Hub.mu            → instances map 与 history
-  listenerList.mu → 某个实例的 listeners map
-    Listener.mu / Listener.writeMu → 订阅集合 / 写
-```
-
-`nextID`、`messagesIn`、`messagesOut` 走 `atomic`，热路径上完全无锁。
-
-**每条连接一个 goroutine，不是两个。** 读由 handler 自己那条 goroutine 做（`readLoop` 就是 handler 的主体），写由 `Publish` 的调用方直接做——也就是处理 admin POST 的那条 goroutine。底层连接支持这种「一读一写」的形态，所以不必为每条连接再起一条写 goroutine，几千并发连接时这是一半的 goroutine 与对应的栈内存。代价是 `writeMu` 必须存在（第 3.7 节），以及一个慢客户端会占住 admin 请求的一小段时间——这是 `snapshot()` 之外还要靠「写失败当场摘除」兜底的原因。
+每个 peer 最多一个 relay writer。后台 writer 仅在第一次需要中继时启动；服务退出会取消 peer 上下文和正在进行的请求。共享 fingerprint 和状态计数使用锁或 atomic。实时通知仍允许在断连、预算耗尽和重启时丢失，不提供持久重试或浏览器收件证明。
 
 ## 4. 配置
 

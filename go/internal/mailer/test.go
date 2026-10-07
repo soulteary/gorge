@@ -19,6 +19,7 @@ import (
 const (
 	failModePermanent = "permanent"
 	failModeTemporary = "temporary"
+	failModeUnknown   = "unknown"
 )
 
 type testAdapter struct {
@@ -27,7 +28,7 @@ type testAdapter struct {
 	counter  int
 	attempts int
 
-	// failMode is "", "permanent" or "temporary"; failTimes limits the failure
+	// failMode is "", "permanent", "temporary" or "unknown"; failTimes limits the failure
 	// to the first N attempts, and 0 means every attempt.
 	failMode  string
 	failTimes int
@@ -37,10 +38,10 @@ func newTestAdapter(opts map[string]string) (*testAdapter, error) {
 	a := &testAdapter{failMode: opts["fail"]}
 
 	switch a.failMode {
-	case "", failModePermanent, failModeTemporary:
+	case "", failModePermanent, failModeTemporary, failModeUnknown:
 	default:
-		return nil, fmt.Errorf("test: unknown fail mode %q: expected %q or %q",
-			a.failMode, failModePermanent, failModeTemporary)
+		return nil, fmt.Errorf("test: unknown fail mode %q: expected %q, %q or %q",
+			a.failMode, failModePermanent, failModeTemporary, failModeUnknown)
 	}
 
 	if v := opts["fail-times"]; v != "" {
@@ -66,6 +67,9 @@ func (a *testAdapter) Send(_ context.Context, msg *contracts.EmailMessage) (stri
 		err := fmt.Errorf("test: injected %s failure on attempt %d", a.failMode, a.attempts)
 		if a.failMode == failModePermanent {
 			return "", &PermanentError{Err: err}
+		}
+		if a.failMode == failModeUnknown {
+			return "", err
 		}
 		return "", &SafeRetryError{Err: err}
 	}

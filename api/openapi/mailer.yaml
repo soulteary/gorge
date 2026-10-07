@@ -28,7 +28,7 @@ info:
     defined in `go/internal/mailer/inspection.go`. These contracts are
     shared by the Go service, the PHP adapter and the contract fixtures under
     `tests/contract/mailer/`.
-  version: 1.1.0
+  version: 1.2.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -75,8 +75,11 @@ paths:
 
         This endpoint is synchronous and holds no queue. Phorge's worker queue
         is the authoritative retry loop, which is why the retries here are
-        measured in seconds and why the whole call is bound by the request
-        context — a client that disconnects stops the work behind it.
+        measured in seconds. The whole dispatch has an explicit 25-second
+        deadline; Fiber's default context does not cancel on client disconnect.
+        HTTP providers have a 20-second request deadline, a 64 KiB response
+        body budget and no automatic redirects. Unknown acceptance is reported
+        as ERR_OUTCOME_UNKNOWN; Phorge retains unknown and stops automatic resend.
       operationId: sendMail
       security:
         - ServiceTokenHeader: []
@@ -585,6 +588,7 @@ components:
             # Mailer-domain codes, both predating the monorepo.
             - ERR_PERMANENT_FAILURE
             - ERR_SEND_FAILED
+            - ERR_OUTCOME_UNKNOWN
         message:
           type: string
           description: Human-readable detail. Wording is not part of the contract.
@@ -716,15 +720,15 @@ components:
         **This code changes what the caller does, not just what it reports.**
         Phorge's client raises it as
         `PhabricatorMetaMTAPermanentFailureException`, which is what stops the
-        worker queue from re-submitting the message; every other failure is
-        re-queued.
+        worker queue from re-submitting the message. Uncertain acceptance is
+        retained separately as unknown rather than re-queued.
 
         What produces it, per backend: an SMTP 5xx reply; an HTTP 4xx from SES,
         SendGrid, Mailgun or Postmark, **except 401, 403 and 429**, since rate limiting says
         "not now" rather than "not ever"; a sendmail exit code from the
         `EX_NOUSER` / `EX_DATAERR` / `EX_NOHOST` family. Unclassified submission errors
-        are nonpermanent in this synchronous API, but are not safe for
-        Dispatcher retry/failover; native delivery records them as unknown.
+        produce ERR_OUTCOME_UNKNOWN in this synchronous API, and are not safe
+        for Dispatcher retry/failover; native delivery records them as unknown.
       content:
         application/json:
           schema:
@@ -736,20 +740,28 @@ components:
 
     SendFailed:
       description: |
-        A nonpermanent failure occurred, including ambiguous acceptance, or no
-        backend matched the requested `mailerKeys`. This code does not prove
-        the provider failed to accept the message.
+        ERR_SEND_FAILED means the provider is confirmed not to have accepted
+        the message, including when no backend matched `mailerKeys`. Phorge
+        may safely re-queue it.
 
-        Reported as 502 because the failure is downstream of this service.
-        Phorge re-queues on this code.
+        ERR_OUTCOME_UNKNOWN means submission may have been accepted: a timeout,
+        lost response or incomplete acceptance receipt. Phorge retains unknown
+        for reconciliation and stops automatic resend. Both codes use 502.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error:
-              code: ERR_SEND_FAILED
-              message: 'all mailers failed, last error: smtp (smtp): dial tcp: connection refused'
+          examples:
+            safeRetry:
+              value:
+                error:
+                  code: ERR_SEND_FAILED
+                  message: 'all mailers failed, last error: smtp (smtp): dial tcp: connection refused'
+            unknown:
+              value:
+                error:
+                  code: ERR_OUTCOME_UNKNOWN
+                  message: 'mailgun: request failed: context deadline exceeded'
 
     InternalError:
       description: |

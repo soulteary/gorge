@@ -9,6 +9,7 @@ for the file format and the runner requirements.
 | `send-with-attachment.json` | `attachments[].data` is base64 at this layer. The PHP adapter encodes before serialising; moving that to either side corrupts every attachment without changing a status code. |
 | `send-permanent-failure.json` | An undeliverable message is 422 `ERR_PERMANENT_FAILURE`. **The most load-bearing fixture here** — see below. |
 | `send-temporary-failure.json` | A backend that failed transiently is 502 `ERR_SEND_FAILED`, a distinct code from the permanent one. |
+| `send-outcome-unknown.json` | Uncertain acceptance is 502 `ERR_OUTCOME_UNKNOWN`; PHP retains unknown and stops automatic re-submission. |
 | `send-missing-from.json`, `send-missing-recipient.json` | An incomplete message is 400, not 422: nothing judged it undeliverable, it never reached a backend. |
 | `send-malformed-body.json` | Invalid JSON is 400 `ERR_BAD_REQUEST`, not 500. |
 | `list-mailers.json` | `GET /api/mailer/mailers` reports the backends in failover order, highest priority first. |
@@ -19,12 +20,12 @@ The synchronous compatibility paths, `POST /api/mailer/send` and
 `GET /api/mailer/mailers`, are part of the contract:
 `PhabricatorGorgeMailerClient` calls them as written.
 
-## The two failure fixtures are a pair
+## The three failure outcomes must stay distinct
 
-`ERR_PERMANENT_FAILURE` is the one code in this domain that changes what Phorge
-*does* rather than what it reports. The PHP client raises it as
+`ERR_PERMANENT_FAILURE` changes what Phorge does. The PHP client raises it as
 `PhabricatorMetaMTAPermanentFailureException`, which is what stops the worker
-queue from re-submitting the message; every other failure is re-queued.
+queue from re-submitting the message. `ERR_OUTCOME_UNKNOWN` also stops automatic
+re-submission, but retains the mail as unknown for reconciliation.
 
 So both directions cost something, and they cost different things:
 
@@ -38,14 +39,14 @@ Adapters distinguish permanent message rejection, confirmed nonacceptance
 77/78 are backend configuration failures, not permanent message failures;
 429 is retryable. Only confirmed nonacceptance permits Dispatcher retries or
 failover. Network/5xx and unclassified execution failures must not be assumed
-safe to resubmit. The synchronous API still maps nonpermanent errors to
-`ERR_SEND_FAILED`; it does not provide the durable native ledger's unknown
-protection. See [mailer](../../../docs/modules/mailer.md) for both paths.
+safe to resubmit. The synchronous API maps proven nonacceptance to
+`ERR_SEND_FAILED` and uncertain acceptance to `ERR_OUTCOME_UNKNOWN`.
+See [mailer](../../../docs/modules/mailer.md) for both paths.
 
-Both fixtures reach a backend through `mailerKeys`, because only the `test`
-adapter can be made to fail on demand. The runner therefore configures three
+All failure fixtures reach a backend through `mailerKeys`, because only the `test`
+adapter can be made to fail on demand. The runner therefore configures four
 backends: `test-mailer` (accepts), `rejects` (permanent) and `down`
-(transient).
+(confirmed safe to retry) and `unknown` (uncertain acceptance).
 
 ## Retries are deliberately not exercised here
 
