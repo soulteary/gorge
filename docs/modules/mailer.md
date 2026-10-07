@@ -100,7 +100,7 @@ sendmail 的 stdout/stderr 诊断保留上限也为 64 KiB；取消进程或父�
 
 ### 3.4 MIME 构建
 
-`mime.go`，被 SMTP / sendmail / SES 三个后端共用——它们要一封完整的 RFC 5322 报文（SES 走 `SendRawEmail`，正是为了保住附件与自定义头）。四家 provider API 不用，它们收字段、自己组装。
+`mime.go`，被 SMTP / sendmail / SES 三个后端共用——它们要一封完整的 RFC 5322 报文（SES 走 `SendRawEmail`，正是为了保住附件与自定义头）。SendGrid / Mailgun / Postmark 三家字段型 API 不用这个构建器，它们收字段、自己组装。
 
 三处值得知道的细节：附件 `data` **原样透传不重新编码**（进来就是 base64，出去也是）；正文一律 base64 编码而非 8bit（Phorge 的信带 UTF-8 主题与正文，base64 是路径上没有中继能弄坏的那一种）；自定义头的 CR/LF 会被剥掉，`TestBuildMIMEStripsHeaderInjection` 守着这一条。
 
@@ -185,15 +185,25 @@ outbox, rather than a fourth table. A worker projector applies monotonic result
 revisions through PHP, then conditionally clears the flag. Acknowledgment failure,
 queue cancellation or task archival does not erase that receipt.
 
-Native delivery uses one provider attempt per dispatcher call, at most 12 ledger
-attempts, exponential delay with jitter, and a 24-hour producer deadline. Only
-explicitly confirmed nonacceptance can retry or fail over. HTTP 401/403 isolate
+Native delivery disables retries within each individual adapter. One ledger
+attempt may still traverse several adapters when each prior failure confirms
+safe nonacceptance; the limit of 12 ledger attempts is not a limit of 12 total
+provider calls. Ledger retries use exponential delay with jitter and a 24-hour
+producer deadline. Only explicitly confirmed nonacceptance can retry or fail over. HTTP 401/403 isolate
 backend configuration failures, 429 is retryable, and unclassified errors,
 including transport ambiguity and 5xx responses without a nonacceptance guarantee,
 become unknown. SMTP connections honor cancellation; lost DATA acknowledgment is
 unknown and failed QUIT after a positive DATA acknowledgment remains accepted.
 Unknown results require review; neither Message-ID nor a queue receipt promises
 exactly-once SMTP delivery.
+
+The native submit path starts with its own 90-second operation context
+(including admission and store work), with at most 75 seconds for dispatch.
+It does not inherit the synchronous `/send` 25-second budget. Outcome persistence
+uses a separate five-second context after dispatch, including after cancellation,
+so that cleanup may outlive the original operation budget. An unconfirmed store
+write cannot prove safe nonacceptance. A submitting row at
+least 120 seconds old becomes unknown through recovery, rather than another send.
 
 Configuration:
 

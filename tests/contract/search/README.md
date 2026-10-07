@@ -66,6 +66,8 @@ The round trip that these fixtures deliberately do not assert — a document goe
 in, a query for its text brings its PHID back — lives in
 `go/internal/search/http_test.go`, where one test owns its own index, and in
 `tests/e2e/search.sh`, where it runs against a real Elasticsearch.
+The smoke script also accepts the in-memory test backend; in that mode it
+skips Elasticsearch analyser checks and cannot establish backend semantics.
 
 ## What is pinned elsewhere, and why not here
 
@@ -84,6 +86,11 @@ depends on the `cjk` subfield and the `cjk_bigram` filter inside Elasticsearch,
 which no fixture running against an in-memory backend can observe. The mapping
 is pinned in `elasticsearch/backend_test.go`; the behaviour is checked by
 `tests/e2e/search.sh`.
+Real Elasticsearch and Meilisearch integration suites additionally run in the
+search-projection CI job and the full paired Docker acceptance entry. The
+[Meilisearch runtime tests](../../../go/internal/search/engine/meilisearch/runtime_integration_test.go)
+verify asynchronous task completion and indexing; JSON fixtures alone cannot
+establish that a submitted backend task completed successfully.
 
 **Fan-out across backends.** A write goes to every backend with the `write`
 role and a read goes to the first with `read` that answers. That is engine

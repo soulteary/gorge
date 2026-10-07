@@ -8,8 +8,9 @@
 
 ## 目录
 
-版本准备记录：[2026.10.07-r2](releases/2026.10.07-r2.md)。双语发布正文见
-[RELEASE_NOTES.md](../RELEASE_NOTES.md)。
+历史版本准备记录：[2026.10.07-r2](releases/2026.10.07-r2.md)。该版本双语发布正文见
+[RELEASE_NOTES.md](../RELEASE_NOTES.md)；当前发布步骤与候选回执以
+[delivery](delivery.md)和[发布工具](../deploy/release/README.md)为准。
 
 ### 跨模块
 
@@ -23,7 +24,7 @@
 | [`testing.md`](testing.md) | 四层测试体系、契约固件格式、为什么断言 contains 而非 golden、覆盖率现状 |
 | [`delivery.md`](delivery.md) | Dockerfile、Compose 编排、CI 与 Release 流水线 |
 | [`operations.md`](operations.md) | 接管报告、持久状态、容量、备份与配对验收 |
-| [`findings.md`](findings.md) | 已发现的代码/文档偏差与改进建议，按模块分节 |
+| [`findings.md`](findings.md) | 当前限制、已落实的兼容决策与后续验证边界，按模块分节 |
 
 ### 模块
 
@@ -34,18 +35,20 @@
 | notification | `gorge-notification` | `:22280`（client/WS）+ `:22281`（admin） | [`modules/notification.md`](modules/notification.md) | 已迁入 |
 | mailer | `gorge-mailer` | `:8110` | [`modules/mailer.md`](modules/mailer.md) | 已迁入 |
 | search | `gorge-search` | `:8120` | [`modules/search.md`](modules/search.md) | 已迁入 |
-| image | `gorge-image` | `:8190` | [`modules/image.md`](modules/image.md) | 可灰度，默认未切换 |
+| image | `gorge-image` | `:8190` | [`modules/image.md`](modules/image.md) | 已实现，按部署模式接管 |
 | file-storage | `gorge-file-storage` | `:8100` | [`modules/file-storage.md`](modules/file-storage.md) | 已迁入 |
 | webhook | `gorge-webhook` | `:8160` | [`modules/webhook.md`](modules/webhook.md) | 已迁入 |
 | taskqueue | `gorge-taskqueue` | `:8090` | [`modules/taskqueue.md`](modules/taskqueue.md) | 已迁入 |
 | worker | `gorge-worker` | `:8170` | [`modules/worker.md`](modules/worker.md) | 已迁入 |
-| maintenance | `gorge-maintenance` | `:8200` | [`modules/maintenance.md`](modules/maintenance.md) | 可灰度，执行权默认 PHP |
+| maintenance | `gorge-maintenance` | `:8200` | [`modules/maintenance.md`](modules/maintenance.md) | 已实现，执行权由 owner/epoch 控制 |
 | db-api | `gorge-db-api` | `:8080` | [`modules/dbapi.md`](modules/dbapi.md) | 已迁入 |
 | conduit | `gorge-conduit` | `:8150` | [`modules/conduit.md`](modules/conduit.md) | 已迁入 |
 | gitea | `gorge-gitea` | `:8180` | [`modules/gitea.md`](modules/gitea.md) | 已迁入 |
 | integrations | `gorge-integrations` | `:8210` | [`modules/integrations.md`](modules/integrations.md) | 按配置启用：入站/SMS/连接器/Fact |
 
 render 与 diff 共用进程与端口。notification 在同一进程内分别监听 client 与 admin；其余二进制按模块独立部署。部署启用状态与表中的实现状态不是同一件事，profile、配置、数据库 owner 与运行握手共同决定是否执行。
+
+图片的基础配置保留 legacy 模式，配对 Phorge 的生产 overlay 强制使用 `gorge`；maintenance 初始 owner 与后续接管须按 [maintenance](modules/maintenance.md)和[operations](operations.md)检查，不能用本表代替实际配置或数据库状态。
 
 扩展能力另见 [scheduler](modules/scheduler.md)（taskqueue 内的持久触发器调度）、[file-lifecycle](modules/file-lifecycle.md)（上传、迁移与删除恢复）和 [search-projection](modules/search-projection.md)（持久投影、影子 generation 与重建）。这些能力不是额外的二进制。
 
@@ -55,9 +58,11 @@ render 与 diff 共用进程与端口。notification 在同一进程内分别监
 
 **准备改高亮输出、语言别名表、端口或路由**：先读 [`../compat/phorge/README.md`](../compat/phorge/README.md)。那里记录了几件破坏后不会报错、只会静默失效的事，[`modules/render.md`](modules/render.md) 第 5 节是它的概述，但以 compat 文件为准。
 
-**准备改 unified diff 的输出格式**：同样先读 [`../compat/phorge/README.md`](../compat/phorge/README.md)，第 4 节。那份输出是被 `ArcanistDiffParser` **解析**的，一个错误的 hunk 头不会报错，只会让它之后的每一行都放错位置。
+**准备改 unified diff 的输出格式**：同样先读 [`../compat/phorge/README.md`](../compat/phorge/README.md)，第 4 节。那份输出由 `ArcanistDiffParser` 解析；部分格式偏离会报错，部分可能被接受却造成位置错误。修改时须验证完整 hunk 与解析结果，不能只检查 HTTP 成功。
 
 **准备改邮件服务的错误码映射**：先读 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第六节。同步发送的 `ERR_PERMANENT_FAILURE` 决定 PHP worker 是否停止重试；原生持久投递还须对照 [mailer](modules/mailer.md) 的账本状态与不确定结果恢复规则。
+
+同步发送的 `ERR_OUTCOME_UNKNOWN` 表示无法确认供应商是否已接受邮件，必须保留 PHP 的不确定结果围栏；只有明确未接受的失败才可自动重试或切换后端。调整请求期限、回执解析或错误分类时一起验收这条边界。
 
 **准备改通知服务的端口、路由或响应形状**：先读 [`../compat/phorge/README.md`](../compat/phorge/README.md) 第五节。PHP 对部分通知失败会吞掉异常，HTTP 成功也不保证浏览器收到消息；需要验收实际消息内容与收件路径。
 
@@ -93,4 +98,4 @@ render 与 diff 共用进程与端口。notification 在同一进程内分别监
 ## 6. 域级错误码     本域独有的码，以及它为什么不收敛进平台码
 ```
 
-第 5 节是最容易被略过、也最要紧的一节：Gorge 的各个模块都在替换 Phorge 里既有的能力，替换出错时的典型表现是**静默降级而非报错**，只有文档能提醒下一个人。
+第 5 节应说明实际消费者与破坏后的表现，并链接对应契约或 runtime 验收。部分兼容错误会静默降级，文档说明与行为测试须一起维护。

@@ -105,6 +105,20 @@ Phorge CI 的 Gorge runtime contracts 运行 PHP planning/receipt/retirement 与
 
 ## 完整验收与版本配对
 
+完整 Docker 入口位于实际 Phorge checkout 的 `deploy/acceptance/accept.py`。从 Phorge
+仓库根运行：
+
+```sh
+python3 deploy/acceptance/accept.py --gorge-dir ../gorge --check
+python3 deploy/acceptance/accept.py --gorge-dir ../gorge --output /private/tmp/gorge-acceptance
+```
+
+默认布局是 `gorge/` 与 `phorge-fork/` 互为兄弟。Phorge CI 的 Gorge checkout 位于
+`.test-gorge/`，须改传 `--gorge-dir .test-gorge`；Go 配对检查的 `PHORGE_FORK_DIR`
+始终指向实际 PHP checkout。输出目录必须在双方源码之外且不可覆盖已有验收结果。
+`--check` 仅验证隔离配置和锁定摘要，完整运行才创建独立 Compose 项目与临时后端，
+覆盖真实 MySQL、Redis、S3、image/render、Elasticsearch 和 Meilisearch。
+
 `tests/contract/worker/acceptance.py` 必须显式提供当前 image 和独立真实 S3 URL、
 测试凭据及 MySQL 配置；缺任一后端立即失败。支持 `--environment <受限 JSON>`，
 只接收 GORGE_TEST_ 字符串配置。配置文件不得提交仓库。
@@ -124,17 +138,46 @@ Go 真实后端套件另外覆盖 Redis DUMP/RESTORE 后的 inbox/finalize 去�
 与卷复制恢复，删除终态、effect、邮件账本和搜索投影身份的 SQL 恢复与迟到重试。
 这些恢复都是隔离 fixture，不执行生产备份或恢复。
 
-CI 要求 `GORGE_CONTRACT_REF` 仓库变量或 workflow_dispatch 的 gorge_ref 为匹配的
+Phorge CI 要求 `GORGE_CONTRACT_REF` 仓库变量或 workflow_dispatch 的 gorge_ref 为匹配的
 已发布 40 位 Gorge commit SHA；不回退到 main。两仓库改动发布后更新此配对值。
 每次成功验收保存双方 commit、dirty 状态和包含未提交源码的 SHA256，及 Phorge 内置兼容运行库
 的版本、上游来源、内容摘要和补丁记录。常规 CI 必跑当前 image 与 S3；手动 published-image 检查是额外项。
 本地工作树验收通过不代表远端 CI 已运行，也不代表生产实例满足退役条件。
 
+Gorge Release 反向以 `PHORGE_CONTRACT_REF` 或 `phorge_ref` 固定 Phorge commit，要求
+双方工作树干净，并把十四个候选 digest 与成功验收绑定到 `release-manifest.json`。
+完整 Go 阶段中，带用例名的 skip 判为失败；无 `Test` 字段的包级无测试文件事件不计
+为跳过。各候选镜像均验包装，实际 image/render 容器还单独绑定 digest；这不是十四个
+候选容器的完整业务验收。发布和 `latest` 不倒退规则见 [delivery](delivery.md)。
+
+切流前在 Phorge 根运行 `python3 scripts/operations/preflight.py` 检查 production
+overlay；加 `--check-db-grants` 才核验运行中 db-api 的实际账号权限。后者从 db-api
+网络命名空间使用实际凭据读取 `SHOW GRANTS`，拒绝写权限、未知授权或角色。
+配置检查会核对真实 backend、唯一非空 mailer key、通知端口回环绑定和 Worker
+`stop_grace_period >= drain + 15s`；默认 drain 30 秒、stop grace 45 秒。通过 preflight
+不表示备份恢复或 provider 投递已验证。
+
 ## Docker 单机栈的可执行运维入口
 
 Phorge 仓库新增 `bin/ops`：backup、verify、restore-test、restore、report 和 archive。
 操作说明与适用拓扑见配对 Phorge 仓库 `scripts/operations/README.md`。
-只支持 bundled 单 MySQL 与命名卷；外部存储/数据库拒绝自动打包。
-restore-test 是隔离 SQL/卷恢复演练，不代表业务完整性验证。
+基础备份覆盖 bundled 单 MySQL 与应用命名卷。Redis、S3、integrations 状态、外部
+MySQL、自定义数据库集群和未覆盖的持久写者继续拒绝自动打包；不能跳过后仍称完整。
+显式单 Elasticsearch 8 拓扑可提供 `--search-es-endpoint` 和
+`--search-es-repository` 使用原生快照 adapter。所有搜索 backend 与 projection 必须
+指向同一 endpoint，索引全部在范围内；认证通过受控 `GORGE_BACKUP_ES_API_KEY`
+环境变量提供，不写入 URL 或命令行。其他搜索引擎、多集群和数据目录复制不受支持。
+
+adapter 在已捕获应用写者停写后协调搜索原生快照与 SQL/卷备份，只有完整 `SUCCESS`
+快照才记录外部引用。`search-snapshot.json` 不包含快照字节，必须独立保存外部
+repository、兼容版本和保留期。`--exclusive-access` 仍是操作员对外部 CLI/写者的
+声明，不是自动分布式锁。失败或可捕获中断尝试恢复原先运行的写者；SIGKILL、掉电
+或 Docker 不可用时需按 manifest 核对并恢复，不能假定 finally 已执行。
+
+restore-test 是隔离 SQL/卷恢复演练，检查归档摘要、文件字节/链接/权限、SQL 导入及
+表数，保留 `businessIntegrity=not_verified`。含搜索引用时还保留
+`externalSearchRestore=not_verified`，report 发出 `SEARCH_RESTORE_UNVERIFIED`。
+隔离 ES 回归成功不替代具体生产 repository 的恢复；切流前须在隔离搜索集群恢复该
+快照，核对索引、对象、权限及 SQL/outbox 状态，再完成业务引用和 unknown 核对。
 archive 复制有效备份包并保留源文件；业务账本冷归档仅输出前置条件，不执行删除。
 report 提供 JSON/退出码告警及同物理库容量净增长，不自动注册通知或定时任务。

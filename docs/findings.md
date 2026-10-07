@@ -26,7 +26,7 @@ render.Config 嵌入 config.Base；同进程 diff 借用其 token。新增同进
 
 ### 5. LCS 的资源与歧义对齐边界
 
-unified 使用 LCS 表和 maxCells 护栏，不是 Myers。大行数乘积可能被拒绝，重复行的最小对齐不保证与 GNU 相同。不要仅提高护栏；算法替换须重新验收格式及无损不变量。见 [diff](modules/diff.md)。
+unified 先剥离相同前后缀，再对剩余中段使用 LCS 表；maxCells 限制包含边界行列的实际表格大小。因此大文件的小范围修改可通过，大范围不同的中段仍可能返回 413。重复行的歧义对齐不保证与 GNU 相同。不要仅提高护栏；算法替换须重新验收格式、行号、末尾换行及无损不变量。见 [diff](modules/diff.md)。
 
 ## 文档
 
@@ -40,9 +40,9 @@ platform/layering_test.go 的 forbiddenPrefixes 是手写清单。新域不会�
 
 ## notification 模块
 
-### 9. 通知失败与历史淘汰需要行为测试
+### 9. 通知的资源预算与重放边界
 
-测试应覆盖写失败摘除 listener、replay 写失败结束会话及 history 按年龄淘汰。包内覆盖率无法衡量跨包 WebSocket 调用；用当前用例和 `-coverpkg` 判断缺口，不保留旧百分比或行号。
+当前已有写失败摘除、按年龄和字节淘汰、慢连接与慢 peer 隔离、健康连接超过队列容量的分批重放、实例准入与淘汰测试。重放、写入、历史和实例均有预算；达到上限时会断开连接、拒绝准入或淘汰历史，不是无损持久队列。后续重点是生产负载下的预算调优与浏览器重连验收，不能从包内覆盖率推断端到端送达。见 [notification](modules/notification.md)。
 
 ### 10. Aphlict 配置文件并非所有键都生效
 
@@ -60,7 +60,7 @@ admin GET / 是平台 200 探针；client GET / 必须保持 501。不能为了�
 
 ### 13. 邮件重试必须受外层等待预算约束
 
-默认单适配器重试为 2 次、间隔 2 秒；旧独立服务的 250/15 不是当前默认。PHP 请求和任务外层重试的预算仍须一起考虑。见 [mailer](modules/mailer.md)。
+默认单适配器重试为 2 次、间隔 2 秒，同步 HTTP 发送总预算为 25 秒，provider HTTP 最长 20 秒；sendmail 的额外管道清理有界。仅明确未被接受的失败可重试或切换后端，供应商 5xx、丢失回执等不确定结果返回 `ERR_OUTCOME_UNKNOWN` 并保留 PHP 围栏。调整预算时须同时检查 PHP 30 秒等待和外层任务恢复，不能将 unknown 当成普通失败再次发送。见 [mailer](modules/mailer.md)。
 
 ### 14. Provider 假服务不等于真实供应商验收
 
@@ -90,11 +90,15 @@ GORGE_SEARCH_BACKENDS JSON 解析错误记录日志；ready 的可读配置检�
 
 ### 21. 搜索域错误码没有 PHP 专用异常分支
 
-SearchClient 采用通用 service exception，域错误码用于报告操作类别。不要因此删除 Go 的操作分类；PHP 是否需要分别处置应由实际调用行为决定。
+SearchClient 采用通用 service exception，域错误码用于报告操作类别。当前索引 Worker 会传播目标后端失败，使队列进入失败和重试路径；日志告警不能替代该失败信号。不要因此删除 Go 的操作分类；PHP 是否需要分别处置应由实际调用行为决定。
 
 ### 46. Elasticsearch mapping 与目标版本配对
 
 当前实现按版本区分 typed/typeless mapping，并使用 must_not 排除查询。升级 ES 或改变版本配置要重建并对真实后端验收；fake 的 200 不能证明 mapping 被接受。见 [search](modules/search.md)。
+
+### 47. 搜索写入预算与后端恢复
+
+ES 与 Meili 的索引写入共享总期限并服从调用方更早的 deadline；Meili 必须等异步任务确认后才算写入成功。ES 故障主机经过冷却后允许单次恢复探测，文档 PUT 的幂等性是安全 failover 的依据，不能推广到所有操作。后续须保留真实后端故障恢复和队列重试验收，见 [search](modules/search.md)与[search-projection](modules/search-projection.md)。
 
 ## file-storage 模块
 
@@ -195,3 +199,19 @@ CLAIM_LOST 为 Debug，默认日志级别不会输出；IN_ERROR_BACKOFF 为逐�
 ### 45. Webhook 重投间隔取较严的条件
 
 UpdateResult 同时刷新 dateModified 与 lastRequestEpoch，实际失败间隔至少为 max(ClaimLease(), RetryBackoffSec)。将退避降到 lease 以下不会缩短重投；ClaimLease 还会抬到不低于投递超时。
+
+## worker 模块
+
+### 48. 退出归档不等于确认业务失败
+
+SIGTERM 到达后停止领取，HTTP 关闭与任务排空并行；超过 drain 预算后，独立、有租约保护的报告会尝试将不确定执行归档供人工核对。归档成功不能证明外部副作用未发生，不能直接重放该任务。队列不可达、租约过期或持有权变化时归档可能无法确认，常规租约恢复仍可能重投。部署停止宽限期须容纳排空与报告预算，见 [worker](modules/worker.md)和[operations](operations.md)。
+
+## 交付与恢复
+
+### 49. 发布回执的验收范围须保留
+
+发布绑定固定 Gorge tag、Phorge commit 和完整候选镜像 digest。所有候选会检查打包信息；验收中的真实镜像运行覆盖与打包检查是不同证据，不能据此声称全部服务、全部架构已完成生产负载验收。供应商真实接收、浏览器完整流程等未覆盖项须随回执保留，见 [delivery](delivery.md)和[testing](testing.md)。
+
+### 50. Elasticsearch 快照引用与完整业务恢复是两种证据
+
+受支持的单 ES8 endpoint 可在冻结写入者后生成原生 repository snapshot，并将外部引用写入备份 manifest；实际快照不包含在 SQL/volume bundle 内。`restore-test` 的 SQL 与卷成功不能证明外部快照或业务数据完整恢复，`not_verified` 必须保留至独立恢复验收完成。其他外部存储与自定义拓扑的支持范围以 [operations](operations.md)及配对 Phorge 运维工具为准。

@@ -1,6 +1,6 @@
 # 图片计算
 
-`gorge-image`（:8190）计算 JPEG/PNG/GIF/WebP 图片，PHP 继续拥有文件权限、secret key、元数据和派生关系。默认部署不切换；独立运行隔离图片 CPU/内存。
+`gorge-image`（:8190）计算 JPEG/PNG/GIF/WebP 图片，PHP 继续拥有文件权限、secret key、元数据和派生关系。基础配置默认 legacy；Phorge 可选 image overlay 默认 shadow，production overlay 将主图片模式设为 gorge。独立运行隔离图片 CPU/内存，各部署模式与切换前提见下文。
 
 ## 接口与配置
 
@@ -28,7 +28,11 @@ Opt-in bundled deployment：在phorge-fork设置非空GORGE_IMAGE_TOKEN，执行
 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d --build
 ```
 
-migrate角色将URI/token/mode写入deployment配置，默认shadow。实际切换前验收生产样本，再设GORGE_IMAGE_MODE=gorge并重新生成部署配置。Go-only部署使用`docker compose --profile image ...`且设置GORGE_SERVICE_TOKEN。
+migrate角色将URI/token/mode写入deployment配置；上述可选 image overlay 的主图片模式默认为 shadow，可以通过 `GORGE_IMAGE_MODE` 选择。基础部署构建器没有显式覆盖时保留有效配置中的模式，否则默认 legacy。Phorge 的 `docker-compose.production.yml` 继承 image 服务并在 migrate 角色中固定 `GORGE_IMAGE_MODE=gorge`；仅修改宿主环境变量不能将这个 production overlay 改回 shadow，需要选择可选 overlay 或显式调整覆盖配置。
+
+采用 production overlay 前仍须完成对应生产样本的几何、MIME、动画与像素验收；配置强制切换不代表验收已完成。Meme 和 builtin 模式独立，两个 overlay 均默认 legacy，不能从主模式为 gorge 推断它们也已切流。保留 legacy/GD 回滚能力与下文列出的未完成验收。
+
+Go-only 部署从 Gorge 仓库根目录运行 `docker compose -f deploy/compose/docker-compose.yml --profile image up -d --build image`。它读取非空 `GORGE_SERVICE_TOKEN`，不是 Phorge overlay 的 `GORGE_IMAGE_TOKEN`；仅启动服务不修改 PHP 图片模式。token 可放入该 Compose 使用的环境文件，启动前确认实际配置值。
 
 现有派生图直接沿用，不重建历史、不改secret URL、不要求旧存储数据先迁移。PHP保留legacy用于灰度回滚；GD还用于内置头像、图标、Meme和SpriteSheet，不能删除GD扩展。基础 thumbnail 灰度只检查几何/MIME与动画结构，重采样、JPEG质量、GIF调色板等像素差异仍须shadow样本人工验收；libvips替换与可信blob引用是后续优化，未实施。
 

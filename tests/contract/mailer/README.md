@@ -61,3 +61,9 @@ Nor is there a fixture for the transport size limit. `gorge-mailer` raises it to
 asserting 413 would pass or fail depending on how the service under test was
 started — which is exactly what a contract fixture must not do. That path is
 covered in `http_test.go`, where the limit can be set.
+
+The test adapter and local transport stubs do not prove acceptance by a real
+external mail provider. Durable delivery, interruption and reconciliation have
+separate MySQL/paired runtime tests; provider credentials, final receipt and
+production delivery still require environment acceptance, as described in
+[testing](../../../docs/testing.md).

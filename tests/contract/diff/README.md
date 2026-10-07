@@ -10,12 +10,11 @@ particular Pygments class names appear, because Chroma's exact markup shifts
 between releases and pinning it would produce failures that mean nothing.
 
 The unified diff endpoint is the opposite case. Its output is not rendered, it
-is *parsed* — `ArcanistDiffParser` reads the hunk header to decide where every
-following line belongs. A header that says `-1,1` where GNU writes `-1` is
-still a syntactically valid unified diff, so nothing rejects it; the lines
-after it are simply attributed to the wrong positions, and the corruption
-surfaces much later as a review that renders wrongly. There is no safe subset
-to assert on, so `data.diff` is compared in full.
+is *parsed* — `ArcanistDiffParser` reads the hunk starts and counts to decide
+where every following line belongs. Incorrect ranges can corrupt attribution
+even when an HTTP response succeeds. These fixtures compare `data.diff` in
+full to pin that format, including GNU-style omission of a count of one;
+`-1` and `-1,1` both describe a one-line range.
 
 The expectations were captured from the real binary rather than written by
 hand:
@@ -58,12 +57,20 @@ invariant that actually matters is enforced in the Go unit tests instead.
 
 ## What is deliberately not here
 
-There is no oversized-input fixture. Both size guards are configurable per
-deployment — `GORGE_DIFF_MAX_BYTES` for the combined byte count, and a fixed
-cell budget for the comparison table — so a fixture asserting 413 would pass or
+There is no oversized-input fixture. `GORGE_DIFF_MAX_BYTES` configures the
+combined byte count; the comparison table has a fixed cell budget applied to
+the unresolved middle after trimming equal prefixes and suffixes. A fixture
+asserting a deployment-specific byte-limit 413 would pass or
 fail depending on how the server under test was started, which is exactly the
 property a contract fixture must not have. Those paths are covered in
 `go/internal/diff/http_test.go`, where the limit can be set for the test.
+
+Large mostly equal inputs are not refused merely for crossing a total line
+count: [budget tests](../../../go/internal/diff/unified/budget_test.go) cover
+single-line changes in 2001 and 10000 lines, benchmark them, and fuzz text and
+newline reconstruction. Unrelated large middles can still exceed the fixed
+comparison budget and return 413. These checks do not promise production
+latency or unlimited input size.
 
 The two paths themselves, `POST /api/diff/generate` and `POST /api/diff/prose`,
 are part of the contract.

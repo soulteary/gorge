@@ -88,3 +88,13 @@ The successful handshake is **not** covered here:
 `httptest.ResponseRecorder` does not implement `http.Hijacker`, so an upgrade
 cannot complete in memory. The 101 is checked in `tests/e2e/notification.sh`
 against a real listener instead.
+
+WebSocket history replay, healthy clients replaying more than the queue
+capacity, slow-consumer isolation, single-writer serialization and resource
+limits are covered by the separate client and
+[hub budget tests](../../../go/internal/notification/hub/budget_test.go).
+[Instance budget tests](../../../go/internal/notification/hub/instance_budget_test.go)
+check bounded admission and safe idle reclamation. The HTTP fixtures above do
+not establish maximum production connection counts, throughput or tail latency.
+Both unauthenticated Aphlict ports still require the documented network and
+reverse-proxy isolation; bounded resource use does not add authentication.

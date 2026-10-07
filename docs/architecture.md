@@ -31,6 +31,7 @@ go/
 api/openapi/               已登记接口的规范；范围见各文件说明
 compat/phorge/             跨语言兼容边界
 deploy/compose/            本地编排、示例与 demo
+deploy/release/            固定源码对、候选镜像与发布回执
 docs/modules/              各域配置、协议与限制
 tests/contract/            共享 JSON 固件及 PHP runtime contracts
 tests/e2e/                 对运行实例执行的冒烟脚本
@@ -66,7 +67,7 @@ Go handler 直接引用 `internal/contracts`；OpenAPI、PHP 客户端和共享�
 
 1. 增加 `go/cmd/<name>/main.go`，装配依赖与生命周期。
 2. 增加 Compose service，并设置 `SERVICE` 与正确的健康检查端口。
-3. 更新 Release matrix、服务文档索引，以及需要的 PHP 部署和握手配置。
+3. 更新 Release matrix、候选 manifest 与配对验收的服务登记、服务文档索引，以及需要的 PHP 部署和握手配置；登记位置见 [delivery](delivery.md)。
 4. 按真实依赖增加测试和验收；需要额外运行依赖的服务也须更新 Dockerfile。
 
 参数化 Dockerfile 可复用，不能据此假定任何新服务都无需调整镜像。`PORT` 默认 8140；错误端口会使容器 unhealthy，是否重启由编排决定。构建上下文是 `go/`，详见 [delivery](delivery.md)。

@@ -19,7 +19,7 @@
 Fiber BodyLimit → RequestID → RequestLogger(slog) → Recover(slog) → [域路由]
 ```
 
-四点设计细节：
+关键行为：
 
 - **RequestID 复用入站值**。请求头带了 `X-Request-Id` 就透传，没带才生成。一次请求跨越 Phorge 与 Go 服务时保持同一个 id，日志才能串起来。
 - **日志走 `log/slog`**。Fiber Recover 的 `StackTraceHandler` 把 panic、request id 与堆栈写进 slog，与进程其余日志汇合；Recover 随后把错误交给全局 `ErrorHandler` 转成 500 信封。响应体里只有通用文案，所以日志是 panic 现场的**唯一**记录。

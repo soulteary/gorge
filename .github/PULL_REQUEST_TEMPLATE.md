@@ -1,10 +1,8 @@
 <!--
-  This template applies to every change, but the "Paired cross-repo change"
-  section is load-bearing for db-api contract changes. The Gorge db-api service
-  and the phorge-fork PHP consumer share a wire contract; a change to one side
-  is only proven safe against a specific branch/commit of the other. The
-  cross-repo integration test (.github/workflows/db-api-cross-repo.yml) is
-  dispatched with both refs, and reviewers need to see the pair recorded here.
+  Record the tested source pair for shared wire, execution, deployment or
+  recovery contracts. A change on one side is only verified against a specific
+  revision of its consumer. Use docs/testing.md and docs/operations.md to select
+  the applicable paired checks; the db-api workflow is one domain-specific check.
 -->
 
 ## Summary
@@ -14,25 +12,24 @@
 ## Paired cross-repo change
 
 <!--
-  Fill this in for any change that touches the db-api wire contract:
-    - gorge:      go/internal/contracts/dbapi.go, go/internal/dbapi/**
-    - phorge-fork: the Gorge DB consumers (PhabricatorDatabaseRef,
-      PhabricatorConfigSchemaQuery, the setup checks, PhabricatorGorgeDBClient)
-  Otherwise write "N/A".
+  Fill this in when changing shared contracts or their Go/PHP consumers,
+  deployment configuration, fencing or recovery semantics. Otherwise use N/A.
 
-  Record the exact refs the cross-repo integration test was run against, and
-  the intended merge order (usually: PHP consumer tolerant first, then Go).
+  Record the exact refs and local dirty/source identity if applicable. Choose
+  merge order based on actual compatibility; do not assume either side can run
+  safely with an older pair.
 -->
 
 - gorge branch / SHA: `...`
 - phorge-fork branch / SHA: `...`
-- Cross-repo test run: <!-- link to the db-api-cross-repo workflow run --> `...`
+- Cross-repo test run: <!-- workflow link or paired acceptance receipt, with scope and skips --> `...`
 - Merge order: <!-- e.g. phorge-fork #NNN then gorge #MMM -->
 
 ## Checklist
 
-- [ ] `cd go && gofmt -s -l . && go build ./... && go vet ./... && go test ./...`
-- [ ] If the wire contract changed, canonical fixtures regenerated
+- [ ] From the repository root: `make check && make lint && make docs-check`.
+- [ ] If the db-api wire contract changed, canonical fixtures regenerated
       (`GORGE_UPDATE_FIXTURES=1 go test ./internal/dbapi -run Canonical`) and
       copied into phorge-fork's `__tests__/data/gorge-contract/`.
-- [ ] Cross-repo integration workflow dispatched with both refs above (or N/A).
+- [ ] Shared OpenAPI, fixtures, compatibility and module documentation updated where affected.
+- [ ] Applicable paired checks ran with both refs above (or N/A); named skips and untested runtime paths recorded.

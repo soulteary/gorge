@@ -242,6 +242,26 @@ is refused. One physical UUID cannot be reused for another target/generation.
 Do not delete/recreate a generation or retarget its endpoint while workers run;
 stop it and create a new generation/index identity instead.
 
+After an ES snapshot restore or index recreation, compare the actual
+`index.uuid` with the persisted target binding before restarting delivery.
+A changed UUID or endpoint/configuration cannot resume the old target, even if
+the index name and documents look identical. Do not edit `indexUUID` or
+`configHash` in the control ledger to bypass the binding: historical applied
+receipts would no longer prove application to that physical index. Use a fresh
+physical index and generation, then the rebuild/source-scan endpoints below to
+establish separate receipts and inspect current transport progress. Those checks
+still leave coverage and activation false; query/domain comparison and an
+authorized live-read cutover remain separate steps, with no promotion API in
+this implementation. Keep PHP synchronous indexing and retained source/control
+receipts during recovery.
+
+Matching UUIDs alone are not evidence that restored content is current. Control
+`applied` receipts may be newer than the backend snapshot; startup binding and
+control checkpoints do not compare ES document content or query results. Reconcile
+the snapshot boundary against retained events and current business sources before
+treating the restore as complete. No automatic rollback or reset of historical
+delivery receipts is implemented.
+
 Writes use `version_type=external` with the allocated positive int64 revision.
 HTTP 409 triggers a realtime GET: matching revision/hash/operation is applied;
 a newer revision with compatible namespace/generation is superseded; every

@@ -13,6 +13,10 @@ GitHub Release 是整套版本的发布入口。草稿在最终一步前不可�
 不会提升入口。已存在的版本禁止覆写。候选标签包含 run ID 与 attempt，最终部署使用清单
 中的镜像 digest 和两个 commit，不从候选标签或独立的历史 `*-latest` 推断一套版本。
 
+候选模式对十四个镜像做包装检查；只有 image/render 作为独立 runtime fixture 启动
+对应候选 digest，并逐服务记录实际 container/image ID。其他服务的业务验证执行配对
+源码的 Go/PHP 契约，不应描述为十四个候选容器都完成全量运行时验收。
+
 所有版本的最终发布任务共用仓库级互斥锁。锁内先读取当前 GitHub Release `latest`，
 按真实日历日期和整数修订号比较 `YYYY.MM.DD-rN`（例如 `r10` 大于 `r9`）。草稿先以
 `--draft=false --latest=false` 发布，只有版本严格更新时才提升 `latest`；旧版本晚完成仍
@@ -28,5 +32,10 @@ GitHub Release 是整套版本的发布入口。草稿在最终一步前不可�
 另一架构已经完成全部运行时验收。
 
 本地门禁负面测试：`python3 -m unittest discover -s deploy/release -p '*_test.py'`。
+发布辅助脚本的测试使用 fake GitHub runner，覆盖旧版本晚完成、数字 revision、日期、
+404 与其他错误、坏 JSON、未知 tag、非零退出和超时；不会实际创建或编辑 release。
+常规 CI 的 lint 独立运行，本地还须执行 `make lint`，不能用 vet/race 替代。
+完整 Docker 入口拒绝带用例名的 Go skip；包级无测试文件事件不视为跳过用例。
+构建、配对和运维范围见 [交付](../../docs/delivery.md) 与 [测试](../../docs/testing.md)。
 发布需要先提交两个仓库的配套修改，并更新固定 Phorge revision。旧 Phorge 版本缺少候选
 镜像与必测验收入口时会失败，不能降级绕过。

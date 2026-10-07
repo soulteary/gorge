@@ -440,7 +440,7 @@ map[string]any{"{\"type\":\"notification\"}": ""}
 
 `tests/e2e/notification.sh` 第 2 条场景用的是同一手法（payload 里同样带 `100% done`），所以它也真的挡得住。
 
-顺带：空 body 在这里解出 `io.EOF`，落到 400 `ERR_BAD_REQUEST`。这是 admin 端口唯一走信封的响应。
+空 body、非对象 JSON（包括 `null`）与超过 512 字节的实例名都会返回 400 `ERR_BAD_REQUEST` 信封；传输超限和路由失败也使用平台错误信封。成功 receipt 仍保持裸对象。
 
 ### 5.5 一处已知偏离，与验证方法
 
@@ -1041,7 +1041,9 @@ SELECT status, lastRequestResult, lastRequestEpoch, properties
 **PHP 侧**：`PhabricatorWorkerActiveTask`、`PhabricatorWorkerArchiveTask`、`PhabricatorWorker`、`PhabricatorWorkerLeaseQuery`、`PhabricatorTaskmasterDaemon`
 （参考实现见 `phorge-fork/src/infrastructure/daemon/workers/`）
 
-**这一节与 webhook 那节同源——队列在数据库里，PHP 与 Go 之间一次 HTTP 都不发**（除非 worker 配了 Conduit 委派，那是反方向的、Go 打 PHP）。PHP 侧照旧把任务写进 `{namespace}_worker.worker_activetask` / `worker_taskdata`，Go 侧租走、跑完、归档进 `worker_archivetask`。所以本节没有一条能靠「打一个接口看它答什么」来验证，全部只能通过**读那几张表**来验。整节都是**静默型**：破坏后不报错，只错到没人发现。
+默认 MySQL 后端仍使用 `{namespace}_worker.worker_activetask` / `worker_taskdata` / `worker_archivetask`，但当前 PHP 配置了 Gorge queue 后，`scheduleTask()` 通过 `/api/queue/enqueue` 入队，Go worker 再通过 HTTP 租约、续租及 fenced finalize/resolve 收尾；未配置 queue 的 PHP 才直接写原 SQL 表。Feed 和原生邮件还通过各自 outbox 与 `/api/queue/enqueue-event` 接收稳定事件。HTTP 契约可以验证接口形状，真实数据库测试仍需验证列映射、事务与租约 fencing；不能用其中一层替代另一层。
+
+PHP enqueue 一旦开始请求，不因超时或坏回执回退 SQL，因为服务可能已经提交。只在请求尚未开始的客户端构造失败且政策允许时，才可走原 SQL 路径。普通 enqueue 没有稳定事件去重保证；业务事务事件应使用对应的 outbox/inbox 协议，见 [taskqueue](../../docs/modules/taskqueue.md)。
 
 | 组 | 约束 | 破坏后的表现 |
 |---|---|---|
@@ -1067,7 +1069,7 @@ dateCreated  dateModified  data
 **`worker_activetask.id` 由 `lisk_counter` 计数器分配，不是 AUTO_INCREMENT。**`PhabricatorWorkerActiveTask::getConfiguration()` 声明 `CONFIG_IDS => IDS_COUNTER`，所以它的 `id` 列是 `int unsigned NOT NULL` 且**没有** AUTO_INCREMENT——Phorge 在应用层用 `LiskDAO::loadNextCounterValue()` 从共享的 `lisk_counter` 表（`counterName = 'worker_activetask'`）取下一个值再写入。这带来两条约束：
 
 - **enqueue 的 INSERT 必须显式写 `id`。**一条省略 `id`、指望 `LastInsertId()` 的 INSERT 会直接报 `Error 1364 Field 'id' doesn't have a default value`——这正是迁入时的真实故障。Go 侧 `mysql_store.go` 的 `Enqueue` 因此先在同一事务里跑一遍 Phorge 那条 `INSERT ... ON DUPLICATE KEY UPDATE counterValue = LAST_INSERT_ID(counterValue + 1)`（`nextCounterValue`），拿到 id 再显式写进 `worker_activetask`。
-- **必须用同一个计数器行，不能改成 AUTO_INCREMENT 或另一套序列。**`phd` 与 gorge-taskqueue 会各自入队（见 10.4），两条路径共用 `lisk_counter` 的 `worker_activetask` 行才不会分配出撞号的 id。把 Go 侧换成 AUTO_INCREMENT（哪怕先给列加上）会让两套序列独立增长，迟早撞号，且不报错。`worker_taskdata` 是另一回事：它用 Phorge 默认的 `IDS_AUTOINCREMENT`，所以它的 id 照常靠 `LastInsertId()` 拿，不走计数器。
+- **必须用同一个计数器行，不能改成 AUTO_INCREMENT 或另一套序列。**PHP 的直接 SQL 入队路径与 gorge-taskqueue 共用 `lisk_counter` 的 `worker_activetask` 行才不会分配出撞号的 id；这不允许恢复旧 taskmaster 消费。把 Go 侧换成 AUTO_INCREMENT（哪怕先给列加上）会让两套序列独立增长，迟早撞号。`worker_taskdata` 是另一回事：它用 Phorge 默认的 `IDS_AUTOINCREMENT`，所以它的 id 照常靠 `LastInsertId()` 拿，不走计数器。
 
 （`enqueue` 的请求体因此**不带** `id`：契约不变，id 由 store 分配、随响应的 `id` 返回给 PHP，`PhabricatorWorker::scheduleTask` 再把它设到 ephemeral task 上。见 `api/openapi/taskqueue.yaml` 的 enqueue 描述。）
 
@@ -1076,7 +1078,7 @@ dateCreated  dateModified  data
 
 这张表没有 `status` 列（那是 webhook 队列的事），任务的「谁持有、持到几时」全在 `leaseOwner`（可空）与 `leaseExpires`（可空）两列上：
 
-- **未租** = `leaseOwner IS NULL`。租约阶段一只取这些。
+- **未租且立即可领** = `leaseOwner IS NULL AND leaseExpires IS NULL`。阶段一只取这些；owner 为空但 expires 在未来的延迟/退避任务不能提前领取。
 - **租约过期** = `leaseExpires < now`。阶段二取这些（崩溃的 worker、到期重试）。
 - **临时失败退避** = 清 `leaseOwner`、把 `leaseExpires` 设为 `now + retryWait`：既不算未租、也不算过期，退避期内租不到。
 - **yield** = `leaseOwner = '(yield)'`（`contracts.YieldOwner` 哨兵）、`leaseExpires = now + duration`。`awaken` 精确按这个字符串识别 yield 任务。
@@ -1090,7 +1092,7 @@ dateCreated  dateModified  data
 
 ### 10.4 部署耦合：必须替换 `phd`，Redis 后端读不到旧队列
 
-- **`gorge-taskqueue` + `gorge-worker` 必须替换 Phorge 的 `phd` taskmaster 守护进程，而不是与之并存。**队列在库里，`phd` 与 gorge-worker 谁都能租 `worker_activetask`——两边同时跑就是每个任务跑两遍，且不报错。上线前停止旧 PHP taskmaster 消费者；仍承担 trigger/fact 等职责的 daemon 保留，当前 fork 已退役 taskmaster。与第九节 9.7、[`../../docs/findings.md`](../../docs/findings.md) 第 38 条同源（webhook 是同一类耦合）。
+- **`gorge-taskqueue` + `gorge-worker` 必须替换 Phorge 的 `phd` taskmaster 守护进程，而不是与之并存。**旧 PHP 消费者不参与当前 fencing/finalize 协议，混用可能重复执行或丢失收尾结果。上线前停止旧 PHP taskmaster 消费者；仍承担 trigger/fact 等职责的 daemon 保留，当前 fork 的 taskmaster 启动入口已拒绝消费。与第九节 9.7、[`../../docs/findings.md`](../../docs/findings.md) 第 38 条同源（webhook 是同一类耦合）。
 - **选 Redis 后端时，队列不在 Phorge 的库里。**于是 Phorge 的 `bin/worker` 与 Web UI 的任务视图读到一个空队列——这不是 bug，是「把队列挪出主库」的代价。要保留 Phorge 自己的任务视图就用默认的 MySQL 后端。
 
 **验证本节**：入队一个任务后读表确认列名与值——
@@ -1109,6 +1111,12 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 - **请求必须是表单编码，不能是 `application/json`。**Phorge 的 `PhabricatorConduitAPIController` 会**显式拒绝** `Content-Type: application/json`（"Use form-encoded data to submit parameters to Conduit endpoints"），而它无法当作 Conduit 请求解析的 body 会被更外层的 HTTP 栈用一张 **HTML 页面**回应——这正是迁入时委派环节 `invalid character '<'` 的真实故障。Go 侧 `handlers/conduit.go` 因此照 Phorge 自家客户端（arcanist 的 `ConduitClient`、旧的 `PhabricatorGoConduitGatewayClient`）的线格式发：`POST /api/worker.execute`，`Content-Type: application/x-www-form-urlencoded`，body 带一个 `params` 字段（值是参数 map 的 JSON，token 塞在 `__conduit__.token`），外加 `output=json`；网关另用 `X-Service-Token` 头认证。
 - **`worker.execute` 必须实现当前 versioned 协议并登记到 PHP library map。** PHP 不要求用户 Conduit session，但独立验证非空 `X-Service-Token` 与配置的 conduit token，不能绕过网关直接匿名执行。请求带 `executionVersion=1`、phase、taskID、failureCount、priority、leaseOwner 和 leaseExpires；capabilities 先握手，执行前校验上下文。成功导出 followups，由 Go 通过 finalize 原子提交；失败、yield 与 retry 通过 resolve，均受租约保护。旧 complete/fail/yield 路由不是新消费者的失败回退路径。见 [taskqueue](../../docs/modules/taskqueue.md) 和 [worker](../../docs/modules/worker.md)。
+
+### 10.6 关停归档不是已确认业务失败
+
+收到退出信号后，worker 停止领取新任务，在 `GORGE_WORKER_DRAIN_TIMEOUT_SEC`（默认 30 秒）内继续在途任务与心跳。期限到达后取消执行；若仍确认持有当前租约，用 fenced `resolve outcome=failure` 将任务归档隔离，防止自动重领，并记录需要人工核对的未知结果。这是现有归档 `result=1` 的行政用途，不能据此断言外部副作用失败或回滚，也没有新增通用持久 unknown 状态。
+
+独立收尾上限 10 秒，另有 1 秒取消清理；停止宽限必须覆盖这些预算。无法确认归档、租约已到期或所有权变化时仍可能经过原崩溃恢复路径。人工恢复前核对实际业务结果，不能仅凭 failure 归档盲目重投。原生邮件另有持久投递账本，queue task 归档不擦除其 unknown/accepted 回执；详见 [worker](../../docs/modules/worker.md) 与 [mailer](../../docs/modules/mailer.md)。
 
 ---
 
@@ -1225,7 +1233,7 @@ curl -s -H 'X-Service-Token: dev-token' http://127.0.0.1:8080/api/db/setup-issue
 
 **鉴权**：PHP 客户端使用 `X-Service-Token`。平台默认支持 query token，但 db-api、文件 lifecycle、搜索 projection、image、maintenance、integrations 和 gitea meta 等路由显式禁用它；具体注册以域 handler 为准。notification 遵循 Aphlict，不鉴权。部分服务允许空 token 关闭鉴权，image/maintenance/integrations 等受保护能力要求非空值；不要从平台默认推断业务启动要求。
 
-**响应**：普通 JSON API 在 data/error 中恰有一个非空。路由失败、BodyLimit 和 recover 默认也由 httpx 生成错误信封；HEAD 协议不允许响应体。健康探针是裸状态 JSON。成功文件读取、上传会话数据读取/图片二进制输出、Prometheus metrics、Conduit 与 Aphlict 各有独立协议。空文件是合法成功，按状态码和约定 Content-Type 判断，不按 body 是否为空判断。
+**响应**：平台成功信封带 `data`，失败信封只带 `error`。普通 PHP JSON 客户端仅接受 HTTP 200、非 null 的 data 与缺失或 null 的 error 作为成功；data 可以是 `[]`、`false` 或 `0`，不能用 PHP `empty()` 判断。领域错误解析要求 error 是对象、code 为非空字符串、message 为字符串且不存在 data 键；不要给错误补 `data:null` 或混入成功 data。邮件等领域客户端还独立核对错误码与 HTTP 状态。路由失败、BodyLimit 和 recover 默认也由 httpx 生成错误信封；HEAD 协议不允许响应体。健康探针是裸状态 JSON。成功文件读取、上传会话数据读取/图片二进制输出、Prometheus metrics、Conduit 与 Aphlict 各有独立协议。空文件是合法成功，按状态码和约定 Content-Type 判断，不按 body 是否为空判断。
 
 **错误码**：平台提供 ERR_BAD_REQUEST、ERR_UNAUTHORIZED、ERR_NOT_FOUND、ERR_METHOD_NOT_ALLOWED、ERR_TOO_LARGE、ERR_INTERNAL。域码与扩展执行冲突码见对应模块，不能维护一份全仓固定总数。httpx.Fail 已应答的域码不会被全局处理器覆写；ERR_INTERNAL 的驱动细节只进日志。
 

@@ -82,7 +82,7 @@ Go notification 的连接、history 和 peer 去重状态在内存中；重启�
 | PHP 等本服务应答 | 2 秒（`HTTPSFuture::setTimeout`） |
 | 本服务中继给一个 peer | 5 秒（`peer.broadcastTimeout`） |
 
-所以 `Peers.BroadcastMessage` 里那句 `go p.BroadcastMessage(...)` 不是「顺手并发一下」：**同步做的话，一个不可达的 peer 就会让 PHP 侧超时**，超时将按当前 PHP 政策报错或记录降级，且影响本节点本可完成的投递。goroutine 把 5 秒挪到了请求响应之外。
+所以 peer 网络投递不能放在 PHP 请求的同步路径里：一个不可达的 peer 最多等待 5 秒，已超过 PHP 的 2 秒预算。当前 `Peers.BroadcastMessage` 只向各 peer 的有界队列入队，由每个 peer 的单 writer 在请求响应之外投递；队列饱和时丢弃该 peer 的新增中继，其他 peer 与本节点仍可处理消息。
 
 `setFollowLocation(false)` 也在那个方法里，注释写着 Aphlict 从不发 `Location:`，收到就说明有事不对——本域同样从不发重定向，改动路由时别引入一个。
 
@@ -155,7 +155,7 @@ httpx.RunAll(servers...)
 ### 3.1 admin `POST /`：四步，其中两步是为了不出事
 
 ```
-自己解 body → 查/盖 fingerprint → Publish 进 hub → 并发中继给 peer → 裸 receipt
+自己解 body 与校验实例 → 查/盖 fingerprint → Publish 进 hub → 入 peer 队列 → 裸 receipt
 ```
 
 **第一步刻意不用 `c.Bind()`。** Phorge 用 `HTTPSFuture` 发这个 POST，payload 是 `phutil_json_encode()` 出来的裸 JSON，但 curl 给它贴的是默认的 `application/x-www-form-urlencoded`。Fiber 的 binder 会按 Content-Type 把这段字节当表单，而不是当 JSON。于是有两种结局，都不是「被拒绝」这么干净：
@@ -171,19 +171,19 @@ httpx.RunAll(servers...)
 
 这一条是迁入过程中真踩到的，完整推理在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第 5.4 节。**挡住它的是那个带 `100%` 的 payload，不是「断言了 200」这件事**——把这几处断言各自守住多少讲清楚很要紧，因为把它们记强了比不记更坏，见第 9.3 节。
 
-顺带一个后果：请求体为空时 `json.Decode` 返回 `io.EOF`，落到 400 `ERR_BAD_REQUEST`，这也是本 handler 唯一走信封的路径。
+请求体为空、JSON 不能解为对象（包括 `null`），或实例名超过 512 字节时，返回 400 `ERR_BAD_REQUEST` 信封；实例检查发生在盖指纹与发布之前。传输层超限和路由错误也由平台返回错误信封。`json.Unmarshal` 对空 body 返回 JSON 语法错误，不依赖 Content-Type。
 
 **第二步是集群防环的全部。** `peers.AddFingerprint(msg)` 往消息的 `touched` 列表里盖本进程的 fingerprint，返回「这条消息在这里是新的吗」。已经有本进程指纹的消息说明它绕了一圈回来了，此时**照样回 receipt 但不 republish**——不然一条消息会重复投递，并在 peer 之间永远转下去。fingerprint 是每进程随机生成而不是配置的，这样两台服务器不可能因为配置失误撞上同一个。
 
-第三步与第四步：`Hub.Publish` 同步做本地扇出，`Peers.BroadcastMessage` 给每个未在 `touched` 里的 peer 起一个 goroutine（理由见第 1.4 节）。响应用 `c.JSON()` 而非 `httpx.OK()`——这是刻意的信封豁免，见第 5.3 节。
+第三步与第四步：`Hub.Publish` 保存有界历史并向本地 listener 队列扇出；`Peers.BroadcastMessage` 向未在 `touched` 里的 peer 有界队列入队。网络写由每条连接或 peer 的专用 writer 完成，不为每条消息另起中继 goroutine。裸 receipt 确认本服务处理了请求，不能证明浏览器或 peer 已收到；队列饱和的行为见 3.6–3.9 节。响应用 `c.JSON()` 而非 `httpx.OK()`——这是刻意的信封豁免，见第 5.3 节。
 
-### 3.2 admin `GET /status/`：一行 handler，两处不能动
+### 3.2 admin `GET /status/`：实例校验与裸状态响应
 
 ```go
 return c.Status(http.StatusOK).JSON(deps.Hub.Status(instanceOf(c)))
 ```
 
-`Hub.Status()` 直接返回 `*contracts.AphlictStatus`，handler 不做任何加工。两处约束：**键里的点是字面量**（PHP 用 `idx($details, 'clients.active')` 读），以及**不套信封**。都在第 5.3 节。
+上述是实例长度校验后的响应摘录。`Hub.Status()` 直接返回 `*contracts.AphlictStatus`。两处约束：**键里的点是字面量**（PHP 用 `idx($details, 'clients.active')` 读），以及**不套信封**。都在第 5.3 节。连接数与历史按请求实例过滤，uptime 与 messages.in/out 是整个进程的累计值；不能把不同实例的 messages 数相加作为总量。被淘汰的空闲实例重新连接后，clients.total 从新的缓存记录重新计数。
 
 `instanceOf(c)` 读 `?instance=`，空则 `default`。这个查询参数是 `getURI()` 在 `cluster.instance` 有值时统一追加的，所以 admin 与 client 两侧都会带上它；client 侧另外还把实例编进路径（第 3.5 节），于是那一侧的实例名在同一个 URL 里出现两次。本域按 Aphlict 的做法**只读路径那一份**。
 
@@ -203,12 +203,12 @@ Upgrade 请求 ──► contrib websocket upgrader ──► 入 hub ──► 
 `readLoop` 认 `subscribe`、`unsubscribe`、`replay`、`ping` 四条命令，与 `AphlictClientServer.js` 的 `switch` 逐条对应。三处「不报错」是刻意的：
 
 - **畸形帧与未知命令一律跳过。** Aphlict 也只写一行日志，而浏览器拿到一句协议抱怨也无从处置；报错的代价是 JS 客户端与本服务版本不齐时连接会被关掉。`TestUnknownCommandsAreIgnored` 连发一个假命令与一段非 JSON，然后用一次 ping/pong 证明会话还活着。
-- **`ping` 的写失败被丢掉。** 写不动说明对端走了，读循环下一轮自会发现。
-- **`replay` 的写失败会结束会话。** 这是唯一一处「失败就走」，而它与 Aphlict 有一处小差别：Aphlict 是 `break` 出重放循环、连接留着，本域是让 `readLoop` 返回、连接关掉。理由写在 `replay` 的注释里——客户端已经走了，剩下的消息会以同样的方式一条条失败。
+- **`ping` 不另回协议错误。** pong 经同一个 writer 入队；队列饱和或实际写失败会关闭连接，读循环随后退出。
+- **`replay` 的写失败或总期限到达会结束会话。** 与 Aphlict 有一处差别：Aphlict 是 `break` 出重放循环、连接留着，本域是让 `readLoop` 返回、连接关掉。正常连接按实际写完成逐帧重放，不会因为历史条数超过发送队列容量就立即断连。
 
 `replay` 的 `age` 缺省 60000 毫秒，与 Aphlict 的 `message.data.age || 60000` 同值。`data` 整个缺失时 `json.Unmarshal` 报错，同样落到这个缺省值上，所以 `{"command":"replay"}` 这种不带 data 的帧是合法的（`TestReplayHonoursSubscriptions` 就这么发）。
 
-**重放要过两道过滤**：先按时间（`Hub.GetHistory`），再按订阅（`IsSubscribedToAny`）。第二道不能省，不然一次重连就会把别人的通知漏给这个浏览器，这也是 `TestReplayHonoursSubscriptions` 存在的理由——它把「不该收到的那条」先发出去，所以过滤坏掉时读到的是错的那条，而不是靠等一个超时来证明「没收到」。
+**重放要过三道过滤**：`Hub.GetHistory` 按实例与时间选择，再用 `IsSubscribedToAny` 检查订阅。实例与订阅过滤都不能省，否则重连可能收到其它实例或未订阅用户的通知。`TestReplayHonoursSubscriptions` 把「不该收到的那条」先发出去，所以过滤坏掉时读到的是错的那条，而不是靠等一个超时来证明「没收到」；实例隔离另有真实 WebSocket 回归。
 
 ### 3.5 实例名从路径里切
 
@@ -367,7 +367,7 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 
 | 码 | 状态 | 什么时候 |
 |---|---|---|
-| `ERR_BAD_REQUEST` | 400 | admin 的 body 解不开（空 body 的 `io.EOF` 也在内） |
+| `ERR_BAD_REQUEST` | 400 | admin 的 body 不是合法 JSON 对象，或实例名超过 512 字节 |
 | `ERR_NOT_FOUND` | 404 | admin 口路径不匹配（`/status` 少了尾斜杠就是这个） |
 | `ERR_METHOD_NOT_ALLOWED` | 405 | 路径存在但方法不对，**两个端口都真的会返回它** |
 | `ERR_TOO_LARGE` | 413 | 请求体超过平台层的 `2M`（第 4.6 节） |
@@ -397,7 +397,7 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 | 501 的位置 | handler 第一行 `websocket.IsWebSocketUpgrade` 判断 | 同样；通过后交给 contrib upgrader（第 3.3 节） |
 | 契约与测试 | 四组 `_test.go` | 加上 11 份跨语言契约固件、一份 e2e 脚本、一份 OpenAPI |
 
-**没变的是设计判断本身**：一个 hub 接住两个端口、fingerprint 网格防环、history 双上限、每连接一条 goroutine、`writeMu` 与 `mu` 分开、`CheckOrigin` 放行。这些在旧报告里的推理仍然成立，本文第 3 节是把它们对着当前代码重新讲了一遍。
+**保留的协议与部署边界**是一个 hub 接住两个端口、fingerprint 网格防环、按实例与订阅过滤，以及允许浏览器跨源连接。并发与资源实现已更新为每连接读循环加单 writer、独立订阅/队列锁、history 三道上限和有界 peer 中继；旧报告的逐消息 goroutine、`writeMu` 与 history 双上限描述不能用于当前实现。
 
 旧报告里另外几处不要照抄：它说指纹空间是 5.6×10²⁷（实际 55¹⁶ ≈ 7×10²⁷）、说 `version: 8` 与 Aphlict 一致（`phorge-fork` 里那份报 7，见第 3.6 节）、并且列举了一批当时同仓库的兄弟服务（`gorge-db-api` 之类），本仓库当前实际有哪些域与二进制见 [`../README.md`](../README.md) 的模块表。
 

@@ -263,9 +263,9 @@ func readFile(t *testing.T, path string) string {
 // Documentation links are part of the navigation contract. Ignore fenced code
 // so Markdown examples and signatures such as [](path, dst *T) are not links.
 func TestDocumentationLocalLinksExist(t *testing.T) {
-	roots := []string{"README.md", "docs", "compat", "tests/contract", "deploy/compose"}
+	roots := []string{"README.md", "RELEASE_NOTES.md", ".github/PULL_REQUEST_TEMPLATE.md", "docs", "compat", "tests/contract", "deploy/compose", "deploy/release"}
 	if fork := os.Getenv(phorgeForkEnv); fork != "" {
-		for _, rel := range []string{"README.md", "DOCKER.md", "PRODUCTION-CUTOVER.md", "I18N-zh_CN.md", "scripts/operations", "scripts/i18n"} {
+		for _, rel := range []string{"README.md", "DOCKER.md", "PRODUCTION-CUTOVER.md", "RELEASE_NOTES.md", "I18N-zh_CN.md", "resources/i18n-zh-glossary.md", "docs", "support/runtime/README.md", "scripts/operations", "scripts/i18n"} {
 			checkMarkdownLinks(t, filepath.Join(fork, rel))
 		}
 	}

@@ -36,7 +36,11 @@ cd deploy/compose && cp .env.example .env && docker compose up -d --build
 make compose-up
 ```
 
-`build.context` 指向 `../../go`，`build.args.SERVICE` 选二进制，`image` 同时写着 ghcr 地址——这样本地能构建、CI 产物也能直接拉。所有服务镜像集中在 `ghcr.io/soulteary/gorge` 这个与仓库关联的 Package 中，标签由“服务名 + 版本”组成，例如 `render-latest`、`search-2026.09.08-r5`。`GORGE_IMAGE_TAG` 仍只填写 `latest` 或 CalVer，Compose 会为每个服务补上自己的前缀。
+`build.context` 指向 `../../go`，`build.args.SERVICE` 选二进制。这个本地服务层 Compose
+保留 `<service>-${GORGE_IMAGE_TAG}` 镜像名，默认 `latest`；它与配对发布门禁是不同入口。
+当前 Release 不更新这些服务标签。部署已验收版本时，从 `release-manifest.json` 取各服务
+的完整 `ghcr.io/<owner>/<repo>@sha256:…` 引用，用部署 overlay 固定镜像；不能用
+`GORGE_IMAGE_TAG=latest` 或独立服务的历史标签推断一套匹配版本。
 
 `.env.example` 里每个变量都带注释说明取值含义，其中共享 token 留空会让普通域的中间件跳过鉴权；image、maintenance、原生邮件和持久投影等能力要求非空 token，启用前须按对应模块配置。
 
@@ -58,7 +62,7 @@ make compose-up
 两处配置细节：
 
 - **`paths` 过滤**限定在 `Makefile`、`go/**`、`tests/**`、`.github/workflows/**`，纯 PHP 改动不触发 Go 流水线。将来 `php/` 下有代码时应当另开一条工作流，而不是放宽这里的过滤。
-- **所有 job 带 `working-directory: go`**，因为 module 在子目录。`golangci-lint-action` 是例外，它自己解析 module，所以走 `with.working-directory` 输入而不是 shell 级的那个——这一点在 workflow 里有注释，容易踩。
+- **Go 命令在 `go/` 执行**，因为 module 在子目录。镜像构建从仓库根显式传 `go/` 上下文。`golangci-lint-action` 自己解析 module，所以走 `with.working-directory: go` 输入而不是 shell 级目录。
 
 覆盖率报告不跟随普通 push / pull request 生成。`.github/workflows/test-report.yml` 只在手动触发或推送 `YYYY.MM.DD-rN` 标签时运行 `soulteary/go-test-report-action`，报告、徽章、JSON 与原始结果上传为 Actions 制品；`commit: false` 保证报告不会由机器人写回仓库并产生新的提交。
 
@@ -69,23 +73,48 @@ make check    # fmt-check + vet + test，即 CI 的主要内容（不含 lint �
 make lint     # 需要本地装 golangci-lint
 ```
 
+`go vet` 不覆盖 errcheck 和 Staticcheck 的全部规则，`-race` 也只检查实际运行中的
+数据竞争。不能用 vet/race 通过代替 lint 通过。CI 的 lint action 当前选择 `version: latest`；
+复现本地结果时记录 `golangci-lint --version`，完整质量检查须单独执行 `make lint`。
+
 ## 4. Release
 
-`.github/workflows/release.yml`，`YYYY.MM.DD-rN` CalVer tag 触发，也可手动 dispatch 指定镜像 tag。手动触发固定检出 `main`，不受 Actions 页面当时所选 ref 影响。
+[release.yml](../.github/workflows/release.yml) 由 `YYYY.MM.DD-rN` tag 或手动 dispatch
+触发。两种方式都要求已存在的版本 tag，并检出该 tag 的 Gorge commit；配对 Phorge
+通过 `PHORGE_CONTRACT_REF` 仓库变量或 `phorge_ref` 输入固定到完整 40 位 commit SHA，
+不回退到 main。发布前还验证 tag 的真实日历日期。
 
-按 `matrix.service` 逐个构建，并统一推到 `ghcr.io/soulteary/gorge`。每个矩阵项同时声明 `tag_prefix`，让不同服务在同一个 Package 中使用互不冲突的标签；`fail-fast: false` 让一个服务失败不拖垮其余。双架构 `linux/amd64,linux/arm64`，GitHub Actions cache 按 service 分 scope（`scope=${{ matrix.service }}`），避免不同二进制互相冲掉缓存。
+流程依次固定源码对、检查契约、构建十四个双架构候选镜像、执行完整配对验收、生成
+`release-manifest.json`，最后发布 GitHub Release。候选标签使用
+`candidate-<run ID>-<attempt>-<service>`，最终清单绑定每个镜像的 digest 与两仓库 commit。
+`linux/amd64,linux/arm64` 编译和按 service 分 scope 的 Buildx cache 保留；服务清单、
+健康端口和源码标签由矩阵及 [清单门禁](../deploy/release/manifest.py) 核对。
 
-tag 策略由 `docker/metadata-action` 生成：CalVer 发布为每个服务同时推送 `<service>-<calver>` 与 `<service>-latest`；手动触发从 `main` 构建，并使用 `<service>-<输入值>`（输入默认 `latest`）。例如 `gorge-render` 发布 `render-<calver>` 与 `render-latest`。全部二进制及标签前缀以 [release.yml](../.github/workflows/release.yml) 的矩阵为准；不要从旧示例推断已发布镜像支持当前协议。
+十四个候选镜像都检查非 root 用户、二进制可执行性、源码 revision 和健康端口。
+image/render 还必须以对应候选 digest 启动实际容器，记录各自 container/image ID，
+再执行配对契约。其他服务的业务路径由配对源码的 Go/PHP 测试验证；这不表示十四个
+候选容器都完成了运行时业务验收，也不表示另一架构已执行同样的运行时测试。
 
-镜像显式携带 `org.opencontainers.image.source=https://github.com/soulteary/gorge`，新 Package 会关联到本仓库并继承工作流权限。迁移前的 `ghcr.io/soulteary/gorge-*` 独立包保留已有版本，但不再由这条流水线更新。
+所有版本的最终 publish job 共用仓库级锁。锁内读取 GitHub Release `latest`，按日期
+和整数修订号比较版本；先将草稿以 `--latest=false` 发布，仅严格更新的版本提升
+`latest`。旧版本晚完成可发布自身版本，但不会让入口倒退。只有明确 HTTP 404 才视为
+无既有 release；权限、限流、超时、坏响应或未知旧 tag 格式均停止后续操作。
+每个 GitHub CLI 调用限时 30 秒，失败后保留实际状态供核对，不自动覆写已有版本。
 
-## 5. 加一个服务要改的三处
+构建或配对验收失败时不进入发布。常规 CI 的 lint 与安全扫描是独立 job；Release 自身
+执行契约、vet 和配对测试，不应把它描述为已重复所有 CI 质量规则。发布细节及模拟
+GitHub 回归见 [发布门禁说明](../deploy/release/README.md)。历史独立 package/tag
+保持已有状态，当前流程不更新任何 `*-latest` 服务标签。
+
+## 5. 加一个服务的登记
 
 1. `go/cmd/<name>/main.go`
 2. `deploy/compose/docker-compose.yml` 加一个 service，`build.args.SERVICE` 填 `<name>`
 3. `.github/workflows/release.yml` 的 `matrix.service` 加一项
 
-参数化构建可复用；有新运行依赖或验收要求时仍须更新 Dockerfile 与 CI。 这是把「一个 cmd 一个服务 + 一份参数化 Dockerfile + 平台层统一引导」三件事对齐之后的直接收益。
+这三处是基础登记。发布清单与候选验收另有完整服务集，新增二进制还须同步
+`deploy/release/manifest.py`、配对 Phorge 的 `deploy/acceptance/accept.py`，并补对应端口、
+包装和运行时验收。新运行依赖需要更新 Dockerfile 与 CI，不能只添加矩阵项。
 
 若新服务不是新二进制而是并入既有进程的新域，则这三处一处都不用改，见 [`architecture.md`](architecture.md) 第 4.2 节。
 
@@ -112,3 +141,8 @@ CI 还包含 queue-execution（MySQL/Redis）、worker-lifecycle、image-runtime
 [contract-drift.yml](../.github/workflows/contract-drift.yml) 对照配对 PHP checkout 的协议和迁移；本地设置 `PHORGE_FORK_DIR` 后执行 `make docs-check`。没有该变量时跨仓库检查会跳过，不能把跳过当成配对通过。
 
 完整容器交付、恢复故障和版本配对见 [operations.md](operations.md) 及 Phorge 的 `deploy/acceptance/accept.py`。本地单元测试通过不等于生产接管或退役验收通过。
+
+完整 Docker 验收使用真实 MySQL、Redis、S3、image/render、Elasticsearch 和 Meilisearch。
+Go JSON 事件中带 `Test` 名称的 skip 会使必测阶段失败；没有 `Test` 字段的包级
+`[no test files]` 事件不当成用例跳过。验收记录浏览器业务流程、真实 provider 投递和
+生产性能尚未覆盖，不能用成功回执替代这些上线前检查。

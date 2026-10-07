@@ -18,8 +18,9 @@ info:
     them differently, so they cannot be collapsed into one listener. Every
     operation below therefore declares the port it belongs to under `servers`.
 
-    **This is the one API in the repository whose successful responses are
-    deliberately not wrapped in the `{data, error}` envelope.** Phorge's
+    **Successful admin JSON responses deliberately omit the `{data, error}`
+    envelope.** Health probes, binary APIs and Conduit also have separate
+    response protocols elsewhere in the repository. Phorge's
     `PhabricatorNotificationServerRef` decodes these bodies with a bare
     `phutil_json_decode()` and indexes the keys directly, so an envelope would
     put every field out of reach without raising any error. Failures *do* answer
@@ -79,9 +80,11 @@ paths:
           description: Admin port
       summary: Publish a message
       description: |
-        Delivers a message to every listener of the addressed instance that
-        subscribes to one of its `subscribers`, records it in the replay
-        history, and relays it to the configured cluster peers.
+        Records the message in bounded replay history and queues it for matching
+        listeners of the addressed instance and the configured cluster peers.
+        Empty or absent subscribers broadcast within that instance. Acceptance
+        does not prove browser or peer receipt: saturated listeners close and
+        saturated peer queues discard new relays.
 
         The request body is an **open object**: its shape is defined by the
         Phorge code that posts it, not by this service, and it travels through to
@@ -144,6 +147,12 @@ paths:
                 fingerprint: 7xKm3pQr9tVwZ2bN
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          description: Request body exceeds the process transport limit (2 MiB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -170,6 +179,13 @@ paths:
         frames. Malformed frames and unknown commands are ignored rather than
         reported, as Aphlict did — a browser has no way to act on a protocol
         complaint, and closing the connection over a version skew would be worse.
+
+        Incoming frames are limited to 64 KiB. Each connection accepts at most
+        4096 unique subscription PHIDs of at most 512 bytes each, and queues at
+        most 64 outgoing frames with a 4 MiB queued/in-flight byte budget.
+        Resource violations close that connection. Writes have a 5-second
+        deadline; history replay waits for each actual write under one 30-second
+        deadline. Replay is filtered by instance and subscription.
       operationId: openWebSocket
       security: []
       parameters:
@@ -199,6 +215,11 @@ paths:
         Served by a wildcard route, which is why an unrecognised path answers
         501 rather than 404 on this port. `/healthz` and `/readyz` stay
         reachable underneath it because static routes outrank the wildcard.
+
+        Instance names are limited to 512 bytes. A process retains at most 1024
+        instance listener lists, evicting only idle lists without replay history.
+        When all lists are protected, a new-instance connection is closed after
+        upgrade; existing instances can still accept connections.
       operationId: openWebSocketForInstance
       security: []
       parameters:
@@ -240,7 +261,7 @@ paths:
         - $ref: '#/components/parameters/Instance'
       responses:
         '200':
-          description: Counters for the addressed instance
+          description: Connection/history counters for the addressed instance, plus process-wide uptime and message counters
           content:
             application/json:
               schema:
@@ -270,6 +291,8 @@ paths:
                     history.size: 1
                     history.age: 1204
                     version: 8
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -322,6 +345,7 @@ components:
       description: |
         Phorge instance the request addresses. Phorge only sends it when
         `cluster.instance` is configured; absent or empty means `default`.
+        The UTF-8 byte length must not exceed 512; longer admin names return 400.
       schema:
         type: string
       example: acme
@@ -430,7 +454,7 @@ components:
       properties:
         instance:
           type: string
-          description: The instance these counters describe, echoing the request.
+          description: Addressed instance for connection/history counters, echoing the request; message counters and uptime are process-wide.
           example: default
         uptime:
           type: integer
@@ -445,27 +469,29 @@ components:
           type: integer
           format: int64
           description: |
-            Connections accepted since startup for this instance, not a
-            high-water mark: it only grows.
+            Connections accepted for this cached instance listener list. It
+            resets on process restart or eviction of an idle list that has no
+            replay history; it is not a durable lifetime count.
           example: 5
         messages.in:
           type: integer
           format: int64
-          description: Messages accepted on the admin port since startup.
+          description: Process-wide messages published through the hub since startup, across all instances; duplicate fingerprints are not republished.
           example: 1
         messages.out:
           type: integer
           format: int64
           description: |
-            Individual deliveries to clients since startup. One message fanned
-            out to two subscribers counts twice, so this is normally larger than
-            `messages.in`.
+            Process-wide successful live WebSocket message writes since startup.
+            Queueing alone does not increment it. One live message written to
+            two clients counts twice; pong and history replay are excluded.
           example: 2
         history.size:
           type: integer
           description: |
-            Messages currently held for replay, bounded by 4096 entries and 60
-            seconds. Process-wide rather than per instance.
+            Messages currently held for this addressed instance. The shared
+            retention budget across all instances is 4096 entries, 60 seconds,
+            and 16 MiB of encoded message plus instance-name bytes.
           example: 1
         history.age:
           type: integer
@@ -572,11 +598,10 @@ components:
 
     BadRequest:
       description: |
-        The message body could not be decoded as JSON. An empty body is this
-        too, since it decodes to `io.EOF`.
-
-        This is the one failure a caller can act on, and unlike the success path
-        it does answer in the envelope.
+        The body is not a valid JSON object (including an empty body or null),
+        or the addressed instance exceeds 512 bytes. This applies to message
+        intake; status queries also reject oversized instance names. Unlike
+        successful admin responses, failures answer in the envelope.
       content:
         application/json:
           schema:
@@ -584,7 +609,7 @@ components:
           example:
             error:
               code: ERR_BAD_REQUEST
-              message: 'unexpected EOF'
+              message: 'unexpected end of JSON input'
 
     InternalError:
       description: |

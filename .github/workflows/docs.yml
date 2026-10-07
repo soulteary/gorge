@@ -5,6 +5,7 @@ on:
     branches: [ main, develop ]
     paths:
       - 'README.md'
+      - 'RELEASE_NOTES.md'
       - 'Makefile'
       - 'docs/**'
       - 'compat/**'
@@ -14,11 +15,15 @@ on:
       - 'go/cmd/**'
       - 'go/internal/**'
       - 'deploy/compose/**'
+      - 'deploy/release/**'
+      - '.github/workflows/release.yml'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [ main, develop ]
     paths:
       - 'README.md'
+      - 'RELEASE_NOTES.md'
       - 'Makefile'
       - 'docs/**'
       - 'compat/**'
@@ -28,6 +33,9 @@ on:
       - 'go/cmd/**'
       - 'go/internal/**'
       - 'deploy/compose/**'
+      - 'deploy/release/**'
+      - '.github/workflows/release.yml'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 

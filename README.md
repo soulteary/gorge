@@ -2,8 +2,9 @@
 
 Phorge 的 Go 服务层单仓库。
 
-新版本准备：[2026.10.07-r2 发布说明](RELEASE_NOTES.md)与
-[范围、配对验证及发布步骤](docs/releases/2026.10.07-r2.md)。
+当前构建、配对验收与发布流程见 [构建与交付](docs/delivery.md)和
+[发布工具说明](deploy/release/README.md)。[2026.10.07-r2 发布正文](RELEASE_NOTES.md)与
+[版本准备记录](docs/releases/2026.10.07-r2.md)保留该版本的历史范围，不替代当前流程。
 
 Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及 PHP 接入的兼容约束。
 
@@ -24,6 +25,7 @@ Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能
 ├── api/openapi/<域名>.yaml    各域的 HTTP 契约
 ├── compat/phorge/README.md   与 Phorge 的兼容约束，改动前必读
 ├── deploy/compose/           本地与单机部署编排
+├── deploy/release/           固定源码对、候选镜像与发布回执工具
 ├── deploy/kubernetes/        （占位）
 ├── php/{extensions,adapters}/（占位）PHP 侧接入代码
 ├── docs/                     技术文档：架构、平台、测试、交付、运维与模块说明
@@ -76,13 +78,14 @@ curl -s http://127.0.0.1:8140/healthz
 ### 路径二：直接跑二进制（最快）
 
 ```bash
+# 从仓库根执行；服务会占用当前终端。
 cd go
 go test ./...
 go build -o ../bin/gorge-render ./cmd/gorge-render
 GORGE_SERVICE_TOKEN=dev-token ../bin/gorge-render
 ```
 
-或从仓库根：`make test && make build && make run`。
+或从仓库根：`make test && make build && GORGE_SERVICE_TOKEN=dev-token make run`。
 
 服务默认监听 `:8140`。带 token 调试：
 
@@ -92,7 +95,7 @@ curl -s -H 'X-Service-Token: dev-token' \
   http://127.0.0.1:8140/api/highlight/render | jq -r .data.html
 ```
 
-输出里应当带 `class="k"` 这类 Pygments CSS 类名。验证本服务的高亮路径：
+输出里应当带 `class="k"` 这类 Pygments CSS 类名。在另一个终端中，从仓库根验证本服务的高亮路径：
 
 ```bash
 TOKEN=dev-token BASE_URL=http://127.0.0.1:8140 bash tests/e2e/render.sh
@@ -101,6 +104,8 @@ TOKEN=dev-token BASE_URL=http://127.0.0.1:8140 bash tests/e2e/render.sh
 ## 配置
 
 Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已经移除独立服务时期的裸变量别名；升级部署时必须同步更新编排文件。外部后端的原生变量仍受支持，例如 mailer 的 `SMTP_*` 以及 `MAILER_ACCESS_KEY`、`MAILER_SECRET_KEY`、`MAILER_REGION`、`MAILER_ENDPOINT`、`MAILER_API_KEY`、`MAILER_DOMAIN`、`MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`，还有 search 的 `ES_*` / `MEILI_*`；不要把这些名称改写成不存在的 `GORGE_*` 形式。`MAILER_CONFIG`、`MAILER_TYPE` 与 `MAILER_KEY` 不在例外范围内。
+
+上述规则针对 Go 进程。配对 Phorge 的 Compose 仍可接收部分历史邮件输入并转换为规范变量；`GORGE_MAILER_KEY` 是 PHP 适配器选择键，`GORGE_MAILER_BACKEND_KEY` 才映射到 Go 后端 key，见 [邮件模块](docs/modules/mailer.md)。部署启用也须按所选编排判断：基础配置保留图片 legacy 路径，Phorge 生产 overlay 将图片模式设为 `gorge`；maintenance 是否执行由数据库 owner/epoch 决定。上线前按 [运维说明](docs/operations.md)完成配对配置和接管验收。
 
 下表是 `gorge-render` 的。其他服务配置见 [`docs/modules/`](docs/modules/) 对应模块；多数服务使用 `GORGE_LISTEN_ADDR` 与 `GORGE_SERVICE_TOKEN`，notification 用绑定主机和双端口且不使用 service token。
 
@@ -167,7 +172,7 @@ Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已
 
 1. 写 `go/cmd/<name>/main.go`，复用 `internal/platform` 引导；
 2. `deploy/compose/docker-compose.yml` 加一个 service，`build.args.SERVICE` 填 `<name>`；
-3. `.github/workflows/release.yml` 的 `matrix.service` 加一项。
+3. 更新 [Release matrix](.github/workflows/release.yml) 和 [候选镜像 manifest](deploy/release/manifest.py) 的服务登记；配对 Phorge 的 `deploy/acceptance/accept.py` 也须登记完整候选集合。
 
 同步更新模块索引、端口、部署和验收配置；新运行依赖可能还需调整 Dockerfile 和 CI，见 [构建与交付](docs/delivery.md)。
 
@@ -175,12 +180,14 @@ Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已
 
 ```bash
 make help          # 列出所有目标
-make check         # gofmt + go vet + go test，CI 的主要内容
+make check         # gofmt + go vet + go test
 make lint          # golangci-lint
+make docs-check    # 文档索引、链接和契约一致性
 make compose-config  # 校验 compose 文件
 ```
 
 CI 带 `paths` 过滤（`Makefile`、`go/**`、`tests/**`、`.github/workflows/**`），纯 PHP 改动不会触发 Go 流水线。
+Go module 在 `go/` 下；直接运行 Go 或 golangci-lint 时先进入该目录。`make check` 不包含 lint；从仓库根运行 `make lint` 可正确选择 module。文档有独立的 [一致性检查](.github/workflows/docs.yml)，更多检查与真实依赖验收见 [测试说明](docs/testing.md)。
 
 ## 与 Phorge 的兼容约束
 
@@ -189,7 +196,3 @@ CI 带 `paths` 过滤（`Makefile`、`go/**`、`tests/**`、`.github/workflows/*
 ## 许可证
 
 Apache License 2.0，见 [LICENSE](LICENSE)。
-
-
-图片计算支持可选 `gorge-image` 服务（8190），包含五种缩略图预设、probe、GIF策略和有界计算缓存。
-默认不切换 Phorge；参阅 [图片模块与灰度说明](docs/modules/image.md)。

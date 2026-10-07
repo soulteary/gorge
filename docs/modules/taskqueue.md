@@ -161,10 +161,15 @@ SELECT id FROM worker_activetask
 
 ### 3.6 Worker：租约生命周期与领域委托
 
-`Consumer.Run` 按任务类领取，执行前确认 v1 和 leaseOutcomes 能力并校验
+`Consumer.Run` 按空闲槽位和任务类领取，执行前确认 v1 和 leaseOutcomes 能力并校验
 当前租约，执行中周期续租；失去所有权立即取消 handler。成功结果统一
 通过 finalize 原子提交，失败和 yield 通过 resolve 提交。结果上报使用
 独立的十秒停机安全上下文，409 不再重试，确认写入后才更新进程计数。
+
+退出信号先停止领取，在途任务在独立排空预算中保留心跳。预算耗尽时取消执行，
+并尝试用当前仍属本 worker 的租约永久归档隔离；归档 result=failure 在这里表示
+需人工核对的未知执行结果，不证明业务副作用失败或回滚。完整关停、归档未确认
+与停止宽限边界以 [worker](worker.md) 为准，不能从队列归档推导 exactly-once。
 
 `handlers.RegisterWithFeedPolicy` 配置原生 Feed 政策文件时，版本 1 Feed
 直接由 Go 检查静默模式和 URI 并投递，不调用 PHP prepare。旧 key 任务仍
@@ -208,12 +213,13 @@ inbox，不执行领域逻辑。`/readyz` 检查队列协议、配置的 Feed �
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `GORGE_LISTEN_ADDR` | `:8170` | 监听地址 |
-| `GORGE_SERVICE_TOKEN` | 空 | 保护 `/api/worker/stats` |
+| `GORGE_SERVICE_TOKEN` | 空 | 保护全部 `/api/worker/*` 路由 |
 | `GORGE_WORKER_TASK_QUEUE_URL` | `http://gorge-taskqueue:8090` | 要租的 taskqueue 地址 |
 | `GORGE_WORKER_TASK_QUEUE_TOKEN` | 空 | 出示给 taskqueue 的 token，须等于对方的 `GORGE_SERVICE_TOKEN` |
 | `GORGE_WORKER_LEASE_LIMIT` | `4` | 每次轮询租多少 |
 | `GORGE_WORKER_POLL_INTERVAL_MS` | `1000` | 有活时的轮询间隔 |
 | `GORGE_WORKER_MAX_WORKERS` | `4` | 并发跑多少 |
+| `GORGE_WORKER_DRAIN_TIMEOUT_SEC` | `30` | 独立关停排空预算（秒）；0 回落默认，上限 3600，另需预留收尾 10 秒与清理 1 秒 |
 | `GORGE_WORKER_IDLE_TIMEOUT_SEC` | `180` | 空闲状态日志间隔（秒）；0 关闭日志，不暂停轮询 |
 | `GORGE_WORKER_CONDUIT_URL` | 空 | 见 3.6，空 = 只租并运行本地实现的类 |
 | `GORGE_WORKER_CONDUIT_TOKEN` | 空 | Conduit token |
@@ -223,7 +229,7 @@ inbox，不执行领域逻辑。`/readyz` 检查队列协议、配置的 Feed �
 
 ## 5. 兼容契约
 
-权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第十节，这里是概述。本域的约束整节都是**静默型**（破坏后不报错、只错到没人发现），分两组：
+权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第十节，这里是概述。字段及底层 SQL 漂移可能静默改变语义；HTTP 协议、能力缺失与过期租约则可能明确返回错误，不能把当前全部边界都称作静默失效。基础约束分两组：
 
 **一组是任务字段名**：`taskClass` / `dataID` / `leaseOwner` / `leaseExpires` / `failureCount` / `failureTime` / `objectPHID` / `containerPHID` / `priority` / `dateCreated` / `dateModified`，以及归档表多出的 `result`（整数 0/1/2）/ `duration` / `archivedEpoch`。它们直接映射 Phorge 的 `worker_activetask` / `worker_archivetask` 列名，改错一个不会报错，只会让 PHP 侧读到空值、或让 `bin/worker` 的界面把任务显示成另一个样子。
 

@@ -38,7 +38,9 @@ out in that file.
   contract run, so the runner starts a local HTTP server that answers a fixed
   Conduit success body (`{"result": {...}, "error_code": null, "error_info":
   null}`) and points the gateway's proxy at it. The fixture then asserts the
-  relayed shape — `result` present, `data`/`error`/`error_code` absent.
+  relayed shape — `result` present and platform `data`/`error` absent. The stub's
+  Conduit `error_code` and `error_info` keys remain present with null values;
+  the gateway does not remove them.
 
 - **`rate-limited.json`** needs a **limiter tuned to refuse**. The runner builds
   the gateway with a rate limiter whose bucket is small enough that the
