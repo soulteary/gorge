@@ -8,6 +8,9 @@
 
 ## 目录
 
+版本准备记录：[2026.10.07-r2](releases/2026.10.07-r2.md)。双语发布正文见
+[RELEASE_NOTES.md](../RELEASE_NOTES.md)。
+
 ### 跨模块
 
 接管与持久状态运维参见 [`operations.md`](operations.md)：统一报告、保留边界、
