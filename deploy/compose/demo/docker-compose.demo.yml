@@ -178,6 +178,8 @@ services:
     build:
       <<: *gorge-build
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-search
         PORT: 8120
     image: ghcr.io/soulteary/gorge:search-${GORGE_IMAGE_TAG:-latest}
@@ -211,6 +213,8 @@ services:
     build:
       <<: *gorge-build
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-mailer
         PORT: 8110
     image: ghcr.io/soulteary/gorge:mailer-${GORGE_IMAGE_TAG:-latest}
@@ -241,6 +245,8 @@ services:
     build:
       <<: *gorge-build
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-webhook
         PORT: 8160
     image: ghcr.io/soulteary/gorge:webhook-${GORGE_IMAGE_TAG:-latest}

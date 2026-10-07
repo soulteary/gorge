@@ -45,6 +45,27 @@ docker compose up -d --build
 
 或从仓库根：`make compose-up`。
 
+本地构建和联调可以通过环境变量调整 Go 构建配置，`make docker-build`、
+`make compose-up` 和 demo Compose 都会传入这两个构建参数：
+
+```bash
+export GOPROXY="https://goproxy.cn"
+export GOROOT_BOOTSTRAP=/usr/local/go
+make docker-build
+# 或 make compose-up
+```
+
+`GOROOT_BOOTSTRAP` 必须指向构建容器内的 Go 安装目录。直接在宿主机编译时可用
+`export GOROOT_BOOTSTRAP="$GOROOT"`，但宿主机路径通常不能用于 Docker 构建。
+不设置时，Dockerfile 使用构建镜像的 `$GOROOT`，Compose 使用 `/usr/local/go`；
+`GOPROXY` 默认保持 `https://proxy.golang.org,direct`。这些参数只用于构建阶段。
+
+直接使用 Dockerfile 时需显式传入环境变量：
+
+```bash
+docker build --build-arg GOPROXY --build-arg GOROOT_BOOTSTRAP -t gorge-render:dev go/
+```
+
 ```bash
 curl -s http://127.0.0.1:8140/healthz
 ```

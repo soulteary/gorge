@@ -16,6 +16,9 @@ ARG ALPINE_VERSION=3.22
 
 FROM golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION} AS builder
 
+# Build-only settings; paths must exist inside the builder image.
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOROOT_BOOTSTRAP=${GOROOT}
 ARG SERVICE=gorge-render
 
 WORKDIR /src

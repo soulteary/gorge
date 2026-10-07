@@ -76,7 +76,7 @@ check: fmt-check vet test ## Run the checks CI runs, minus lint and govulncheck
 
 .PHONY: docker-build
 docker-build: ## Build the $(SERVICE) image (context is go/)
-	docker build --build-arg SERVICE=$(SERVICE) -t $(SERVICE):dev $(GO_DIR)
+	docker build --build-arg GOPROXY --build-arg GOROOT_BOOTSTRAP --build-arg SERVICE=$(SERVICE) -t $(SERVICE):dev $(GO_DIR)
 
 .PHONY: compose-config
 compose-config: ## Validate the compose file

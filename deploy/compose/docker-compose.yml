@@ -25,6 +25,8 @@ services:
     build:
       context: ../../go
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-integrations
         PORT: 8210
     image: ghcr.io/soulteary/gorge:integrations-${GORGE_IMAGE_TAG:-latest}
@@ -45,6 +47,8 @@ services:
     build:
       context: ../../go
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-maintenance
         PORT: 8200
     image: ghcr.io/soulteary/gorge:maintenance-${GORGE_IMAGE_TAG:-latest}
@@ -69,6 +73,8 @@ services:
     build:
       context: ../../go
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-image
         PORT: 8190
     image: ghcr.io/soulteary/gorge:image-${GORGE_IMAGE_TAG:-latest}
@@ -98,6 +104,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-render
     image: ghcr.io/soulteary/gorge:render-${GORGE_IMAGE_TAG:-latest}
     environment:
@@ -145,6 +153,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-conduit
         PORT: 8150
     image: ghcr.io/soulteary/gorge:conduit-${GORGE_IMAGE_TAG:-latest}
@@ -195,6 +205,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-notification
         # PORT feeds ENV GORGE_HEALTHCHECK_PORT and nothing else; only the
         # image's built-in HEALTHCHECK reads it. Both listeners answer
@@ -242,6 +254,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-mailer
         PORT: 8110
     image: ghcr.io/soulteary/gorge:mailer-${GORGE_IMAGE_TAG:-latest}
@@ -285,6 +299,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-search
         PORT: 8120
     image: ghcr.io/soulteary/gorge:search-${GORGE_IMAGE_TAG:-latest}
@@ -328,6 +344,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-file-storage
         PORT: 8100
     image: ghcr.io/soulteary/gorge:file-storage-${GORGE_IMAGE_TAG:-latest}
@@ -396,6 +414,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-webhook
         PORT: 8160
     image: ghcr.io/soulteary/gorge:webhook-${GORGE_IMAGE_TAG:-latest}
@@ -464,6 +484,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-taskqueue
         PORT: 8090
     image: ghcr.io/soulteary/gorge:taskqueue-${GORGE_IMAGE_TAG:-latest}
@@ -532,6 +554,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-worker
         PORT: 8170
     image: ghcr.io/soulteary/gorge:worker-${GORGE_IMAGE_TAG:-latest}
@@ -604,6 +628,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-db-api
         PORT: 8080
     image: ghcr.io/soulteary/gorge:db-api-${GORGE_IMAGE_TAG:-latest}
@@ -676,6 +702,8 @@ services:
       context: ../../go
       dockerfile: Dockerfile
       args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOROOT_BOOTSTRAP: ${GOROOT_BOOTSTRAP:-/usr/local/go}
         SERVICE: gorge-gitea
         PORT: 8180
     image: ghcr.io/soulteary/gorge:gitea-${GORGE_IMAGE_TAG:-latest}
