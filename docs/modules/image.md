@@ -36,7 +36,7 @@ migrate角色将URI/token/mode写入deployment配置，默认shadow。实际切�
 
 ```sh
 GORGE_TEST_IMAGE_URL=http://127.0.0.1:18150 GORGE_TEST_IMAGE_TOKEN=... go test -race ./internal/imagetransform
-GORGE_TEST_ARCANIST_DIR=... GORGE_TEST_IMAGE_URL=... GORGE_TEST_IMAGE_TOKEN=... php tests/contract/image/runtime.php
+GORGE_TEST_IMAGE_URL=... GORGE_TEST_IMAGE_TOKEN=... php tests/contract/image/runtime.php
 ```
 
 真实后端测试覆盖四种格式、五预设、GIF帧数/时间/循环、静态政策、损坏/不支持格式；本地无URL时集成套件跳过，CI必须启动实际镜像。PHP geometry导出脚本可以刷新oracle，刷新需连同算法变更评审。

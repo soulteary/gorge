@@ -267,7 +267,7 @@ Feed HTTP 新任务包含 deliveryVersion=1、uri 和 PHP 生成的完整表单 
 
 旧 complete/fail/yield 接口仍保留兼容用途；新消费者使用 finalize/resolve 的租约保护。原生 PHP taskmaster 已退役，不能将失败结果回退到它。后文描述当前生命周期协议与持久回执；旧格式任务须单独排空。
 
-验证：`go test ./...`；真实 Redis 使用 `GORGE_TEST_REDIS_ADDR=host:port go test ./internal/taskqueue -run TestExecutionRedisIntegration -v`，测试只清理自己创建的随机前缀。PHP 使用 `GORGE_TEST_ARCANIST_DIR=/path/to/arcanist php tests/contract/worker/execution.php`。
+验证：`go test ./...`；真实 Redis 使用 `GORGE_TEST_REDIS_ADDR=host:port go test ./internal/taskqueue -run TestExecutionRedisIntegration -v`，测试只清理自己创建的随机前缀。PHP 使用 `php tests/contract/worker/execution.php`。
 
 ## 执行生命周期与事务事件
 

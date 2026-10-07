@@ -110,10 +110,10 @@ not implemented. The synchronous adapter methods are not cross-worker fences.
 
 ## Verification
 
-Run the PHP suite with the supported Arcanist checkout:
+Run the PHP suite from the paired Phorge checkout; it loads the bundled runtime:
 
 ```
-GORGE_TEST_ARCANIST_DIR=/path/to/arcanist php tests/contract/search/projection.php
+php tests/contract/search/projection.php
 ```
 
 Run Go tests, optionally with isolated real services:

@@ -408,7 +408,7 @@ $this->newFuture($server_uri, $payload)
   ->resolvex();
 ```
 
-而这个请求到达时带的 `Content-Type` 是 curl 给字符串 body 贴的默认值 **`application/x-www-form-urlencoded`**（`HTTPSFuture` 在 arcanist 里、不在本仓库，所以这一条是从实际请求上观察到的，不是从代码读出来的）。
+而这个请求到达时带的 `Content-Type` 是 curl 给字符串 body 贴的默认值 **`application/x-www-form-urlencoded`**（`HTTPSFuture` 来自 Arcanist，现由配对 Phorge 的 `support/runtime` 内置；这条契约最初由实际请求观察确认）。
 
 框架 binder 会按 `Content-Type` 分派；对这个头，它会照字面做表单解析，而 `hub.Message` 又是 `map[string]any`。所以 admin 的 `POST /` 必须无视标签，直接把原始字节按 JSON 解码：
 

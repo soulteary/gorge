@@ -93,7 +93,7 @@ Go：`go test -race ./internal/taskqueue -run 'Test(Schedule|Scheduler|Execution
 
 PHP：`tests/contract/scheduler/runtime.php` 使用隔离 MySQL，覆盖真实时钟计划、
 空 epoch、选项、认证、过期版本、动作支持范围以及共享所有权锁和事务回滚。该测试同时运行既有六项时钟回归（含夏令时和订阅）。
-设置 `GORGE_TEST_ARCANIST_DIR`、`GORGE_TEST_MYSQL_PORT`、`GORGE_TEST_MYSQL_PASSWORD`。
+设置 `GORGE_TEST_MYSQL_PORT`、`GORGE_TEST_MYSQL_PASSWORD`；PHP 使用配对 Phorge 内置的兼容运行库。
 
 只读模式会拒绝新的 capability/plan 请求，使 Go 停止生成计划。严格维护停机应先切
 `paused` 并等待命令完成，再进入只读或停止数据库；只读配置变化本身不能撤销

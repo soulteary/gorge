@@ -111,8 +111,8 @@ Phorge CI 的 Gorge runtime contracts 运行 PHP planning/receipt/retirement 与
 
 文件矩阵验证 local-disk、MySQL blob、旧 chunks 和 S3 的 copy/move、内容与完整性，
 以及共享 blob 最后引用保护。S3 是独立兼容服务，AWS 签名经过真实服务校验；本地 TLS
-代理使用临时 CA，保留证书验证。macOS OpenSSL PHP 使用临时 Arcanist 副本修正上游
-把所有 macOS 当成 SecureTransport 的判断，原 checkout 和生产证书策略不修改。
+代理使用临时 CA，保留证书验证。macOS OpenSSL 与 SecureTransport 的区别由 Phorge 内置运行库的固定兼容补丁处理；
+验收不再复制或临时修改运行库源码，私有 CA 和生产证书校验继续有效。
 
 paired_recovery.py 启动两个当前 Go integration 副本和真实 PHP Conduit 方法。
 PHP 业务回执提交后，在发出响应前 SIGKILL 两端，停写备份并恢复两端 SQL，再用原
@@ -126,8 +126,8 @@ Go 真实后端套件另外覆盖 Redis DUMP/RESTORE 后的 inbox/finalize 去�
 
 CI 要求 `GORGE_CONTRACT_REF` 仓库变量或 workflow_dispatch 的 gorge_ref 为匹配的
 已发布 40 位 Gorge commit SHA；不回退到 main。两仓库改动发布后更新此配对值。
-每次成功验收保存双方 commit、dirty 状态和包含未提交源码的 SHA256，及 Arcanist
-版本/CA 兼容源码摘要。常规 CI 必跑当前 image 与 S3；手动 published-image 检查是额外项。
+每次成功验收保存双方 commit、dirty 状态和包含未提交源码的 SHA256，及 Phorge 内置兼容运行库
+的版本、上游来源、内容摘要和补丁记录。常规 CI 必跑当前 image 与 S3；手动 published-image 检查是额外项。
 本地工作树验收通过不代表远端 CI 已运行，也不代表生产实例满足退役条件。
 
 ## Docker 单机栈的可执行运维入口

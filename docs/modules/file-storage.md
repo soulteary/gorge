@@ -272,7 +272,7 @@ IP，Host 和 TLS SNI 保留原域名。每次重定向重新检查连接，最�
 IP 绑定、附加黑名单、已知/未知长度、取消、并发上限及 header-only 认证。
 
 PHP 真实 HTTP 客户端契约（使用本机临时 fixture，不需要业务数据库）：
-`GORGE_TEST_ARCANIST_DIR=/path/to/arcanist php tests/contract/download/runtime.php`，
+`php tests/contract/download/runtime.php`，
 在 Phorge 目录运行，验证原始二进制、空文件、令牌、附加黑名单与错误 envelope。
 
 下载能力可通过认证 `GET /api/file/fetch/meta` 检查，返回 protocolVersion=1、

@@ -4,7 +4,7 @@ name: db-api cross-repo contract
 # the PHP consumer agree about the wire contract, end to end, against a real
 # MySQL. The first two layers each live in one repository and run on every push
 # there (the Go canonical-fixture guard in ci.yml's `test` job, the PHP
-# PhabricatorGorgeDBContractTestCase in phorge-fork's arc unit run). This
+# PhabricatorGorgeDBContractTestCase in phorge-fork's bundled unit run). This
 # workflow is the join: it checks out BOTH repositories at chosen refs, runs
 # the PHP consumer contract test against the phorge-fork ref under test, brings
 # up MySQL + Phorge + gorge-db-api, collects Phorge's own observations twice
@@ -13,8 +13,8 @@ name: db-api cross-repo contract
 #
 # Cross-repo refs are inputs, not implied by the trigger, because the two
 # branches under test are chosen per change and recorded in the PR (see
-# .github/PULL_REQUEST_TEMPLATE — the "paired change" section). Defaults are the
-# mainlines so a manual run with no inputs still does something useful.
+# .github/PULL_REQUEST_TEMPLATE — the "paired change" section). Phorge uses
+# a published immutable commit, selected by input or PHORGE_CONTRACT_REF.
 
 on:
   workflow_dispatch:
@@ -24,9 +24,9 @@ on:
         required: false
         default: 'main'
       phorge_ref:
-        description: 'phorge-fork branch/tag/SHA to test'
+        description: 'Published matching phorge-fork commit SHA (40 characters)'
         required: false
-        default: 'main'
+        default: ''
   pull_request:
     branches: [ main, develop ]
     paths:
@@ -37,7 +37,7 @@ on:
       - '.github/workflows/db-api-cross-repo.yml'
   # A visible success record after merge. Same paths as the pull_request
   # trigger; on push the ref inputs are empty, so GORGE_REF falls back to the
-  # pushed commit (github.sha) and PHORGE_REF to phorge-fork's mainline.
+  # pushed commit (github.sha) and PHORGE_REF to PHORGE_CONTRACT_REF.
   push:
     branches: [ main ]
     paths:
@@ -48,12 +48,9 @@ on:
       - '.github/workflows/db-api-cross-repo.yml'
 
 env:
-  # The paired phorge-fork ref. On workflow_dispatch it is the input; on a
-  # pull_request or push it falls back to main, since a PR/push here can not
-  # name a branch in the other repository. A real paired change is verified by
-  # dispatching this workflow with both refs set (and the PR body records the
-  # pair).
-  PHORGE_REF: ${{ github.event.inputs.phorge_ref || 'main' }}
+  # Pair only with a published Phorge commit containing the bundled runtime.
+  # Configure PHORGE_CONTRACT_REF after the matching Phorge change is published.
+  PHORGE_REF: ${{ github.event.inputs.phorge_ref || vars.PHORGE_CONTRACT_REF }}
   GORGE_REF: ${{ github.event.inputs.gorge_ref || github.sha }}
   PHORGE_REPO: soulteary/phorge
 
@@ -67,6 +64,13 @@ jobs:
     name: Canonical fixtures agree across repos
     runs-on: ubuntu-latest
     steps:
+      - name: Require immutable matching Phorge revision
+        shell: bash
+        run: |
+          if ! [[ "$PHORGE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Set PHORGE_CONTRACT_REF or phorge_ref to the published matching Phorge commit SHA."
+            exit 1
+          fi
       - name: Checkout gorge
         uses: actions/checkout@v6
         with:
@@ -137,6 +141,13 @@ jobs:
       DBAPI_PORT: '8080'
       DBAPI_TOKEN: cross-repo-ci-token
     steps:
+      - name: Require immutable matching Phorge revision
+        shell: bash
+        run: |
+          if ! [[ "$PHORGE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Set PHORGE_CONTRACT_REF or phorge_ref to the published matching Phorge commit SHA."
+            exit 1
+          fi
       - name: Configure MySQL SQL mode for Phorge
         env:
           MYSQL_CONTAINER: ${{ job.services.mysql.id }}
@@ -168,18 +179,6 @@ jobs:
           ref: ${{ env.PHORGE_REF }}
           path: phorge-fork
 
-      # arcanist is Phorge's runtime dependency for the CLI scripts; it sits
-      # beside the install the way a normal deployment lays it out.
-      - name: Checkout arcanist
-        uses: actions/checkout@v6
-        with:
-          # Current Phorge uses traits and enums in its library map. The
-          # archived phacility fork only recognizes classes/interfaces and
-          # fails to load these symbols during `bin/config` and `bin/storage`.
-          repository: phorgeit/arcanist
-          ref: 6f3726694752fb9cb08207070a4d7f68163784e1
-          path: arcanist
-
       - name: Record refs under test
         run: |
           {
@@ -200,26 +199,15 @@ jobs:
           go-version: '1.27'
           cache-dependency-path: gorge/go/go.sum
 
-      # Layer 2, executed here against the phorge-fork ref under test: run the
-      # PHP consumer contract test for real. PhabricatorGorgeDBContractTestCase
-      # extends PhabricatorTestCase with Lisk isolation on, so it drives the
-      # pure translation/validation helpers off the canonical fixtures without a
-      # database. `arc unit <module>` runs exactly the tests in that module's
-      # __tests__/ directory; arcanist is already checked out beside the tree
-      # and bundles libphutil, and phorge's .arcconfig loads its own src/
-      # library, so the class and its parent resolve. A failure fails the job.
-      - name: Run PHP contract test (arc unit)
+      # Run the real PHP consumer tests against the paired bundled runtime.
+      - name: Verify bundled PHP runtime
         working-directory: phorge-fork
-        run: |
-          set -euo pipefail
-          PATH="$PWD/../arcanist/bin:$PATH"
-          arc unit --no-coverage src/infrastructure/cluster/
+        run: php scripts/runtime/verify.php
 
       - name: Configure Phorge for the CI MySQL
         working-directory: phorge-fork
         run: |
           set -euo pipefail
-          PATH="$PWD/../arcanist/bin:$PATH"
           ./bin/config set mysql.host "$DB_HOST"
           ./bin/config set mysql.port "$DB_PORT"
           ./bin/config set mysql.user "$DB_USER"
@@ -233,11 +221,14 @@ jobs:
         working-directory: phorge-fork
         run: |
           set -euo pipefail
-          PATH="$PWD/../arcanist/bin:$PATH"
           # Replay migrations: the bundled quickstart contains retired schemata.
           # Replayed history also creates retired tables. Match the deployment
           # entrypoint: allow surplus warnings, but still fail other errors.
           ./bin/storage upgrade --force --no-quickstart --allow-surplus
+
+      - name: Run PHP contract tests
+        working-directory: phorge-fork
+        run: php bin/unit --no-coverage src/infrastructure/cluster/
 
       - name: Build and start gorge-db-api against the same MySQL
         working-directory: gorge/go
@@ -272,7 +263,6 @@ jobs:
         working-directory: phorge-fork
         run: |
           set -euo pipefail
-          PATH="$PWD/../arcanist/bin:$PATH"
           php scripts/dbapi/dump_observations.php >/tmp/native.json
           echo "native observations:"; cat /tmp/native.json
 
@@ -280,7 +270,6 @@ jobs:
         working-directory: phorge-fork
         run: |
           set -euo pipefail
-          PATH="$PWD/../arcanist/bin:$PATH"
           ./bin/config set gorge.db.uri "http://127.0.0.1:${DBAPI_PORT}"
           ./bin/config set gorge.db.token "${DBAPI_TOKEN}"
           # This dump is the real PHP consumption of the live service: the same

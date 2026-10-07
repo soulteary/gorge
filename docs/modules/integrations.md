@@ -102,4 +102,4 @@ SMS 使用真实 sid/messageID；Asana 使用真实 gid，不能填写示例或�
 
 `inboxRetentionDays` 默认 30。每分钟最多清理 500 条已 done 且超过保留期的邮件载荷，保留 id/digest/state，防止迟到重传再次执行。pending/retry/processing/unknown 永不自动清理，必须先核对；去重墓碑与核对审计长期保留。PHP 原始邮件记录仍按既有 GC 策略管理。完成的计数表示 provider 接收或业务回执完成，不能用来推断 SMS 最终送达率。
 
-本地测试：`go test -race ./internal/integrations ./cmd/gorge-integrations`。真实 MySQL 用 `GORGE_TEST_INTEGRATIONS_DSN` 指向名为 `gorge_integrations_test` 的独立一次性库；测试会创建/删除该库内测试表，拒绝其他数据库名称。PHP HTTP 契约入口是 `tests/contract/integrations/runtime.php`，需要 `GORGE_TEST_ARCANIST_DIR`。PHP 真实回执验证入口 `tests/contract/integrations/inbound_mysql.php` 使用 `GORGE_TEST_INTEGRATIONS_MYSQL_PORT` 和可选测试密码，仅创建/删除固定测试 namespace。
+本地测试：`go test -race ./internal/integrations ./cmd/gorge-integrations`。真实 MySQL 用 `GORGE_TEST_INTEGRATIONS_DSN` 指向名为 `gorge_integrations_test` 的独立一次性库；测试会创建/删除该库内测试表，拒绝其他数据库名称。PHP HTTP 契约入口是 `tests/contract/integrations/runtime.php`，默认加载配对 Phorge 的内置兼容运行库。PHP 真实回执验证入口 `tests/contract/integrations/inbound_mysql.php` 使用 `GORGE_TEST_INTEGRATIONS_MYSQL_PORT` 和可选测试密码，仅创建/删除固定测试 namespace。

@@ -22,7 +22,7 @@
  * for no added signal. That pair is instead pinned where it belongs — off the
  * canonical fixtures in PhabricatorGorgeDBContractTestCase (validateContractMeta
  * and isClusterStateStatusSynchronized), which the cross-repo workflow now runs
- * via `arc unit` against the phorge-fork ref under test.
+ * via Phorge `bin/unit` against the paired ref under test.
  *
  * The trick is that this script does NOT know or care which path produced the
  * data. When `gorge.db.uri` is unset, every call above runs Phorge's native
