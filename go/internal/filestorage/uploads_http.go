@@ -1,12 +1,14 @@
 package filestorage
 
 import (
+	"context"
 	"errors"
 	"github.com/gofiber/fiber/v3"
 	"github.com/soulteary/gorge/go/internal/platform/auth"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
 	"os"
 	"strconv"
+	"time"
 )
 
 func registerUploadRoutes(app fiber.Router, u *Uploads, token string) {
@@ -18,6 +20,22 @@ func registerUploadRoutes(app fiber.Router, u *Uploads, token string) {
 	if u == nil {
 		return
 	}
+	g.Get("/usage", func(c fiber.Ctx) error {
+		ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+		defer cancel()
+		size, parseErr := strconv.Atoi(c.Query("limit", "10000"))
+		if parseErr != nil {
+			return httpx.Fail(c, 400, "ERR_USAGE_PAGE", "invalid limit")
+		}
+		if size < 1 || size > 10000 {
+			return httpx.Fail(c, 400, "ERR_USAGE_PAGE", "limit must be between 1 and 10000")
+		}
+		usage, err := u.UsagePage(ctx, c.Query("cursor"), size)
+		if err != nil {
+			return httpx.Fail(c, 503, "ERR_UPLOAD_USAGE", "upload inventory unavailable")
+		}
+		return httpx.OK(c, usage)
+	})
 	report := func(c fiber.Ctx, e error) error {
 		switch {
 		case errors.Is(e, ErrUploadConflict):

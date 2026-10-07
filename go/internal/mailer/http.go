@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/soulteary/gorge/go/internal/platform/operations"
 	"net/http"
 	"time"
 	"unicode/utf8"
@@ -54,6 +55,9 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 		g.Post("/execute", executeMail(deps))
 		g.Post("/cancel", cancelMail(deps))
 		g.Get("/delivery", inspectMail(deps))
+		g.Get("/operations", func(c fiber.Ctx) error {
+			return httpx.OK(c, operations.MySQL(c.Context(), deps.Delivery.DB, []operations.Table{{Name: "gorge_mail_delivery", StateColumn: "state"}, {Name: "gorge_mail_attempt", StateColumn: "outcome"}}))
+		})
 		g.Get("/delivery-capabilities", func(c fiber.Ctx) error {
 			ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
 			defer cancel()

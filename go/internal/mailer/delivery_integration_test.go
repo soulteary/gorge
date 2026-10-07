@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/soulteary/gorge/go/internal/contracttest"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -99,6 +100,11 @@ func TestMailDeliveryMySQLIntegration(t *testing.T) {
 	out, err := s.Deliver(ctx, req)
 	if err != nil || out.State != "accepted" || a.calls.Load() != 1 {
 		t.Fatalf("concurrent replay: %+v %v calls=%d", out, err, a.calls.Load())
+	}
+	contracttest.RestoreFixture(t, db, "gorge_mail_delivery", "gorge_mail_attempt")
+	out, err = s.Deliver(ctx, req)
+	if err != nil || out.State != "accepted" || a.calls.Load() != 1 {
+		t.Fatal("restored mail delivery repeated", out, err)
 	}
 	req.Message.Subject = "changed"
 	if _, err = s.Deliver(ctx, req); !errors.Is(err, ErrDeliveryConflict) {

@@ -160,7 +160,7 @@ func TestLocalDiskCleansUpAFailedWrite(t *testing.T) {
 
 	var files int
 	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
+		if err == nil && !info.IsDir() && info.Name() != ".gorge-volume-id" && info.Name() != ".gorge-volume-id.lock" {
 			files++
 		}
 		return nil

@@ -272,3 +272,16 @@ func (r *rewindReader) Rewind() error {
 	r.off = 0
 	return nil
 }
+
+// BackendIdentities exposes volume IDs and explicitly marks unsupported identity.
+func (r *Router) BackendIdentities() map[string]any {
+	out := map[string]any{}
+	for _, e := range r.engines {
+		if disk, ok := e.(*LocalDiskEngine); ok {
+			out[e.Identifier()] = map[string]any{"state": "observed", "volumeIdentity": disk.volumeID}
+		} else {
+			out[e.Identifier()] = map[string]any{"state": "not_proven"}
+		}
+	}
+	return out
+}

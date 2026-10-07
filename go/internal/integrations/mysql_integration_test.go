@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/soulteary/gorge/go/internal/contracttest"
 	"github.com/soulteary/gorge/go/internal/platform/conduitclient"
 	"net/http"
 	"net/http/httptest"
@@ -105,6 +106,14 @@ func TestMySQLIntegration(t *testing.T) {
 	}
 	_, e = s.Effect(ctx, "sms-unknown", "payload", "sns", func() (json.RawMessage, int, error) { t.Fatal("repeated unknown outcome"); return nil, 0, nil })
 	if !errors.Is(e, ErrUnknown) {
+		t.Fatal(e)
+	}
+	contracttest.RestoreFixture(t, db, "gorge_integration_effect", "gorge_integration_inbox", "gorge_integration_resolution")
+	restored := Store{DB: db}
+	if _, e = restored.Effect(ctx, "sms-one", "payload", "twilio", func() (json.RawMessage, int, error) { t.Fatal("restored accepted effect resent"); return nil, 0, nil }); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = restored.Effect(ctx, "sms-unknown", "payload", "sns", func() (json.RawMessage, int, error) { t.Fatal("restored unknown effect resent"); return nil, 0, nil }); !errors.Is(e, ErrUnknown) {
 		t.Fatal(e)
 	}
 	tx, e := db.Begin()
@@ -282,5 +291,14 @@ func TestMySQLIntegration(t *testing.T) {
 	}
 	if _, e = s.Usage(ctx); e != nil {
 		t.Fatal(e)
+	}
+	capacity, e := s.Capacity(ctx)
+	if e != nil || len(capacity) != 3 {
+		t.Fatal("capacity snapshot", capacity, e)
+	}
+	for _, table := range capacity {
+		if table.ApproximateDataBytes < 0 || table.ApproximateIndexBytes < 0 {
+			t.Fatal("invalid table allocation", table)
+		}
 	}
 }

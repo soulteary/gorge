@@ -111,6 +111,9 @@ purged in this version.
 
 ## Validation
 
+容量、备份及墓碑保留策略见 [operations](../operations.md)。认证
+`GET /api/file/uploads/usage` 返回有界容量快照；不删除任何会话或墓碑。
+
 Go tests cover persistence across reopen, replay conflicts, missing chunks,
 corruption, ranges, cancellation, expiry and cancelled lock acquisition. The
 optional `GORGE_TEST_FILE_LIFECYCLE_DSN` suite uses the actual PHP migration and

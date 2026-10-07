@@ -49,6 +49,18 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g.Post("/yield", yield(deps))
 	g.Post("/cancel", cancel(deps))
 	g.Post("/awaken", awaken(deps))
+	g.Get("/operations", func(c fiber.Ctx) error {
+		if observer, ok := deps.Store.(interface {
+			Operations(context.Context) (map[string]any, error)
+		}); ok {
+			data, err := observer.Operations(c.Context())
+			if err != nil {
+				return httpx.Fail(c, 503, "ERR_OPERATIONS", "queue observation unavailable")
+			}
+			return httpx.OK(c, data)
+		}
+		return httpx.Fail(c, 503, "ERR_OPERATIONS", "queue observation unsupported")
+	})
 	g.Get("/stats", stats(deps))
 	g.Get("/tasks", listTasks(deps))
 	g.Get("/tasks/:id", getTask(deps))

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/soulteary/gorge/go/internal/contracttest"
 	"os"
 	"strconv"
 	"strings"
@@ -493,6 +494,15 @@ func TestMySQLDurableProjectionIntegration(t *testing.T) {
 	sourceStats, err = InspectSourceOutbox(ctx, db)
 	if err != nil || sourceStats.Due != 1 {
 		t.Fatalf("source clock eligibility %+v %v", sourceStats, err)
+	}
+
+	contracttest.RestoreFixture(t, db, "search_projection_inbox", "search_projection_revision", "search_projection_head", "search_projection_delivery", "search_projection_target")
+	if _, err = store.Accept(ctx, event, targets); err != nil {
+		t.Fatal("restored projection identity rejected", err)
+	}
+	var receipts int
+	if err = db.QueryRow("SELECT COUNT(*) FROM search_projection_inbox WHERE namespace=? AND eventID=?", event.Namespace, event.EventID).Scan(&receipts); err != nil || receipts != 1 {
+		t.Fatal("restored projection intake duplicated", receipts, err)
 	}
 
 }

@@ -219,4 +219,83 @@ func TestExecutionMySQLIntegration(t *testing.T) {
 	exerciseExecutionStore(t, ctx, s, s)
 	exerciseOutboxRelay(t, s)
 	t.Run("scheduler", func(t *testing.T) { exerciseSchedulerMySQL(t, s) })
+	ops, err := s.Operations(ctx)
+	if err != nil || ops["physicalDatabaseIdentity"] == nil {
+		t.Fatal("missing physical queue identity", err)
+	}
+	for _, row := range ops["tables"].([]map[string]any) {
+		if row["state"] != "observed" {
+			t.Fatal("queue history unavailable", row)
+		}
+	}
+
+}
+
+// DUMP/RESTORE all scoped keys at a quiesced point, then replay both intake and
+// atomic finalization. Preserve archived lease fences, indexes and identities.
+func TestRedisBackupRestoreReplay(t *testing.T) {
+	addr := os.Getenv("GORGE_TEST_REDIS_ADDR")
+	if addr == "" {
+		t.Skip("requires disposable Redis")
+	}
+	prefix := fmt.Sprintf("gorge:test:restore:%d:", time.Now().UnixNano())
+	s, err := NewRedisStore(&Config{RedisAddr: addr, RedisKeyPrefix: prefix, LeaseDuration: 3600, RetryWait: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		keys, _ := s.rdb.Keys(t.Context(), prefix+"*").Result()
+		if len(keys) > 0 {
+			_ = s.rdb.Del(t.Context(), keys...).Err()
+		}
+		_ = s.Close()
+	}()
+	event := &contracts.EnqueueEventRequest{EventID: "restored-event", Task: contracts.EnqueueRequest{TaskClass: "Parent", Data: "{}"}}
+	first, err := s.EnqueueEvent(t.Context(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leased, err := s.Lease(t.Context(), 1, "restored-owner", nil)
+	if err != nil || len(leased) != 1 {
+		t.Fatal("lease", err)
+	}
+	req := &contracts.FinalizeRequest{ExecutionLease: contracts.ExecutionLease{TaskID: first.ID, LeaseOwner: "restored-owner", LeaseExpires: *leased[0].LeaseExpires}, Followups: []contracts.EnqueueRequest{{TaskClass: "Child", Data: "{}"}}}
+	if err = s.Finalize(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := s.rdb.Keys(t.Context(), prefix+"*").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup := map[string]string{}
+	for _, key := range keys {
+		raw, e := s.rdb.Dump(t.Context(), key).Result()
+		if e != nil {
+			t.Fatal(e)
+		}
+		backup[key] = raw
+	}
+	if err = s.rdb.Del(t.Context(), keys...).Err(); err != nil {
+		t.Fatal(err)
+	}
+	for key, raw := range backup {
+		if err = s.rdb.Restore(t.Context(), key, 0, raw).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replay, err := s.EnqueueEvent(t.Context(), event)
+	if err != nil || replay.ID != first.ID {
+		t.Fatal("restored intake duplicated", err)
+	}
+	if err = s.Finalize(t.Context(), req); err != nil {
+		t.Fatal("restored finalization rejected replay", err)
+	}
+	stats, err := s.Stats(t.Context())
+	if err != nil || stats.ActiveCount != 1 || stats.ArchivedCount != 1 {
+		t.Fatal("restored finalization duplicated child", stats, err)
+	}
+	ops, err := s.Operations(t.Context())
+	if err != nil || ops["inboxRecords"] != int64(1) || ops["truncated"] != false {
+		t.Fatal("restored inventory incomplete", ops, err)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/soulteary/gorge/go/internal/platform/auth"
 	"github.com/soulteary/gorge/go/internal/platform/conduitclient"
 	"github.com/soulteary/gorge/go/internal/platform/httpx"
+	"github.com/soulteary/gorge/go/internal/platform/operations"
 	"net/http"
 	"slices"
 	"time"
@@ -78,6 +79,14 @@ func (s *Service) Register(app fiber.Router) {
 			return httpx.Fail(c, 503, "ERR_STORE", "usage unavailable")
 		}
 		return httpx.OK(c, v)
+	})
+	g.Get("/capacity", func(c fiber.Ctx) error {
+		v, e := s.Store.Capacity(c.Context())
+		if e != nil {
+			return httpx.Fail(c, 503, "ERR_STORE", "capacity unavailable")
+		}
+		return httpx.OK(c, map[string]any{"tables": v, "inboxPayloadRetentionDays": s.Config.InboxRetentionDays,
+			"deduplicationRetention": "indefinite", "resolutionRetention": "indefinite", "automaticIdentityDeletion": false, "inventory": operations.MySQL(c.Context(), s.Store.DB, []operations.Table{{Name: "gorge_integration_effect", StateColumn: "state"}, {Name: "gorge_integration_inbox", StateColumn: "state"}, {Name: "gorge_integration_resolution"}})})
 	})
 	g.Get("/effect", func(c fiber.Ctx) error {
 		var o Outcome

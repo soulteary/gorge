@@ -54,7 +54,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 	lifecycle := app.Group("/api/file/lifecycle")
 	lifecycle.Use(auth.Token(deps.Token, auth.WithQueryToken(false)))
 	lifecycle.Get("/meta", func(c fiber.Ctx) error {
-		return httpx.OK(c, map[string]any{"protocolVersion": 1, "deletionOutbox": deps.DeletionEnabled, "uploads": deps.Uploads != nil})
+		return httpx.OK(c, map[string]any{"protocolVersion": 1, "deletionOutbox": deps.DeletionEnabled, "uploads": deps.Uploads != nil, "backendIdentities": deps.Router.BackendIdentities()})
 	})
 	g := app.Group("/api/file")
 	g.Use(auth.Token(deps.Token))

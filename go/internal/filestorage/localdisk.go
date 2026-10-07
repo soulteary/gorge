@@ -27,7 +27,8 @@ var localHandlePattern = regexp.MustCompile(`^[a-f0-9]{2}/[a-f0-9]{2}/[a-f0-9]{2
 // LocalDiskEngine stores each file as one file on disk, under a two-level
 // directory fan-out so no single directory collects every file.
 type LocalDiskEngine struct {
-	root string
+	root     string
+	volumeID string
 }
 
 // NewLocalDiskEngine prepares the storage root, creating it when it is
@@ -39,7 +40,11 @@ func NewLocalDiskEngine(root string) (*LocalDiskEngine, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("create storage root: %w", err)
 	}
-	return &LocalDiskEngine{root: root}, nil
+	id, err := volumeIdentity(root)
+	if err != nil {
+		return nil, err
+	}
+	return &LocalDiskEngine{root: root, volumeID: id}, nil
 }
 
 func (e *LocalDiskEngine) Identifier() string { return identifierLocalDisk }

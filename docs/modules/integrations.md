@@ -55,6 +55,10 @@ factDSN 必须指向当前实例的 fact 写库，四张表必须支持事务。
 
 ### 状态检查、核对及保留期
 
+`--action capacity` / `GET /api/integrations/capacity` 返回近似数据/索引分配空间、
+载荷保留天数和长期身份/审计保留策略。统一接管报告与一致备份步骤见
+[operations](../operations.md)。此接口只读，不会删除 identity 或 unknown。
+
 `php scripts/setup/manage_gorge_integrations.php --action health` 输出 unknown 数量、待处理邮件数量、最早逾期时长，以及 Fact 最后尝试/成功时间和连续失败数；`--action usage` 输出累计分组计数。服务每分钟输出异常状态日志。将这些字段接入现有监控：unknown > 0、逾期超过 300 秒、Fact consecutiveFailures > 0 或 stale=true 应通知值班人员；实现不会擅自注册外部告警渠道。
 
 `--action effect --id <identity>` 或 `--action inbound --id <identity>` 返回状态与 digest，不返回邮件正文。核对 provider 接收记录、PHP mailID 和业务事务后，可通过 `--action resolve --resolution-file /secure/path/resolution.json` 固化人工确认的终态。输入示例：

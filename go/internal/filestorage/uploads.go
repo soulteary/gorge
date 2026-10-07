@@ -41,7 +41,10 @@ type Upload struct {
 	Cleaned bool          `json:"cleaned,omitempty"`
 	Chunks  []UploadChunk `json:"chunks"`
 }
-type Uploads struct{ root string }
+type Uploads struct {
+	root     string
+	volumeID string
+}
 
 func NewUploads(root string) (*Uploads, error) {
 	if root == "" {
@@ -50,7 +53,11 @@ func NewUploads(root string) (*Uploads, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
-	return &Uploads{root: root}, nil
+	id, err := volumeIdentity(root)
+	if err != nil {
+		return nil, err
+	}
+	return &Uploads{root: root, volumeID: id}, nil
 }
 func (u *Uploads) lock(ctx context.Context, id string) (func(), error) {
 	if !uploadID.MatchString(id) {

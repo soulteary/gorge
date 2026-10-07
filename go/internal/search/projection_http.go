@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/soulteary/gorge/go/internal/platform/operations"
 	"net/http"
 	"time"
 
@@ -109,6 +110,13 @@ func registerProjectionRoutes(app fiber.Router, deps *Deps) {
 	g := app.Group("/api/search/projections", auth.Token(deps.Token, auth.WithQueryToken(false)))
 	g.Get("/capabilities", func(c fiber.Ctx) error {
 		return httpx.OK(c, fiber.Map{"projectionVersion": 1, "namespace": deps.Projection.Namespace, "maxDocumentBytes": projection.MaxDocumentBytes, "batch": false, "durableAcceptance": true, "backendDelivery": deps.Projection.BackendDelivery, "inspection": deps.Projection.Inspector != nil, "rebuild": deps.Projection.Rebuilder != nil, "sourceScan": deps.Projection.SourceScanner != nil, "readActivation": false, "receiptStatus": []string{"accepted", "superseded"}, "targets": deps.Projection.Targets})
+	})
+	g.Get("/operations", func(c fiber.Ctx) error {
+		store, ok := deps.Projection.Inspector.(*projection.MySQLStore)
+		if !ok {
+			return httpx.Fail(c, 503, "ERR_OPERATIONS", "projection observation unavailable")
+		}
+		return httpx.OK(c, operations.MySQL(c.Context(), store.DB, []operations.Table{{Name: "search_projection_inbox"}, {Name: "search_projection_head"}, {Name: "search_projection_delivery", StateColumn: "status"}, {Name: "search_projection_target"}, {Name: "search_projection_rebuild", StateColumn: "status"}, {Name: "search_projection_source_job"}, {Name: "search_projection_source_shard", StateColumn: "status"}, {Name: "search_projection_revision"}, {Name: "search_projection_rebuild_check"}}))
 	})
 	registerProjectionInspection(g, deps.Projection)
 	registerProjectionRebuild(g, deps.Projection)

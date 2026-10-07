@@ -2,7 +2,9 @@ package filestorage
 
 import (
 	"context"
+	"github.com/soulteary/gorge/go/internal/contracttest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,7 +30,11 @@ func TestRealDeletionOutbox(t *testing.T) {
 		}
 	}
 	// Match the shipped PHP migration, rather than a second test-only schema.
-	raw, e := os.ReadFile("../../../../phorge-fork/resources/sql/autopatches/20261007.file.01.gorgedeletion.sql")
+	phorge := os.Getenv("PHORGE_FORK_DIR")
+	if phorge == "" {
+		phorge = "../../../../phorge-fork"
+	}
+	raw, e := os.ReadFile(filepath.Join(phorge, "resources/sql/autopatches/20261007.file.01.gorgedeletion.sql"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -89,6 +95,37 @@ func TestRealDeletionOutbox(t *testing.T) {
 	var state string
 	if e = db.QueryRow(`SELECT state FROM file_gorgedeletion WHERE eventID='last'`).Scan(&state); e != nil || state != "done" {
 		t.Fatal(state, e)
+	}
+	// Crash boundary: bytes are deleted but recording the result fails. The
+	// rolled-back intent must replay the missing byte target idempotently.
+	handle, e = eng.WriteFile(ctx, strings.NewReader("replay"), 6, WriteParams{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = db.Exec(`INSERT INTO file_gorgedeletion(eventID,storageEngine,storageHandle,lastError) VALUES('lost-result','gorge',?,'')`, "local-disk/"+handle); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = db.Exec(`CREATE TRIGGER reject_deletion_result BEFORE UPDATE ON file_gorgedeletion FOR EACH ROW BEGIN IF NEW.eventID='lost-result' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected result loss'; END IF; END`); e != nil {
+		t.Fatal(e)
+	}
+	if e = ProcessDeletion(ctx, db, router, nil); e == nil {
+		t.Fatal("result loss was not injected")
+	}
+	if _, e = db.Exec(`DROP TRIGGER reject_deletion_result`); e != nil {
+		t.Fatal(e)
+	}
+	if e = ProcessDeletion(ctx, db, router, nil); e != nil {
+		t.Fatal("missing-byte replay failed", e)
+	}
+	if e = db.QueryRow(`SELECT state FROM file_gorgedeletion WHERE eventID='lost-result'`).Scan(&state); e != nil || state != "done" {
+		t.Fatal(state, e)
+	}
+	contracttest.RestoreFixture(t, db, "file", "file_gorgedeletion")
+	if e = ProcessDeletion(ctx, db, router, nil); e != nil {
+		t.Fatal("restored deletion terminal replay", e)
+	}
+	if e = db.QueryRow("SELECT state FROM file_gorgedeletion WHERE eventID='lost-result'").Scan(&state); e != nil || state != "done" {
+		t.Fatal("restored deletion terminal lost", state, e)
 	}
 	if _, e = db.Exec(`INSERT INTO file_gorgedeletion(eventID,storageEngine,storageHandle,lastError) VALUES('retry','gorge','missing/handle','')`); e != nil {
 		t.Fatal(e)
