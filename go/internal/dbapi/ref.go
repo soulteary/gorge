@@ -54,9 +54,11 @@ func (r *DatabaseRef) PasswordOr(fallback string) string {
 type ConnectionStatus string
 
 const (
-	StatusOkay              ConnectionStatus = "okay"
-	StatusFail              ConnectionStatus = "fail"
-	StatusAuth              ConnectionStatus = "auth"
+	StatusOkay ConnectionStatus = "okay"
+	StatusFail ConnectionStatus = "fail"
+	StatusAuth ConnectionStatus = "auth"
+	// Legacy wire value accepted by older consumers; new probes report the
+	// missing monitoring grant in ReplicaStatus instead.
 	StatusReplicationClient ConnectionStatus = "replication-client"
 )
 
@@ -64,11 +66,13 @@ const (
 type ReplicaStatus string
 
 const (
-	ReplicationOkay           ReplicaStatus = "okay"
-	ReplicationMasterReplica  ReplicaStatus = "master-replica"
-	ReplicationReplicaNone    ReplicaStatus = "replica-none"
-	ReplicationSlow           ReplicaStatus = "replica-slow"
-	ReplicationNotReplicating ReplicaStatus = "not-replicating"
+	ReplicationOkay             ReplicaStatus = "okay"
+	ReplicationMasterReplica    ReplicaStatus = "master-replica"
+	ReplicationReplicaNone      ReplicaStatus = "replica-none"
+	ReplicationSlow             ReplicaStatus = "replica-slow"
+	ReplicationNotReplicating   ReplicaStatus = "not-replicating"
+	ReplicationNotApplicable    ReplicaStatus = "not-applicable"
+	ReplicationPermissionDenied ReplicaStatus = "permission-denied"
 )
 
 // RefKey is the node's stable identifier, host:port, matching Phorge's own key

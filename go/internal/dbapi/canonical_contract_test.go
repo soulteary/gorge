@@ -53,13 +53,20 @@ func canonicalCases() []struct {
 			RefKey: "db1:3306", Host: "db1", Port: 3306, User: "gorge_ro",
 			IsMaster: true, Disabled: false, IsIndividual: true, IsDefaultPartition: true,
 			ConnectionStatus: "okay", ConnectionLatency: 0.004,
-			ReplicaStatus: "okay",
+			ReplicaStatus: "not-applicable",
 		},
 		{
 			RefKey: "db2:3306", Host: "db2", Port: 3306, User: "gorge_ro",
 			IsMaster: false, Disabled: false, IsIndividual: false, IsDefaultPartition: false,
 			ConnectionStatus: "okay", ConnectionLatency: 0.006,
 			ReplicaStatus: "replica-slow", ReplicaMessage: "replica is behind", ReplicaDelay: &delay,
+		},
+		{
+			RefKey: "db3:3306", Host: "db3", Port: 3306, User: "gorge_ro",
+			IsMaster: false, Disabled: false, IsIndividual: false, IsDefaultPartition: false,
+			ConnectionStatus: "okay", ConnectionLatency: 0.005,
+			ReplicaStatus:  "permission-denied",
+			ReplicaMessage: "Replication status is unavailable because the monitoring user lacks \"REPLICATION CLIENT\" permission.",
 		},
 	}
 

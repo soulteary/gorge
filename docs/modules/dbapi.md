@@ -18,7 +18,7 @@
 
 **负责**：如实报告集群的当前状态。四件事，对应四个内部 service：
 
-- **健康**（`HealthService`）：逐台探测连接与复制状态，镜像 Phorge 的 `PhabricatorDatabaseRef::queryAll`——一次短连接、一次 ping、对 MySQL 再跑一次 `SHOW REPLICA STATUS`。一台连不上的节点照样出现在结果里，`connectionStatus` 为 `fail`、原因在 `connectionMessage` 里，因为「这台服务器挂了」正是健康报告存在的理由。
+- **健康**（`HealthService`）：逐台探测连接与复制状态，镜像 Phorge 的 `PhabricatorDatabaseRef::queryAll`——一次短连接、一次 ping；明确的 individual 单节点把复制状态标为 `not-applicable`，集群节点再跑 `SHOW REPLICA STATUS`。一台连不上的节点照样出现在结果里，`connectionStatus` 为 `fail`、原因在 `connectionMessage` 里。
 - **schema 诊断**（`DiffService`）：三级 `INFORMATION_SCHEMA` 遍历（Server → Database → Table → Column）产出每台服务器的实际 `SchemaNode` 树（`/schema-diff`，交给 Phorge 与应用 SchemaSpec 比较），并把 replica 相对其分区 master 的属性/缺失/多余差异拍平成 `SchemaIssue` 列表（`/schema-issues`），外加 `/charset-info` 报告每台能不能用 utf8mb4。
 - **环境检查**（`SetupService`）：跑 Phorge 的 `PhabricatorDatabaseSetupCheck` 与 `PhabricatorMySQLSetupCheck` 检的那些项——每台节点的版本、InnoDB 和服务器变量，以及真正承载 `meta_data` 的分区中 `{namespace}_meta_data` 库在不在——每一条是一个 `SetupIssue`，`isFatal` 与 Phorge 的判定对齐。
 - **迁移状态**（`MigrationService`）：读承载 `meta_data` 的 master 上 `{namespace}_meta_data.patch_status`，报告 `bin/storage upgrade` 跑到哪了（`/migrations/status`）。replica 的 patch_status 通过复制到达，不是它自己迁出来的。
@@ -85,9 +85,13 @@ schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性—�
 
 ### 3.3 健康探测：连接一半 + 复制一半，且区分「没权限」与「坏了」
 
-`probeRef` 用一个 2 秒超时、**不重试**的短连接探一台节点——健康检查要报「此刻」的状态，而不是等一个重试循环跑完。连接或 ping 失败即 `connectionStatus = fail`、原因进 `connectionMessage`。连得上就优先跑 `SHOW REPLICA STATUS` 探复制；MySQL 8.0.0–8.0.21 对这个新拼法返回 1064 时，回落到兼容的 `SHOW SLAVE STATUS`。
+`probeRef` 用一个 2 秒超时、**不重试**的短连接探一台节点。连接或 ping 失败记为 `connectionStatus = fail`，无效凭据记为 `auth`，原因进 `connectionMessage`。成功 ping 后连接记为 `okay`；明确的 individual 单节点不要求复制监控权限，`replicationStatus = not-applicable`。集群节点则优先跑 `SHOW REPLICA STATUS` 探复制；MySQL 8.0.0–8.0.21 返回 1064 时，回落到兼容的 `SHOW SLAVE STATUS`。
 
-这里有一处判据值得单记，它也是 `connectionStatus` 有 `replication-client` 这个取值的理由：**「探测用户没有权限跑 `SHOW REPLICA STATUS`」不是一次失败，是一个独立状态**。节点答了话、只是这个用户看不到复制信息——这是一个去授权（GRANT）能解决的问题，不是一台要修的服务器。所以它被分类成 `replication-client` 而不是 `fail`。同理 `1045` 一族被分成 `auth`。复制延迟从结果里**按列名**取：MySQL 8.0.26+ 的 `Seconds_Behind_Source` 或旧版的 `Seconds_Behind_Master`（结果列会随版本变，按位置取会错位），`>30` 秒标为 `replica-slow`；同时检查新版 `Replica_IO_Running` / `Replica_SQL_Running` 与旧版 `Slave_IO_Running` / `Slave_SQL_Running`，任一线程停止都标为 `not-replicating`，即使 lag 恰好还是 0；结果集在 `Columns` / `Next` / `Scan` 阶段中断则整次探测标为 `fail`，不会把不完整结果写成 `okay`。
+**探测用户没有权限读取复制状态，不等于连接失败。** 契约 `1.2` 将这项观察写成 `replicationStatus = permission-denied`，连接仍为 `okay`，说明放在 `replicaMessage`，由 PHP 在复制列展示并本地化。契约 `1.1` 服务仍可能把它写成 `connectionStatus = replication-client`；新 PHP adapter 接受该旧响应并归一化，individual 节点显示不适用，集群节点显示复制监控不可用。部署顺序为先更新 PHP，再更新 db-api；旧 PHP 能读取 `1.2` 的字段，但不会渲染新增状态的标签。字段名和类型不变，PHP 最低接受版本仍为 `1.1`。
+
+复制延迟按列名读取：现代 `Seconds_Behind_Source` 或旧版 `Seconds_Behind_Master`，超过 30 秒标为 `replica-slow`。新版 `Replica_IO_Running` / `Replica_SQL_Running` 与旧版 `Slave_IO_Running` / `Slave_SQL_Running` 任一线程停止都标为 `not-replicating`，即使 lag 为 0。配置为集群 master 的节点却正在复制上游，始终保留 `master-replica` 严重诊断，不能被延迟或线程状态覆盖。结果流中断仍记为 `fail`。单节点模式不主动探测意外复制；升级期间，旧服务若已经返回显式 `master-replica`，PHP 仍保留该警告及 SetupCheck 的致命判定。
+
+配置界面的健康计数 `5 / 5` 来自 Phorge 最近的连接健康事件，表示五次成功连接，不代表五项权限或 Schema 检查通过；复制状态与这项计数独立。
 
 ### 3.4 迁移状态读 `patch_status`，并用 `hoststate` 的摘要暴露集群状态
 

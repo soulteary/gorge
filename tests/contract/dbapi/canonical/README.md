@@ -16,7 +16,7 @@ sides:
 
 | File | Endpoint | `data` shape |
 |---|---|---|
-| `servers.json` | `GET /api/db/servers` | `[]ServerRef` — a healthy master and a lagging replica |
+| `servers.json` | `GET /api/db/servers` | `[]ServerRef` — an individual master with inapplicable replication, a lagging replica, and a reachable replica without monitoring permission |
 | `schema-diff.json` | `GET /api/db/schema-diff` | `[]*SchemaNode` — db → table → column tree with charset/collation/engine/type/nullable/autoIncrement and two indexes (one composite, prefixed, unique) |
 | `setup-issues.json` | `GET /api/db/setup-issues` | `[]SetupIssue` — one fatal, one non-fatal |
 | `charset-info.json` | `GET /api/db/charset-info` | `[]CharsetInfo` — a utf8mb4 set |

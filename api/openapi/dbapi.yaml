@@ -41,7 +41,7 @@ info:
     or fix the infrastructure), `ERR_READONLY` (409, direct the write at a
     reachable master) and `ERR_DB_ACCESS_DENIED` (403, add a GRANT). They are
     the analogue of file-storage's `ERR_NO_ENGINE`.
-  version: 1.1.0
+  version: 1.2.0
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -410,14 +410,16 @@ components:
           type: boolean
         isIndividual:
           type: boolean
+          description: Individual mode skips replication monitoring and reports `not-applicable` after a successful connection.
         isDefaultPartition:
           type: boolean
         connectionStatus:
           type: string
           description: |
-            The connection probe outcome. `replication-client` is not a failure:
-            the node answered but the probing user lacks the privilege for
-            `SHOW REPLICA STATUS`.
+            The connection probe outcome. Contract 1.2 reports missing
+            replication-monitoring privileges separately in `replicationStatus`.
+            The legacy `replication-client` value from contract 1.1 remains
+            accepted by the PHP consumer during upgrades; new probes do not emit it.
           enum: [okay, fail, auth, replication-client]
         connectionLatencySec:
           type: number
@@ -430,8 +432,10 @@ components:
           description: |
             The replication probe outcome. `not-replicating` includes a stopped
             receiver or applier thread even when the reported lag is still zero.
-            Empty when the connection failed.
-          enum: [okay, master-replica, replica-none, replica-slow, not-replicating]
+            `not-applicable` means individual mode does not probe replication.
+            `permission-denied` means the connection succeeded, but the monitoring
+            user cannot read replication status. Empty when the connection failed.
+          enum: [okay, master-replica, replica-none, replica-slow, not-replicating, not-applicable, permission-denied]
         replicaMessage:
           type: string
         secondsBehindMaster:
@@ -649,7 +653,7 @@ components:
             refuses to switch over on a major it does not understand. Bump the
             major when a field is removed or its type/meaning changes; bump the
             minor for additive changes a current consumer can ignore.
-          example: "1.1"
+          example: "1.2"
         namespace:
           type: string
           description: |

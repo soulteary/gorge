@@ -51,10 +51,7 @@ func contractCluster() *ClusterConfig {
 // connect opens a fresh *sql.DB, the four services do not share one
 // expectation set.
 func seedHealthyNode(mock sqlmock.Sqlmock) {
-	// Health: SHOW REPLICA STATUS. Empty rows => a master that is not itself a
-	// replica, which is the "okay" replication state.
-	mock.ExpectQuery("SHOW REPLICA STATUS").
-		WillReturnRows(sqlmock.NewRows([]string{"Master_Host"}))
+	// Individual-node health only pings: replication is not applicable.
 
 	// Schema-diff: the three INFORMATION_SCHEMA tiers. One database, one table,
 	// one column, so the tree has a leaf without being large.

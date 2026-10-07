@@ -15,7 +15,7 @@
       "data.refKey": "db1:3306",
       "data.isMaster": true,
       "data.connectionStatus": "okay",
-      "data.replicationStatus": "okay"
+      "data.replicationStatus": "not-applicable"
     },
     "jsonAbsent": ["error"]
   }

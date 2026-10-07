@@ -1145,7 +1145,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 | camelCase（现） | snake_case（旧） | 结构 | PHP 消费点 |
 |---|---|---|---|
 | `refKey` | `ref_key` | `ServerRef` | `PhabricatorDatabaseRef::getRefKey()`（`host:port`），也是 `/servers/:ref/health` 的路径参数 |
-| `connectionStatus` | `connection_status` | `ServerRef` | 集群数据库面板的连接列（`ok`/`fail`/`auth`/`replication-client`） |
+| `connectionStatus` | `connection_status` | `ServerRef` | 集群数据库面板的连接列（`okay`/`fail`/`auth`；兼容接收 `1.1` 的 `replication-client`） |
 | `connectionMessage` | `connection_message` | `ServerRef` | 同上，`fail` 时的原因 |
 | `replicationStatus` | `replication_status` | `ServerRef` | 复制列（`ok`/`replica-slow`/…） |
 | `secondsBehindMaster` | `seconds_behind_master` | `ServerRef` | 复制延迟秒数 |
@@ -1159,6 +1159,10 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 | `patch` / `initialized` | 同名 / `is_initialized` | `MigrationStatus` | `patch_status` 里跑过的 patch 列表与「库建了没」 |
 
 改名的表现是那个字段**静默变成零值**，其余字段照常——症状是局部的：把 `secondsBehindMaster` 改个名，面板照常显示每台服务器、只有复制延迟那一列空着，而没有任何一层报错。
+
+契约 `1.2` 保持字段名和类型，新增复制状态 `not-applicable`（明确的 individual 单节点，不执行复制检查）和 `permission-denied`（已连接，但缺少复制监控权限）。缺少监控权限不再改变 `connectionStatus`；说明使用 `replicaMessage`，PHP 按状态本地化。集群 master 正在复制上游时仍返回 `master-replica`，其严重性不能被复制延迟或停止线程覆盖。
+
+滚动升级先更新 PHP consumer，再更新 db-api。PHP 最低接受版本仍是 `1.1`，adapter 将旧服务的 `connectionStatus = replication-client` 移到复制状态；individual 节点归一为不适用，但不会抹掉旧服务已经返回的 `master-replica`。旧 PHP 能读新版本的字段，复制列却不认识两个新增状态的标签，因此不能反向发布。健康列的 `5 / 5` 是最近五次连接事件的成功次数，与复制权限状态独立。
 
 ### 11.2 `isFatal` 是本节载重最大的字段
 
@@ -1184,7 +1188,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 - **库名按 Phorge 的方式拼成 `{namespace}_meta_data`**（以及其它 `{namespace}_<app>`），`{namespace}` 来自 `GORGE_DB_NAMESPACE`（默认 `phorge`），**必须与该装置的 `storage.default-namespace` 一致**。已移除的 `STORAGE_NAMESPACE` 不再生效。拼法在 `config.go` 的 `DatabaseName`。它选错的表现是探测连到一个不存在的库，`MigrationStatus.initialized` 留 `false`，看起来像「Phorge 还没建好」而不是「namespace 配错了」。
 - **迁移状态读 `patch_status` 表**：`MigrationService.Status` 按 Phorge 分区路由选出承载 `meta_data` 的 enabled master，再由 `checkRef` 对它的 `{namespace}_meta_data` 跑 `SELECT patch FROM patch_status`，对齐 Phorge 的 `bin/storage` 写进这张表的账本；其它应用的专属 master 不承载这个库，不能被误报成未初始化。响应字段名是 Phorge 所读的 `patch`。表名和字段名都是兼容契约，改了就读不到迁移进度。replica 的 `patch_status` 通过复制到达，不是它自己迁出来的。建连或 Ping 失败仍表示尚未初始化；一旦 Ping 成功，账本查询失败必须显式报错，不能返回一个看似成功的空 patch 列表。
-- **多 master 同步状态读 `hoststate` 表**：额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，这是 Phorge 在多 master 之间同步 `cluster.databases` 的表。**读到的值会被消费**：对原始串算 SHA-256 作为 `clusterStateDigest` 返回，并用 `clusterStatePresent` 标记该行是否存在（行缺失 → `present=false`、摘要省略；查询失败按域错误显式返回，绝不伪装成缺失）。原始值含主机名故绝不外泄，只回摘要 + presence——Phorge 侧据此比对多个 master 的已提交拓扑并检测 `db.state.desync`（见第 3.4 节，与本节口径一致）。表名同样是 Phorge 的。契约版本为 `1.1`。
+- **多 master 同步状态读 `hoststate` 表**：额外跑一次 `SELECT stateValue FROM hoststate WHERE stateKey = 'cluster.databases'`，这是 Phorge 在多 master 之间同步 `cluster.databases` 的表。**读到的值会被消费**：对原始串算 SHA-256 作为 `clusterStateDigest` 返回，并用 `clusterStatePresent` 标记该行是否存在（行缺失 → `present=false`、摘要省略；查询失败按域错误显式返回，绝不伪装成缺失）。原始值含主机名故绝不外泄，只回摘要 + presence——Phorge 侧据此比对多个 master 的已提交拓扑并检测 `db.state.desync`（见第 3.4 节，与本节口径一致）。表名同样是 Phorge 的。契约版本为 `1.2`，presence/digest 字段从 `1.1` 起提供。
 
 `{namespace}_meta_data` 库不存在**不是错误，是如实报告**：那正是 `bin/storage upgrade` 跑之前的状态，`initialized` 留 `false`、调用方读到「未初始化」就对了。这一条与 11.5 的死锁直接相关——正因为这个库由 Phorge 建、而 Phorge 排在本服务之后启动。
 

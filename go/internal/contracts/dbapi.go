@@ -10,7 +10,7 @@ package contracts
 // the current PHP adapter can not read; bump the minor for additive changes a
 // current consumer can ignore. It is a string so it can carry the
 // "major.minor" form without a second field.
-const ContractVersion = "1.1"
+const ContractVersion = "1.2"
 
 // Capabilities is the body of GET /api/db/meta: the small, cheap-to-serve
 // description the PHP consumer reads before it routes the database console
@@ -59,7 +59,7 @@ type Capabilities struct {
 // key so the two describe the same server.
 //
 // The connection and replica halves are populated by a live probe: a short
-// read-only connect, a ping, and — for MySQL — `SHOW REPLICA STATUS`. A node
+// read-only connect, a ping, and — for cluster nodes — `SHOW REPLICA STATUS`. A node
 // that cannot be reached still appears, with ConnectionStatus "fail" and the
 // reason in ConnectionMessage, because "this server is down" is exactly what a
 // health report exists to say.
@@ -73,18 +73,18 @@ type ServerRef struct {
 	IsIndividual       bool   `json:"isIndividual"`
 	IsDefaultPartition bool   `json:"isDefaultPartition"`
 
-	// ConnectionStatus is one of okay, fail, auth, replication-client. The
-	// last is not a failure: it means the node answered but the probing user
-	// lacks the privilege to run SHOW REPLICA STATUS, which is a permission to
-	// grant rather than a server to fix.
+	// ConnectionStatus is one of okay, fail, auth. The legacy value
+	// replication-client is still accepted by the PHP adapter from 1.1
+	// services, but 1.2 reports missing monitoring grants in ReplicaStatus.
 	ConnectionStatus  string  `json:"connectionStatus"`
 	ConnectionLatency float64 `json:"connectionLatencySec"`
 	ConnectionMessage string  `json:"connectionMessage,omitempty"`
 
 	// ReplicaStatus is exposed as replicationStatus and is one of okay,
 	// master-replica, replica-none,
-	// replica-slow, not-replicating, and is empty for a node whose connection
-	// failed. ReplicaDelay is Seconds_Behind_Master, nil when the node is not
+	// replica-slow, not-replicating, not-applicable (individual mode), or
+	// permission-denied (reachable, but missing the monitoring grant), and is
+	// empty for a node whose connection failed. ReplicaDelay is Seconds_Behind_Master, nil when the node is not
 	// replicating or the value is NULL.
 	ReplicaStatus  string `json:"replicationStatus,omitempty"`
 	ReplicaMessage string `json:"replicaMessage,omitempty"`

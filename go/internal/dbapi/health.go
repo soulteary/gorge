@@ -118,6 +118,13 @@ func (s *HealthService) probeRef(ctx context.Context, ref *DatabaseRef, password
 		return
 	}
 
+	ref.ConnectionStatus = StatusOkay
+	ref.ConnectionLatency = time.Since(start).Seconds()
+	if ref.IsIndividual {
+		ref.ReplicaStatus = ReplicationNotApplicable
+		return
+	}
+
 	s.probeReplication(ctx, conn, ref, start)
 }
 
@@ -169,16 +176,17 @@ func (s *HealthService) buildDSN(ref *DatabaseRef, password string) DSN {
 // spelling when the server reports a syntax error. MySQL added the newer form
 // in 8.0.22, while this service supports all MySQL 8 releases.
 func (s *HealthService) probeReplication(ctx context.Context, conn *Conn, ref *DatabaseRef, start time.Time) {
-	rows, statement, err := queryReplicationStatus(ctx, conn)
+	rows, _, err := queryReplicationStatus(ctx, conn)
 	if err != nil {
 		msg := err.Error()
 		switch {
-		case isAccessDeniedMsg(msg):
-			ref.ConnectionStatus = StatusReplicationClient
-			ref.ConnectionMessage = "No permission to run " + statement
 		case isAuthMsg(msg):
 			ref.ConnectionStatus = StatusAuth
 			ref.ConnectionMessage = msg
+		case isAccessDeniedMsg(msg):
+			ref.ReplicaStatus = ReplicationPermissionDenied
+			ref.ReplicaMessage = "Replication status is unavailable because the monitoring user lacks \"REPLICATION CLIENT\" permission."
+			return
 		default:
 			ref.ConnectionStatus = StatusFail
 			ref.ConnectionMessage = msg
@@ -189,7 +197,6 @@ func (s *HealthService) probeReplication(ctx context.Context, conn *Conn, ref *D
 	defer func() { _ = rows.Close() }()
 
 	ref.ConnectionStatus = StatusOkay
-	ref.ConnectionLatency = time.Since(start).Seconds()
 
 	columns, err := rows.Columns()
 	if err != nil {
@@ -215,7 +222,9 @@ func (s *HealthService) probeReplication(ctx context.Context, conn *Conn, ref *D
 		ref.ReplicaStatus = ReplicationOkay
 	}
 
-	if isReplica {
+	// The wrong-role diagnosis is more severe than replica lag or stopped
+	// threads. Do not let lag analysis overwrite a replicating master's status.
+	if isReplica && !ref.IsMaster {
 		if err := s.analyzeReplicaLag(rows, columns, ref); err != nil {
 			recordConnectionFailure(ref, err, start)
 		}

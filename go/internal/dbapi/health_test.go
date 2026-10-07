@@ -124,6 +124,117 @@ func TestPingAuthenticationFailureReportsAuth(t *testing.T) {
 	}
 }
 
+func TestIndividualProbeSkipsReplicationQuery(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectPing()
+	mock.ExpectClose()
+	ref := &DatabaseRef{Host: "db1", Port: 3306, IsMaster: true, IsIndividual: true}
+	svc := NewHealthService(&ClusterConfig{Refs: []*DatabaseRef{ref}})
+	svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+		return NewConnFromDB(db, dsn, readOnly), nil
+	})
+	got, err := svc.QueryOne(context.Background(), ref.RefKey(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConnectionStatus != string(StatusOkay) || got.ReplicaStatus != string(ReplicationNotApplicable) || got.ConnectionMessage != "" || got.ReplicaDelay != nil {
+		t.Fatalf("individual probe = %+v", got)
+	}
+	// No SHOW expectation: querying replication would fail this probe.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplicationPermissionIsIndependentOfConnection(t *testing.T) {
+	for _, isMaster := range []bool{false, true} {
+		db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mock.ExpectPing()
+		mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnError(
+			&mysql.MySQLError{Number: 1227, Message: "Access denied; REPLICATION CLIENT required"})
+		mock.ExpectClose()
+		ref := &DatabaseRef{Host: "cluster-node", Port: 3306, IsMaster: isMaster}
+		svc := NewHealthService(&ClusterConfig{Refs: []*DatabaseRef{ref}})
+		svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+			return NewConnFromDB(db, dsn, readOnly), nil
+		})
+		got, err := svc.QueryOne(context.Background(), ref.RefKey(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ConnectionStatus != string(StatusOkay) || got.ConnectionMessage != "" || got.ReplicaStatus != string(ReplicationPermissionDenied) || got.ReplicaMessage == "" {
+			t.Fatalf("missing monitoring grant (master=%v) = %+v", isMaster, got)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestReplicationQueryAuthenticationFailureIsNotMonitoringPermission(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectPing()
+	mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnError(
+		&mysql.MySQLError{Number: 1045, Message: "Access denied for user"})
+	mock.ExpectClose()
+	ref := &DatabaseRef{Host: "cluster-node", Port: 3306}
+	svc := NewHealthService(&ClusterConfig{Refs: []*DatabaseRef{ref}})
+	svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+		return NewConnFromDB(db, dsn, readOnly), nil
+	})
+	got, err := svc.QueryOne(context.Background(), ref.RefKey(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConnectionStatus != string(StatusAuth) || got.ReplicaStatus != "" {
+		t.Fatalf("query authentication failure became a monitoring warning: %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClusterMasterReplicationDiagnosisSurvivesLagAndStoppedThreads(t *testing.T) {
+	for _, test := range []struct {
+		ioRunning string
+		lag       string
+	}{{"Yes", "120"}, {"No", "0"}} {
+		db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mock.ExpectPing()
+		mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(
+			sqlmock.NewRows([]string{"Replica_IO_Running", "Replica_SQL_Running", "Seconds_Behind_Source"}).
+				AddRow(test.ioRunning, "Yes", []byte(test.lag)))
+		mock.ExpectClose()
+		ref := &DatabaseRef{Host: "master", Port: 3306, IsMaster: true}
+		svc := NewHealthService(&ClusterConfig{Refs: []*DatabaseRef{ref}})
+		svc.SetConnFactory(func(dsn DSN, readOnly bool) (*Conn, error) {
+			return NewConnFromDB(db, dsn, readOnly), nil
+		})
+		got, err := svc.QueryOne(context.Background(), ref.RefKey(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ReplicaStatus != string(ReplicationMasterReplica) {
+			t.Fatalf("replicating master was downgraded: %+v", got)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestReplicationProbeFallsBackForOlderMySQL8(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	if err != nil {
