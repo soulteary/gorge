@@ -174,9 +174,10 @@ def check_phorge_fork(phorge_root, expected_prefixes, errors):
         if prefix is not None:
             found.add(prefix)
 
-    # Image transformation has its own local-build overlay. Every other
-    # released service must be represented in the main Phorge Gorge overlay.
-    required = expected_prefixes - {"image"}
+    # Image transformation and integrations have separate opt-in, local-build
+    # overlays (docker-compose.image.yml and docker-compose.integrations.yml).
+    # Neither is required in the main Phorge Gorge overlay.
+    required = expected_prefixes - {"image", "integrations"}
     missing = required - found
     if missing:
         fail(errors, f"{compose_yml}: missing released service images "
@@ -197,6 +198,8 @@ def main(argv):
             gorge_root / "deploy/compose/docker-compose.yml",
             gorge_root / ".github/workflows/release.yml",
             phorge_root / "docker-compose.gorge.yml",
+            phorge_root / "docker-compose.image.yml",
+            phorge_root / "docker-compose.integrations.yml",
         ],
         errors,
     )
