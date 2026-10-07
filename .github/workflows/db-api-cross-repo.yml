@@ -204,6 +204,10 @@ jobs:
         working-directory: phorge-fork
         run: php scripts/runtime/verify.php
 
+      - name: Prepare parser tools for PHP contract tests
+        working-directory: phorge-fork
+        run: php scripts/runtime/build.php all
+
       - name: Configure Phorge for the CI MySQL
         working-directory: phorge-fork
         run: |
