@@ -13,6 +13,7 @@ NOTIFY_CLIENT_URL ?= http://127.0.0.1:22280
 MAILER_URL        ?= http://127.0.0.1:8110
 SEARCH_URL        ?= http://127.0.0.1:8120
 FILESTORAGE_URL   ?= http://127.0.0.1:8100
+FILESTORAGE_ENGINES ?= local-disk
 WEBHOOK_URL       ?= http://127.0.0.1:8160
 TASKQUEUE_URL     ?= http://127.0.0.1:8090
 DBAPI_URL         ?= http://127.0.0.1:8080
@@ -120,6 +121,9 @@ e2e: ## Run all e2e smoke tests against their configured URLs
 	# is the one that needs nothing external:
 	# GORGE_FILE_LOCAL_DISK_PATH=/tmp/gorge-files make run SERVICE=gorge-file-storage
 	BASE_URL=$(FILESTORAGE_URL) bash tests/e2e/file-storage.sh
+	# Require every selected backend; use FILESTORAGE_ENGINES="blob local-disk s3"
+	# against a scratch instance configured with all three backends.
+	BASE_URL=$(FILESTORAGE_URL) ENGINES="$(FILESTORAGE_ENGINES)" bash tests/e2e/file-storage-matrix.sh
 	# gorge-webhook is the one service with no backend it can fake: both of its
 	# endpoints count rows, so this needs a reachable {namespace}_herald
 	# database with Phorge's schema in it. An empty queue and no hooks is fine
