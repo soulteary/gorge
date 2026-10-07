@@ -142,8 +142,7 @@ func (c *Consumer) Run(ctx context.Context) {
 					now := time.Now()
 					idleSince = &now
 				} else if c.idleTimeout > 0 && time.Since(*idleSince) > c.idleTimeout {
-					slog.Info("worker idle, hibernating", "idle_timeout", c.idleTimeout.String())
-					c.hibernate(ctx)
+					slog.Info("worker idle, continuing to poll", "idle_timeout", c.idleTimeout.String())
 					idleSince = nil
 				}
 				continue
@@ -323,16 +322,4 @@ func (c *Consumer) reportOutcome(ctx context.Context, task *contracts.Task, outc
 		}
 	}
 	return false
-}
-
-// hibernate sleeps out a long idle stretch, waking on cancellation. It keeps an
-// idle worker from polling a quiet queue every tick without adding a second
-// timer to the hot path.
-func (c *Consumer) hibernate(ctx context.Context) {
-	timer := time.NewTimer(3 * time.Minute)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
 }

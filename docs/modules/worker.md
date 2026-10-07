@@ -1,5 +1,14 @@
 
-## 原生 Feed 与 Outbox
+## 空闲轮询
+
+Worker 始终按 `GORGE_WORKER_POLL_INTERVAL_MS`（默认 1000ms）轮询队列，
+空闲后不再固定休眠三分钟。`GORGE_WORKER_IDLE_TIMEOUT_SEC`（默认 180）
+仅控制空闲状态日志的间隔，设为 0 时关闭该日志，不影响任务领取。
+新任务无需唤醒空闲 Worker；实际处理延迟仍取决于队列、可用执行槽位与请求耗时。
+轮询间隔、并发数和领取批量必须大于 0，空闲日志间隔不能为负数；
+不合法的配置会在连接业务依赖前明确退出，避免 ticker panic 或任务处理卡住。
+
+## 原生 Feed 与 Outbox 配置
 
 `GORGE_WORKER_OUTBOX_DSN`：可选 MySQL 驱动 DSN，指向 Phorge feed 数据库。
 配置后后台 relay 将 feed_gorgeoutbox 事件提交到 queue 的 enqueue-event。

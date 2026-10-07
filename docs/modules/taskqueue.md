@@ -205,7 +205,7 @@ inbox，不执行领域逻辑。`/readyz` 检查队列协议、配置的 Feed �
 | `GORGE_WORKER_LEASE_LIMIT` | `4` | 每次轮询租多少 |
 | `GORGE_WORKER_POLL_INTERVAL_MS` | `1000` | 有活时的轮询间隔 |
 | `GORGE_WORKER_MAX_WORKERS` | `4` | 并发跑多少 |
-| `GORGE_WORKER_IDLE_TIMEOUT_SEC` | `180` | 队列空后按此频率再等多久才退避 |
+| `GORGE_WORKER_IDLE_TIMEOUT_SEC` | `180` | 空闲状态日志间隔（秒）；0 关闭日志，不暂停轮询 |
 | `GORGE_WORKER_CONDUIT_URL` | 空 | 见 3.6，空 = 只租并运行本地实现的类 |
 | `GORGE_WORKER_CONDUIT_TOKEN` | 空 | Conduit token |
 | `GORGE_WORKER_TASK_CLASS_FILTER` | 空 | 逗号分隔的类白名单，空 = 全部支持的类 |

@@ -70,6 +70,7 @@ type fakeQueue struct {
 	failed           []int64
 	yielded          []int64
 	lastLease        contracts.LeaseRequest
+	leaseCount       int
 	completeFailures int
 	completeAttempts int
 }
@@ -81,6 +82,7 @@ func (q *fakeQueue) handler() http.HandlerFunc {
 
 		switch r.URL.Path {
 		case "/api/queue/lease":
+			q.leaseCount++
 			_ = json.NewDecoder(r.Body).Decode(&q.lastLease)
 			tasks := q.pending
 			for _, task := range tasks {
@@ -337,5 +339,62 @@ func TestClientReportsAPIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ERR_INTERNAL") {
 		t.Errorf("error must carry the API code, got %v", err)
+	}
+}
+
+// An idle queue must not delay newly enqueued work by a fixed sleep window.
+func TestConsumerProcessesTaskAfterIdle(t *testing.T) {
+	q, client := newFakeQueue(t, nil)
+	registry := NewRegistry()
+	registry.Register("A", NewNoop())
+	consumer := NewConsumer(client, registry, testConfig())
+	consumer.idleTimeout = time.Nanosecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); consumer.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("idle consumer did not stop")
+		}
+	}()
+	// Three observed empty leases prove polling continued past the idle threshold.
+	idleDeadline := time.After(time.Second)
+	idleTick := time.NewTicker(5 * time.Millisecond)
+	defer idleTick.Stop()
+idle:
+	for {
+		select {
+		case <-idleDeadline:
+			t.Fatal("idle consumer stopped polling")
+		case <-idleTick.C:
+			q.mu.Lock()
+			leases := q.leaseCount
+			q.mu.Unlock()
+			if leases >= 3 {
+				break idle
+			}
+		}
+	}
+	q.mu.Lock()
+	q.pending = append(q.pending, &contracts.Task{ID: 99, TaskClass: "A"})
+	q.mu.Unlock()
+	deadline := time.After(time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("task enqueued after idle was not completed within one second")
+		case <-tick.C:
+			q.mu.Lock()
+			completed := len(q.completed) == 1 && q.completed[0] == 99
+			q.mu.Unlock()
+			if completed {
+				return
+			}
+		}
 	}
 }

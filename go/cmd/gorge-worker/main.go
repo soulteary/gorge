@@ -29,6 +29,10 @@ import (
 
 func main() {
 	cfg := worker.LoadFromEnv()
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	client := worker.NewClient(cfg.TaskQueueURL, cfg.TaskQueueToken)
 

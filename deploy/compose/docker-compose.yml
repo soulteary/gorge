@@ -568,7 +568,7 @@ services:
       GORGE_WORKER_TASK_QUEUE_URL: ${GORGE_WORKER_TASK_QUEUE_URL:-http://gorge-taskqueue:8090}
       GORGE_WORKER_TASK_QUEUE_TOKEN: ${GORGE_WORKER_TASK_QUEUE_TOKEN:-${GORGE_SERVICE_TOKEN:-}}
       # Lease loop behaviour: how many tasks to take per poll, how often to
-      # poll, how many to run at once, and how long to idle before backing off.
+      # poll, how many to run at once, and how often to report an idle queue (polling continues).
       GORGE_WORKER_LEASE_LIMIT: ${GORGE_WORKER_LEASE_LIMIT:-4}
       GORGE_WORKER_POLL_INTERVAL_MS: ${GORGE_WORKER_POLL_INTERVAL_MS:-1000}
       GORGE_WORKER_MAX_WORKERS: ${GORGE_WORKER_MAX_WORKERS:-4}

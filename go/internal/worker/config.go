@@ -4,10 +4,28 @@
 package worker
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/soulteary/gorge/go/internal/platform/config"
 )
+
+// Validate rejects settings that would panic or stop task consumption.
+func (c *Config) Validate() error {
+	if c.PollIntervalMs <= 0 {
+		return fmt.Errorf("GORGE_WORKER_POLL_INTERVAL_MS must be positive")
+	}
+	if c.MaxWorkers <= 0 {
+		return fmt.Errorf("GORGE_WORKER_MAX_WORKERS must be positive")
+	}
+	if c.LeaseLimit <= 0 {
+		return fmt.Errorf("GORGE_WORKER_LEASE_LIMIT must be positive")
+	}
+	if c.IdleTimeoutSec < 0 {
+		return fmt.Errorf("GORGE_WORKER_IDLE_TIMEOUT_SEC must be nonnegative")
+	}
+	return nil
+}
 
 const (
 	DefaultListenAddr   = ":8170"
