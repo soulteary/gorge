@@ -12,8 +12,8 @@ on:
       - 'tests/contract/**'
       - 'tests/e2e/**'
       - 'go/cmd/**'
-      - 'go/internal/contracts/**'
-      - 'go/internal/doccheck/**'
+      - 'go/internal/**'
+      - 'deploy/compose/**'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [ main, develop ]
@@ -26,8 +26,8 @@ on:
       - 'tests/contract/**'
       - 'tests/e2e/**'
       - 'go/cmd/**'
-      - 'go/internal/contracts/**'
-      - 'go/internal/doccheck/**'
+      - 'go/internal/**'
+      - 'deploy/compose/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 

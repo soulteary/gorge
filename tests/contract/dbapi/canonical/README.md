@@ -36,6 +36,6 @@ test there. Neither file can drift from its code silently.
 The phorge-fork copy under `__tests__/data/gorge-contract/` must stay
 byte-for-byte identical to these. The integration workflow
 (`.github/workflows/db-api-cross-repo.yml`) runs
-`scripts/check-contract-fixtures.sh`, which `diff`s the two directories and
+[check-contract-fixtures.sh](../../../../.github/scripts/dbapi/check-contract-fixtures.sh), which `diff`s the two directories and
 fails the job if they diverge. When you regenerate here, copy the files across
 and commit both.

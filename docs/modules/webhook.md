@@ -23,7 +23,7 @@
 
 **它必须替换 PHP 侧的投递，而不是与之并存。** 队列在库里，两边谁都能取，所以「多一个消费者」在这个域里不是扩容而是**给别人的 endpoint 发重复 POST**——而接收方无法把它与一次真正的重复事件区分开。让路的开关在 PHP 侧（`gorge.webhook.uri`），语义见第 5 节，登记在 [`../findings.md`](../findings.md) 第 38 条。
 
-**有外部依赖，而且是这一类里最硬的一个。** mailer、search 与 file-storage 都能在没有任何外部东西的情况下起成「就绪」——test 适配器、内存索引、本地磁盘各自都是一个真后端。本域没有对应物，因为**数据库不是它写穿的后端，而是它的工作本身**：两个端点都在数它的行，循环没有它就没有东西可读。所以「一个后端都没配」这个状态在这里不存在，`/readyz` 只有一条判据，见 3.5。
+**有外部依赖，而且是这一类里最硬的一个。** mailer 与 file-storage 的基础模式可使用 test 适配器或本地磁盘；search 的基础就绪检查不拨测后端。启用这些域的持久扩展后，还需满足各自的数据库与 schema 条件。本域没有对应物，因为**数据库不是它写穿的后端，而是它的工作本身**：两个端点都在数它的行，循环没有它就没有东西可读。所以「一个后端都没配」这个状态在这里不存在，`/readyz` 只有一条判据，见 3.5。
 
 ## 2. 路由与依赖
 
@@ -45,7 +45,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 **整个 API 是只读的，这是设计而不是「还没写」。** 队列的内容归 Phorge——是它写那些行——所以一个能让调用方推一行进去的端点，等于给一张本服务只该**排空**的表开第二个入口。`TestTheEndpointsAreReadOnly` 与 e2e 第 10 条各压一遍（POST / PUT / DELETE 都不许答 200）。
 
-**两个端点而不是一个字段**，因为它们回答的是两个问题：`stats.activeWebhooks` 数的是**投递得出去的** hook（`status <> 'disabled'`），而 `hooks.total` 数的是每一个 hook，禁用的也算。「一个 hook 都还没建」与「建了但全被关掉了」是运维要分别处置的两个状态，而 `activeWebhooks` 把两者都报成 `0`。这两个数之间还有一条不变量——`activeWebhooks` 永不大于 `hooks.total`——它跨两个端点、两次独立查询，是 e2e 第 7 条唯一一条单元测试拿不到的断言：一个把某个 COUNT 写在了错误的表上的实现，在忙碌的队列上会产出一组看起来很合理的数字。
+**两个端点而不是一个字段**，因为它们回答的是两个问题：`stats.activeWebhooks` 数的是**未禁用的** hook（不保证投递成功）（`status <> 'disabled'`），而 `hooks.total` 数的是每一个 hook，禁用的也算。「一个 hook 都还没建」与「建了但全被关掉了」是运维要分别处置的两个状态，而 `activeWebhooks` 把两者都报成 `0`。这两个数之间还有一条不变量——`activeWebhooks` 永不大于 `hooks.total`——它跨两个端点、两次独立查询，是 e2e 第 7 条唯一一条单元测试拿不到的断言：一个把某个 COUNT 写在了错误的表上的实现，在忙碌的队列上会产出一组看起来很合理的数字。
 
 四个计数**每次调用都真的去数**，不留内存计数器。所以它们描述的是 Phorge 自己的 UI 看到的那个队列——包括其它实例的工作，也包括本进程没在跑的时候排进来的行。
 
@@ -77,7 +77,7 @@ stopPolling()
 
 **这是本次迁入修掉的最要紧的一个缺陷，而它在单实例部署下也会发生。** 独立服务时期的候选查询就是 `SELECT ... WHERE status = 'queued'`，没有任何抢占动作；投递期间那一行的 status 仍然是 `queued`，而轮询间隔默认 1 秒、投递超时上限 15 秒——所以下一个 tick 会**再取到同一批行**，同一个事件被 POST 出去两次到十几次。
 
-修法的第一条约束是**不能改 `status` 的取值范围**。Phorge 的 UI 按 status 渲染图标，`HeraldWebhookWorker::doWork()` 的前置检查要求 `status === queued`，所以在这里发明一个 `claimed` 值会同时弄坏界面和 PHP 的回退路径。抢占必须发生在别的地方。
+修法的第一条约束是**不能改 `status` 的取值范围**。Phorge 的 UI 按 status 渲染图标，`HeraldWebhookWorker::doWork()` 的前置检查要求 `status === queued`，所以在这里发明一个 `claimed` 值会同时弄坏界面和 PHP 兼容任务的终态处理。抢占必须发生在别的地方。
 
 用的是 `dateModified`：
 
@@ -211,7 +211,7 @@ mac.Write([]byte(payload))
 
 `TestDefaultsMatchPhorge` 把那几个与 PHP 侧对齐的默认值（15 / 300 / 10 / 60）钉在一起——它守的是「这些数字有出处」，不是这些字面值本身；要动其中任何一个，先去看对应的那个 PHP 方法。
 
-连接池的三个参数（`maxOpenConns=20` / `maxIdleConns=5` / `connMaxLifetime=5m`）定在 `db.go`，按本域的用法定：池要覆盖 `MaxConcurrent` 次并发投递，每次投递碰库三到四回（claim、查 hook、数最近失败、回写结果），外加两个状态端点。**`platform/` 仍然没有数据库设施，而本域就是「第二个需要它的域」那个判据的实际到来**——判断是继续不加，理由见 [`../findings.md`](../findings.md) 第 39 条。
+连接池的三个参数（`maxOpenConns=20` / `maxIdleConns=5` / `connMaxLifetime=5m`）定在 `db.go`，按本域的用法定：池要覆盖 `MaxConcurrent` 次并发投递，每次投递碰库三到四回（claim、查 hook、数最近失败、回写结果），外加两个状态端点。`platform/operations` 提供只读盘点辅助，连接池与投递写入仍由本域管理；见 [`../platform.md`](../platform.md)。
 
 ## 5. 兼容契约
 
@@ -219,17 +219,17 @@ mac.Write([]byte(payload))
 
 **一组是出站字节，破坏之后接收端会明确拒绝。** 签名头名 `X-Phabricator-Webhook-Signature`、HMAC-SHA256 小写 hex、payload 的 2 空格缩进与末尾换行、键顺序、`object.type` 取 PHID 第二段。这一组是本仓库少见的「**会**报错」的兼容约束——只是报错发生在别人的服务器上，你这一侧只看到一批 4xx，而 Herald 界面上它们和「接收端自己坏了」没有任何区别。
 
-**另一组是回写字段，破坏之后什么都不会发生。** `status` ∈ {`queued`, `sent`, `failed`}、`lastRequestResult` ∈ {`none`, `okay`, `fail`}、`lastRequestEpoch`（永久 hook 错误时为 `0`）、`properties.errorType` ∈ {`hook`, `http`, `timeout`}、`properties.errorCode`。这些值 Phorge 的 UI 直接渲染，写一个它不认识的进去只会让那一栏空着或者显示一个原始串。**其中 `status` 的取值范围是整个 claim 机制的地基**（3.1），它不只是「不该改」，而是「多一个值就同时弄坏界面和 PHP 的回退路径」。
+**另一组是回写字段，破坏之后什么都不会发生。** `status` ∈ {`queued`, `sent`, `failed`}、`lastRequestResult` ∈ {`none`, `okay`, `fail`}、`lastRequestEpoch`（永久 hook 错误时为 `0`）、`properties.errorType` ∈ {`hook`, `http`, `timeout`}、`properties.errorCode`。这些值 Phorge 的 UI 直接渲染，写一个它不认识的进去只会让那一栏空着或者显示一个原始串。**其中 `status` 的取值范围是整个 claim 机制的地基**（3.1），它不只是「不该改」，而是「多一个值就同时弄坏界面和 PHP 兼容任务的终态处理」。
 
 三条容易踩的细节：
 
 - **`properties` 是整列覆盖的。**回写把这一列整个重写，所以 `RequestProperties` 必须**原样带回**本服务不读的那些键（`transactionPHIDs` / `triggerPHIDs`）——它们是 Phorge 请求详情页的内容，丢掉就是把那一页清空。
 - **一次成功的投递也会写 `errorType` 与 `errorCode`。**`delivered()` 写 `http` 与状态码字符串，尽管什么都没失败。这是 PHP worker 留下的样子（它在按结果分支之前就把两者设好了），所以 Phorge 界面上一次成功显示成「HTTP Status Code / 200」。省掉它们会让本服务的投递看起来和 Phorge 的不一样。
-- **请求级 `errorCode` 沿用 Phorge 的值域，但本服务多产出三个它没有的。**`disabled` 对应 Phorge 的 `ERROR_DISABLED`、渲染成「Hook Disabled」；`not-found`、`invalid-properties`、`request-build-error` 与 `timeout` 没有 PHP 对应物，按原文渲染。这是刻意的——为一个只有本服务能产出的状态去给 Phorge 打补丁加一个显示串，代价大于收益。
+- **请求级 `errorCode` 沿用 Phorge 的值域，但本服务还产出其他错误值。**`disabled` 对应 Phorge 的 `ERROR_DISABLED`、渲染成「Hook Disabled」；`not-found`、`invalid-properties`、`request-build-error` 与 `timeout` 没有 PHP 对应物，按原文渲染。这是刻意的——为一个只有本服务能产出的状态去给 Phorge 打补丁加一个显示串，代价大于收益。
 
-**PHP 侧的接管开关是 `gorge.webhook.uri`（配套 `gorge.webhook.token`），守卫的单一真源是 `PhabricatorGorgeWebhookClient::isDeliveryDelegated()`。** 它是本仓库六个 `gorge.*.uri` 里唯一一个**不是「服务地址」而是「接管开关」**的：一写进去，Phorge 就立刻停止给 `HeraldWebhookWorker` 派任务。所以这个域的失配方向和别的域是反的——不是「配了不生效」，而是「服务在跑但配置没写进去 = 每个 webhook 发两次」。
+**执行权由 `gorge.webhook.owner` 明确选择，URI/token 配置诊断访问。** PHP 侧的统一判据为 `PhabricatorGorgeWebhookClient::isDeliveryDelegated()`；正常委派时不再派发网络投递任务。当前 `HeraldWebhookWorker` 只保留旧任务与静默终态处理，不发送 HTTP，撤掉 URI 不能恢复 PHP 投递。
 
-**「Go 不认全局静默」是一处已知偏离**，也正是那个守卫要用合取条件（`gorge.webhook.uri` 非空 **且** `phabricator.silent` 未开）的原因：`phabricator.silent` 是 Phorge 服务器的配置，本服务读不到，它只能看到 request 行里的 per-request `silent` 属性。登记在 [`../findings.md`](../findings.md) 第 37 条。
+Go 不读取 PHP 的全局静默配置；PHP 在生产与兼容任务边界将静默请求终结，见 [兼容约束第 9.9 节](../../compat/phorge/README.md)。升级前停止不认识该边界的旧消费者，验收静默请求不会被 Go 发出。
 
 ## 6. 域级错误码
 

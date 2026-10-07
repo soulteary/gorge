@@ -12,7 +12,7 @@
 
 独立服务迁入单仓库时，两处与既有域的根本不一致被消除了，而这正是本域最该先讲清楚的一件事。原独立服务用 `labstack/echo/v4` 加自定义的 `APIResponse{data,error,cursor}` 信封、**snake_case** 字段（`ref_key`/`is_fatal`）与自己那套 HTTP 状态码映射；迁入后 HTTP 层重写成 Fiber v3 + `internal/platform/httpx`，字段统一 **camelCase** 并沉淀进 `internal/contracts`，错误码收敛到平台六码加三个域级码。域逻辑本身——应用分区路由、只读降级、savepoint 命名、MySQL 错误码映射、版本比较、三级 `INFORMATION_SCHEMA` 查询——原样保留。
 
-它在「有外部依赖」这一类里与 webhook / taskqueue 同源：数据库不是它写穿的一个后端，而是它的工作本身——所有七条路由都是对着 MySQL 现查。但它也有两处与那两个后台域不同：**它没有后台循环**（七条路由全部由入站请求驱动，像 file-storage 那样「有人来问、答一句」），而且**它只读**——它从不改 Phorge 的库、不建表、不需要 DDL 权限。
+它在「有外部依赖」这一类里与 webhook / taskqueue 同源：数据库不是它写穿的一个后端，而是它的工作本身——七条诊断路由对着 MySQL 现查，另有不访问数据库的 `/meta`。但它也有两处与那两个后台域不同：**它没有后台循环**（七条路由全部由入站请求驱动，像 file-storage 那样「有人来问、答一句」），而且**它只读**——它从不改 Phorge 的库、不建表、不需要 DDL 权限。
 
 ## 1. 职责边界
 
@@ -63,7 +63,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 **本域的鉴权比其他域更紧：token 只认 `X-Service-Token` header，不认 `?token=` query。** 共享中间件 `auth.Token` 默认仍接受 query fallback（其他域的 runbook curl 依赖它），本域显式传 `auth.WithQueryToken(false)` 关掉它——URL 里的 token 会进访问日志、浏览器历史与 Referer，而 `/api/db/**` 不会被浏览器链接到，query fallback 在这里是纯风险。带对 token 但只放在 query 上的请求会和「没带 token」一样被 401 拒绝（contract fixture `token-via-query-param.json` 锁这条）。
 
-**`/api/db/meta` 是切流前的握手。** PHP 消费端在把数据库控制台切给本服务之前先读它：`contractVersion`（`major.minor`，消费端只在自己看得懂的 major 上切流）、`namespace`（必须等于 Phorge 的 `storage.default-namespace`）、`topologySource`、以及本 build 提供的能力列表。契约版本或 namespace 不兼容时，PHP 显式报 setup issue 并继续走原生 SQL，而不是去读可能已经改名/改义的字段。这个端点不查库、不带主机/凭据信息，是唯一不会因集群故障而失败的 `/api/db` 路由。`ContractVersion` 常量与 `Capabilities` 结构在 [`../../go/internal/contracts/dbapi.go`](../../go/internal/contracts/dbapi.go)。
+**`/api/db/meta` 是切流前的握手。** PHP 消费端在把数据库控制台切给本服务之前先读它：`contractVersion`（`major.minor`，消费端只在自己看得懂的 major 上切流）、`namespace`（必须等于 Phorge 的 `storage.default-namespace`）、`topologySource`、以及本 build 提供的能力列表。契约版本或 namespace 不兼容时，PHP 显式报 setup issue 并拒绝使用不兼容服务；当前分支的原生诊断回退已退役。这个端点不查库、不带主机/凭据信息，是唯一不会因集群故障而失败的 `/api/db` 路由。`ContractVersion` 常量与 `Capabilities` 结构在 [`../../go/internal/contracts/dbapi.go`](../../go/internal/contracts/dbapi.go)。
 
 `main.go` 与 file-storage 同形：`httpx.New(httpx.Config{Ready: deps.Ready})`，退出时**显式** `deps.Close()` 而不用 `defer`——失败分支要 `os.Exit`，那会跳过 `defer`。`Close()` 当前是有文档的 no-op（返回 nil）：没有长期池要释放，保留它是为了让关停契约稳定、将来有真正的池时有显而易见的释放点。
 
@@ -101,7 +101,7 @@ schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性—�
 
 `{namespace}_meta_data` 这个库由 Phorge 的 `bin/storage upgrade` 建，而那条命令跑在**排在本服务之后启动**的 Phorge 容器里。如果 readiness 去查这个库或这张表，就构成一个闭环——本服务等一个只有 Phorge 能建的库、Phorge 等本服务健康，两个容器一起停在启动阶段。而且，如 compat 第 8.7 节实测所示，**光「不查表」还不够**：go-sql-driver 在握手阶段就把 DSN 里的库名发过去，库不存在时 ping 会失败在连接上。所以本服务的探测 DSN **根本不带库名**，一个 ping 就能打通一台 Phorge 库还没建出来的服务器。
 
-对应的编排结果：本服务在 compose 里的 healthcheck 打 `/healthz` 而非 `/readyz`，且 phorge-fork 侧对它的依赖必须是 `service_started` 而非 `service_healthy`（与 file-storage / webhook 一致）。**别把 healthcheck 改成 `/readyz`，也别把依赖改成 `service_healthy`**——两者都会让首启死锁。见 [`../../deploy/compose/docker-compose.yml`](../../deploy/compose/docker-compose.yml) 里 `gorge-db-api` 那段注释与 [`../../compat/phorge/README.md`](../../compat/phorge/README.md) 第 8.7 节。
+对应的编排结果：本服务在 compose 里的 healthcheck 打 `/healthz` 而非 `/readyz`，且 phorge-fork 侧对它的依赖必须是 `service_started` 而非 `service_healthy`（与 file-storage / webhook 一致）。不能让迁移角色等待它自己尚未创建的库或表。单独等待当前不带库名的 `/readyz`，或等待 `/healthz` 的 service_healthy，并不必然形成死锁；变更应检查实际依赖图并验收全新数据卷启动。见 [`../../deploy/compose/docker-compose.yml`](../../deploy/compose/docker-compose.yml) 里 `gorge-db-api` 那段注释与 [`../../compat/phorge/README.md`](../../compat/phorge/README.md) 第 8.7 节。
 
 ## 4. 配置
 
@@ -120,7 +120,7 @@ schema 的两条路由分工不同：`/schema-diff` 返回完整实际属性—�
 
 ## 5. 兼容契约
 
-权威描述在 [`../../compat/phorge/README.md`](../../compat/phorge/README.md) 第十一节，这里是概述。本域的约束整节都是**静默型**——破坏后不报错，只让 PHP 侧读到空值或错值——分三组：
+权威描述在 [`../../compat/phorge/README.md`](../../compat/phorge/README.md) 第十一节，这里是概述。字段漂移可能只让 PHP 读到空值或错值，认证、协议、namespace 和 bootstrap 问题也可能明确报错——分三组：
 
 - **字段名一律 camelCase，改一个就是一次兼容性变更。** 它们声明在 [`../../go/internal/contracts/dbapi.go`](../../go/internal/contracts/dbapi.go)，是 PHP 侧 `PhabricatorDatabaseRef` / `DatabaseSetupCheck` / `MySQLSetupCheck` / `PhabricatorConfigSchemaQuery` 直接按键读的线上契约本身。迁入时从旧的 snake_case 改过来：`ref_key`→`refKey`、`is_fatal`→`isFatal`、`connection_status`→`connectionStatus`、`replication_status`→`replicationStatus`、`seconds_behind_master`→`secondsBehindMaster` 等。Schema 位置字段是 `databaseName` / `tableName` / `columnName`，问题标识是 `issueKey`。**`isFatal` 尤其载重**——它镜像 Phorge 的 `PhabricatorSetupIssue::isFatal`，Phorge 据它决定阻断启动还是仅告警，改错名字会让每个 setup issue 都退化成告警。
 - **错误码语义**：三个域级码（`ERR_DB_UNREACHABLE` 503 / `ERR_READONLY` 409 / `ERR_DB_ACCESS_DENIED` 403）区分的是「调用方需要区别对待」的三类失败，见第 6 节。

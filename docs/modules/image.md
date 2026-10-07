@@ -10,7 +10,7 @@
 - `POST /api/image/probe`：原始二进制，返回 MIME、画布尺寸、完整帧数及动画状态。
 - `POST /api/image/transform?recipe=preview&revision=phorge-v1&animation=legacy-static`：二进制输入/输出；成功含 MIME、ETag、实际宽高和版本响应头，错误使用平台 envelope。
 
-预设：profile400×400允许放大；pinboard280×210不放大；thumbgrid最长边100；preview最长边220；workcard最长边526允许放大。单边模式四分之一短边下限并透明留白，固定尺寸居中裁剪。55组PHP浮点/整数几何oracle存放在testdata/geometry.json。
+预设：profile400×400允许放大；pinboard280×210不放大；thumbgrid最长边100；preview最长边220；workcard最长边526允许放大。单边模式四分之一短边下限并透明留白，固定尺寸居中裁剪。PHP浮点/整数几何oracle存放在testdata/geometry.json。
 
 Go管理受限ImageMagick子进程，没有任意URL/命令入口。二进制由`GORGE_IMAGE_BINARY`指定（默认convert），`GORGE_IMAGE_POLICY_DIR`默认`/etc/gorge/image`；启动验证四种codec。并发默认2（1..8），`GORGE_IMAGE_TIMEOUT_SEC`默认10（1..10），超时终止进程组并清理独立临时目录。策略限制内存/map/临时盘各256MiB、线程1；容器默认2GiB内存、2CPU、512MiB临时盘。容器上限不是逐任务RSS保证，极大输入可能被策略拒绝。
 
@@ -30,7 +30,7 @@ docker compose -f docker-compose.yml -f docker-compose.image.yml up -d --build
 
 migrate角色将URI/token/mode写入deployment配置，默认shadow。实际切换前验收生产样本，再设GORGE_IMAGE_MODE=gorge并重新生成部署配置。Go-only部署使用`docker compose --profile image ...`且设置GORGE_SERVICE_TOKEN。
 
-现有派生图直接沿用，不重建历史、不改secret URL、不要求旧存储数据先迁移。PHP保留legacy用于灰度回滚；GD还用于内置头像、图标、Meme和SpriteSheet，不能删除GD扩展。首版只检查几何/MIME与动画结构，重采样、JPEG质量、GIF调色板等像素差异仍须shadow样本人工验收；libvips替换与可信blob引用是后续优化，未实施。
+现有派生图直接沿用，不重建历史、不改secret URL、不要求旧存储数据先迁移。PHP保留legacy用于灰度回滚；GD还用于内置头像、图标、Meme和SpriteSheet，不能删除GD扩展。基础 thumbnail 灰度只检查几何/MIME与动画结构，重采样、JPEG质量、GIF调色板等像素差异仍须shadow样本人工验收；libvips替换与可信blob引用是后续优化，未实施。
 
 ## 验证
 
@@ -41,7 +41,7 @@ GORGE_TEST_ARCANIST_DIR=... GORGE_TEST_IMAGE_URL=... GORGE_TEST_IMAGE_TOKEN=... 
 
 真实后端测试覆盖四种格式、五预设、GIF帧数/时间/循环、静态政策、损坏/不支持格式；本地无URL时集成套件跳过，CI必须启动实际镜像。PHP geometry导出脚本可以刷新oracle，刷新需连同算法变更评审。
 
-尚未完成的退役验收：真实 MySQL 下并发 regenerate 和源文件删除竞态、生产样本像素差异验收、入口请求并发限制，以及头像/图标/Meme/SpriteSheet 的独立迁移。以上完成前保留 PHP legacy 和 GD。
+尚未完成的退役验收：真实 MySQL 下并发 regenerate 和源文件删除竞态、生产样本像素差异验收、入口请求并发限制，以及下文可选头像/图标/Meme 配方的生产验收与独立 SpriteSheet 迁移。以上完成前保留 PHP legacy 和 GD。
 
 ## Additional recipes: Meme and builtin composition
 

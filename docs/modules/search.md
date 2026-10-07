@@ -51,11 +51,11 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 `/backends` 那一行要说明白：`PhabricatorGorgeSearchClient::getBackends()` 定义了，但 PHP 侧没有任何地方调它。集群面板那一页确实会打本服务，但打的是 `/stats`；后端**那几列**来自 `PhabricatorGorgeSearchHost::getStatusViewColumns()`，而那个方法只读本地的 `cluster.search` 配置，一个 HTTP 请求都不发。所以这是一条**诊断端点**——它回答的是「跑着的服务自己认为它有哪些后端」，与「配置文件里写了什么」是两个问题，而这是唯一能把两者分开的办法。凭据不出现在它的响应里这条约束照样要守，理由换成诊断输出会进工单、日志与支持邮件，而不是「会被打印在一个网页上」。
 
-`Deps` 两个字段：`Engine` / `Token`。`TestRoutePathsAreStable` 断言这七条路径仍注册着——PHP 侧 `PhabricatorGorgeFulltextStorageEngine` 按字面调它们。
+`Deps` 包含 `Engine`、`Token` 与可选 `Projection`。本节列出同步索引的基础路由；可选投影 ingress、operations、delivery、rebuild 与 source-scan 路由见 [search-projection](search-projection.md)。`TestRoutePathsAreStable` 断言这七条路径仍注册着——PHP 侧 `PhabricatorGorgeFulltextStorageEngine` 按字面调它们。
 
 迁入时从旧 `internal/httpapi/handlers.go` **删掉了四样被平台层取代的东西**：本地的 `apiResponse` / `apiError` 信封、`tokenAuth()`、`healthPing()`，以及 `GET /`、`/healthz`、`/readyz` 三条注册。最后这一条是硬性的：`httpx.New()` 已经注册过它们，域包不能再次注册同一组平台路由。
 
-`main.go` 与 mailer 的骨架只差一行：
+同步模式的服务器配置摘录：
 
 ```go
 srv := httpx.New(httpx.Config{
@@ -64,13 +64,11 @@ srv := httpx.New(httpx.Config{
 })
 ```
 
-**`/readyz` 是本域唯一一处比 `/healthz` 多说了点什么的地方。** 就绪判据只有一条：**至少有一个后端带 `read` 角色**。这精确对应「服务活着、每一次检索都失败」这个状态——迁入前 `/readyz` 与 `/healthz` 是同一个 `healthPing()`，零后端时照样 200，compose 报 healthy。
-
-刻意**不**在 `Ready` 里拨测 ES/Meili，理由与 mailer 第 6.5 条相同：拨测会让就绪状态随第三方抖动翻转，而主机健康表与 failover 链本来就是为吸收这种抖动存在的。所以 200 的含义是「本服务能发起一次检索」，不是「下一次检索会成功」。反过来说，**这里的 503 永远意味着「配错了」，不意味着「Elasticsearch 抽了一下」**，PHP 侧 setup check 可以据此直接给出结论。
+同步搜索模式的 `/readyz` 检查至少一个后端带 `read` 角色，不拨测 ES/Meili。因此成功只说明配置允许发起检索，不保证下一次检索成功。启用持久投影后，`main.go` 还会 ping 控制数据库；此时 503 也可能表示数据库不可达，不能一概解释为后端配置错误。投影 schema 在启动时验证，readiness ping 不替代 schema 检查。见 [search-projection](search-projection.md)。
 
 ## 3. 核心实现
 
-### 3.1 四个子包
+### 3.1 同步搜索的代码结构
 
 ```
 internal/search/
@@ -93,7 +91,7 @@ internal/search/
 
 ### 3.2 SearchEngine：读写扇出方式不同，这个不对称是有意的
 
-- **写**打到**每一个**带 `write` 角色的后端，任何一个失败都会被报告。两个写后端意味着两份索引同步推进，这是在不停机的前提下另起一份索引的唯一办法。
+- **写**打到**每一个**带 `write` 角色的后端，任何一个失败都会被报告。多个写后端可用于并行建索引，但不是跨后端原子提交，部分失败需恢复；持久投影另有 shadow generation 和 rebuild 路径。
 - **读**打到**第一个**带 `read` 角色且答得出来的后端，其余的是 failover 链。
 - **`IndexIsSane` 只问第一个**：任何一个后端答 false 都指向同一个结论——重建索引，多问几个只会把一个明确的答案变成一个没人知道该怎么处理的部分答案。
 - **`IndexStats` 跳过失败的后端**而不是报告失败，因为它喂的是状态面板，那里第二意见比错误有用。
@@ -187,15 +185,19 @@ Elasticsearch 6 把一个索引收紧到只能有一个 mapping type，7 起把 
 | `ES_VERSION` | `5` | 必须与集群真实主版本一致，它决定 mapping 形状——见 3.6 节 |
 | `ES_TIMEOUT` | `15` | 秒 |
 | `ES_PROTOCOL` | `http` | |
-| `MEILI_HOST` / `MEILI_INDEX` / `MEILI_MASTER_KEY` / `MEILI_TIMEOUT` / `MEILI_PROTOCOL` | 同上 | |
+| `MEILI_HOST` | 无 | 单个主机；为空不生成后端 |
+| `MEILI_INDEX` | `phabricator` | 索引名 |
+| `MEILI_MASTER_KEY` | 空 | API key |
+| `MEILI_TIMEOUT` | `15` | 秒 |
+| `MEILI_PROTOCOL` | `http` | |
 
-`Load()` 的取值顺序与另外两个域一致：指了配置文件就读文件，否则读环境变量；走文件时**仍然从环境变量取 `GORGE_SERVICE_TOKEN`**。
+`Load()` 的取值顺序与另外两个域一致：指了配置文件就读文件，否则读环境变量；走文件时先从环境变量预填 `GORGE_SERVICE_TOKEN`，但 JSON 中显式的 `serviceToken` 会覆盖它（包括空值）。
 
 ### 「没配后端」是一个受支持的状态
 
 服务照常启动、`/healthz` 答 200、`/readyz` 答 503。这是刻意的：一个部署在配置写好之前必须能起得来，否则编排会陷在启动循环里。
 
-`GORGE_SEARCH_BACKENDS` **解析失败落在同一个地方**——没有后端、not ready——外加一条 `slog.Error`。这里没有报错退出，代价是「还没配」与「配错了」在 `/readyz` 上长得一样，只有日志能分开它们。登记在 [`../findings.md`](../findings.md) #19。
+`GORGE_SEARCH_BACKENDS` 解析失败记录 `slog.Error`，随后仍尝试 `GORGE_SEARCH_ENGINE` 与 ES/MEILI 扁平变量生成后端。若这些变量有效，服务可能仍然 ready；否则没有后端、not ready。不能仅凭 readiness 成功判断 BACKENDS JSON 已生效。登记在 [`../findings.md`](../findings.md) #19。
 
 ## 5. 兼容契约
 

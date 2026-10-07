@@ -15,7 +15,7 @@ for the file format and the runner requirements.
 | `unauthorized.json` | A missing service token is 401 `ERR_UNAUTHORIZED` with no `data` field. |
 | `token-via-query-param.json` | `?token=` is accepted alongside the `X-Service-Token` header. |
 
-The two paths themselves, `POST /api/mailer/send` and
+The synchronous compatibility paths, `POST /api/mailer/send` and
 `GET /api/mailer/mailers`, are part of the contract:
 `PhabricatorGorgeMailerClient` calls them as written.
 
@@ -33,10 +33,14 @@ So both directions cost something, and they cost different things:
 - A transient failure reported as `ERR_PERMANENT_FAILURE` drops mail that would
   have gone out a minute later, and records it as if the address were bad.
 
-The second is worse, which is why the service classifies conservatively: only
-the specific signals that describe the *message* — an SMTP 5xx, a provider 4xx
-that is not 429, a sendmail exit code from the `EX_NOUSER` family — are
-permanent, and everything unrecognised is transient.
+Adapters distinguish permanent message rejection, confirmed nonacceptance
+(`SafeRetryError`) and ambiguous submission errors. HTTP 401/403 and sendmail
+77/78 are backend configuration failures, not permanent message failures;
+429 is retryable. Only confirmed nonacceptance permits Dispatcher retries or
+failover. Network/5xx and unclassified execution failures must not be assumed
+safe to resubmit. The synchronous API still maps nonpermanent errors to
+`ERR_SEND_FAILED`; it does not provide the durable native ledger's unknown
+protection. See [mailer](../../../docs/modules/mailer.md) for both paths.
 
 Both fixtures reach a backend through `mailerKeys`, because only the `test`
 adapter can be made to fail on demand. The runner therefore configures three
@@ -45,7 +49,7 @@ backends: `test-mailer` (accepts), `rejects` (permanent) and `down`
 
 ## Retries are deliberately not exercised here
 
-The dispatcher retries a single adapter before failing over, but a fixture
+The dispatcher retries confirmed nonacceptance before failing over, but a fixture
 cannot usefully assert on that: retries change how long a failure takes, not
 what it answers, so a fixture would only make the suite slow. The runner
 disables them. The counts and the context binding are covered in

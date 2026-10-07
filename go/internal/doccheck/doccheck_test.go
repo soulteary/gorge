@@ -1,11 +1,17 @@
 package doccheck
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/soulteary/gorge/go/internal/maintenance/cleanup"
 )
 
 const repositoryRoot = "../../.."
@@ -252,4 +258,260 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(contents)
+}
+
+// Documentation links are part of the navigation contract. Ignore fenced code
+// so Markdown examples and signatures such as [](path, dst *T) are not links.
+func TestDocumentationLocalLinksExist(t *testing.T) {
+	roots := []string{"README.md", "docs", "compat", "tests/contract", "deploy/compose"}
+	if fork := os.Getenv(phorgeForkEnv); fork != "" {
+		for _, rel := range []string{"README.md", "DOCKER.md", "PRODUCTION-CUTOVER.md", "I18N-zh_CN.md", "scripts/operations", "scripts/i18n"} {
+			checkMarkdownLinks(t, filepath.Join(fork, rel))
+		}
+	}
+	for _, rel := range roots {
+		checkMarkdownLinks(t, filepath.Join(repositoryRoot, rel))
+	}
+}
+
+var localLinkPattern = regexp.MustCompile(`\[[^\]\n]*\]\(([^\s)]+)\)`)
+
+func checkMarkdownLinks(t *testing.T, root string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		fenced := false
+		for _, line := range strings.Split(readFile(t, path), "\n") {
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+				fenced = !fenced
+				continue
+			}
+			if fenced {
+				continue
+			}
+			for _, match := range localLinkPattern.FindAllStringSubmatch(line, -1) {
+				target := match[1]
+				if strings.Contains(target, ":") || strings.HasPrefix(target, "#") {
+					continue
+				}
+				target = strings.SplitN(target, "#", 2)[0]
+				if _, err := os.Stat(filepath.Join(filepath.Dir(path), target)); err != nil {
+					t.Errorf("%s links to missing local target %s", path, target)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Use the production registry rather than a duplicate list in this test.
+func TestDocumentationListsCleanupRegistry(t *testing.T) {
+	paths := []string{filepath.Join(repositoryRoot, "docs/modules/maintenance.md")}
+	if fork := os.Getenv(phorgeForkEnv); fork != "" {
+		paths = append(paths, filepath.Join(fork, "PRODUCTION-CUTOVER.md"))
+	}
+	for _, path := range paths {
+		contents := readFile(t, path)
+		for _, spec := range cleanup.Specs() {
+			if !strings.Contains(contents, "`"+spec.ID+"`") {
+				t.Errorf("%s does not list registered collector %s", path, spec.ID)
+			}
+		}
+	}
+}
+
+var defaultListenPattern = regexp.MustCompile(`DefaultListenAddr\s*=\s*"(:[0-9]+)"`)
+var notificationPortPattern = regexp.MustCompile(`Default(?:Client|Admin)Port\s*=\s*([0-9]+)`)
+var internalImportPattern = regexp.MustCompile(`"github.com/soulteary/gorge/go/(internal/[^"]+)"`)
+
+func TestModuleIndexUsesConfiguredDefaultPorts(t *testing.T) {
+	index := readFile(t, filepath.Join(repositoryRoot, "docs/README.md"))
+	entries, err := os.ReadDir(filepath.Join(repositoryRoot, "go/cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), "_") {
+			continue
+		}
+		main := readFile(t, filepath.Join(repositoryRoot, "go/cmd", entry.Name(), "main.go"))
+		for _, imported := range internalImportPattern.FindAllStringSubmatch(main, -1) {
+			sources, err := filepath.Glob(filepath.Join(repositoryRoot, "go", imported[1], "*.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, source := range sources {
+				if strings.HasSuffix(source, "_test.go") {
+					continue
+				}
+				contents := readFile(t, source)
+				addresses := defaultListenPattern.FindAllStringSubmatch(contents, -1)
+				for _, port := range notificationPortPattern.FindAllStringSubmatch(contents, -1) {
+					addresses = append(addresses, []string{port[0], ":" + port[1]})
+				}
+				for _, address := range addresses {
+					found := false
+					for _, line := range strings.Split(index, "\n") {
+						cells, ok := markdownTableRow(line)
+						if ok && len(cells) >= 3 && strings.Contains(cells[1], "`"+entry.Name()+"`") && strings.Contains(cells[2], "`"+address[1]+"`") {
+							found = true
+						}
+					}
+					if !found {
+						t.Errorf("module index does not pair %s with configured default %s", entry.Name(), address[1])
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPlatformDocumentationIndexesEveryPackage(t *testing.T) {
+	index := markdownTableCodeSpans(readFile(t, filepath.Join(repositoryRoot, "docs/platform.md")), "包")
+	entries, err := os.ReadDir(filepath.Join(repositoryRoot, "go/internal/platform"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && !index[entry.Name()] {
+			t.Errorf("docs/platform.md does not list shared package %s", entry.Name())
+		}
+	}
+}
+
+// Guard literal API groups mounted in a function. Helpers receiving an already
+// mounted router and dynamically constructed paths remain runtime-contract work.
+func TestMountedAPIRoutesHaveDocumentation(t *testing.T) {
+	var documentation strings.Builder
+	for _, root := range []string{"docs", "api/openapi"} {
+		if err := filepath.WalkDir(filepath.Join(repositoryRoot, root), func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() && (filepath.Ext(path) == ".md" || filepath.Ext(path) == ".yaml") {
+				documentation.WriteString(readFile(t, path))
+				documentation.WriteByte('\n')
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parameter := regexp.MustCompile(`:(\w+)`)
+	err := filepath.WalkDir(filepath.Join(repositoryRoot, "go/internal"), func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil {
+				continue
+			}
+			groups := map[string]string{}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				if assignment, ok := node.(*ast.AssignStmt); ok && len(assignment.Lhs) == 1 && len(assignment.Rhs) == 1 {
+					name, named := assignment.Lhs[0].(*ast.Ident)
+					call, called := assignment.Rhs[0].(*ast.CallExpr)
+					if named && called && len(call.Args) > 0 {
+						selector, selected := call.Fun.(*ast.SelectorExpr)
+						if selected && selector.Sel.Name == "Group" {
+							if mount, literal := stringLiteral(call.Args[0]); literal {
+								parent := ""
+								if receiver, ok := selector.X.(*ast.Ident); ok {
+									parent = groups[receiver.Name]
+								}
+								groups[name.Name] = parent + mount
+							}
+						}
+					}
+				}
+				call, ok := node.(*ast.CallExpr)
+				if !ok || len(call.Args) == 0 {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || !strings.Contains("|Get|Post|Put|Patch|Delete|All|", "|"+selector.Sel.Name+"|") {
+					return true
+				}
+				receiver, ok := selector.X.(*ast.Ident)
+				if !ok || !strings.HasPrefix(groups[receiver.Name], "/api/") {
+					return true
+				}
+				if suffix, literal := stringLiteral(call.Args[0]); literal {
+					route := groups[receiver.Name] + suffix
+					if !strings.Contains(documentation.String(), route) && !strings.Contains(documentation.String(), parameter.ReplaceAllString(route, "{$1}")) {
+						t.Errorf("%s mounts %s %s without a docs/OpenAPI reference", path, selector.Sel.Name, route)
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stringLiteral(expression ast.Expr) (string, bool) {
+	literal, ok := expression.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return "", false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	return value, err == nil
+}
+
+// OpenAPI uses block mappings with components at two spaces and names at four.
+// Checking these named local references does not replace YAML/schema validation.
+func TestOpenAPILocalComponentReferencesExist(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join(repositoryRoot, "api/openapi/*.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sectionPattern := regexp.MustCompile(`^  (schemas|responses|securitySchemes):\s*$`)
+	namePattern := regexp.MustCompile(`^    ([A-Za-z0-9_-]+):\s*$`)
+	referencePattern := regexp.MustCompile(`\$ref:\s*['"]?(#/components/(?:schemas|responses|securitySchemes)/[A-Za-z0-9_-]+)`)
+	for _, path := range files {
+		contents := readFile(t, path)
+		definitions := map[string]bool{}
+		section := ""
+		for _, line := range strings.Split(contents, "\n") {
+			if match := sectionPattern.FindStringSubmatch(line); match != nil {
+				section = match[1]
+				continue
+			}
+			if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+				continue
+			}
+			if section != "" {
+				if match := namePattern.FindStringSubmatch(line); match != nil {
+					definitions["#/components/"+section+"/"+match[1]] = true
+				}
+				if !strings.HasPrefix(line, "    ") {
+					section = ""
+				}
+			}
+		}
+		for _, match := range referencePattern.FindAllStringSubmatch(contents, -1) {
+			if !definitions[match[1]] {
+				t.Errorf("%s references undefined %s", path, match[1])
+			}
+		}
+	}
 }

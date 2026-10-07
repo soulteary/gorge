@@ -10,7 +10,7 @@ Fixtures for `gorge-render`'s highlight endpoints. See
 | `render-language-alias.json` | Extension-style names such as `py` resolve to the right lexer, while `data.language` echoes back exactly what the caller sent. |
 | `render-language-case-uppercase.json`, `render-language-case-lowercase.json` | The alias table is case-sensitive: `R` reaches the R lexer while `r` stays on PHP's REBOL entry. Only meaningful as a pair. |
 | `render-empty-source.json` | An empty source is a 200 with empty HTML, not an error. |
-| `render-unknown-language.json` | An unrecognised language falls back to plain text rather than failing. |
+| `render-unknown-language.json` | An unrecognised language with this plain-text sample succeeds; other samples may be identified by content sniffing before the plain-text fallback. |
 | `render-crlf.json` | CRLF and lone-CR line endings are accepted; Pygments rejected the latter. |
 | `languages-list.json` | `GET /api/highlight/languages` returns the lowercased lexer list. |
 | `unauthorized.json` | A missing service token is 401 `ERR_UNAUTHORIZED` with no `data` field. |

@@ -55,10 +55,10 @@ failure is a service configuration, not a different request. Their runners
 inject stores or connections, keeping the wire contract independent from a live
 Redis or MySQL installation.
 
-`gorge-worker` is intentionally absent. Its only HTTP endpoint,
-`/api/worker/stats`, exposes process-local counters and is covered by
-`go/internal/worker/http_test.go`; unlike taskqueue it has no language-neutral
-request/response boundary that needs a shared fixture set.
+`gorge-worker` has no shared JSON fixture directory here. Static capabilities,
+process counters and optional notification counters are covered by Go tests;
+execution and startup handshakes are covered by the paired Phorge runtime
+contracts. See `docs/modules/worker.md` and `docs/operations.md`.
 
 ## Fixture format
 

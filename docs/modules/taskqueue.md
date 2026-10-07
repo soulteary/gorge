@@ -13,7 +13,7 @@
 
 **这是仓库里第一对拆成两个二进制的域，而「为什么是两个」正是本域最该先讲清楚的一件事**——它和 render+diff 合并那段恰好相反。render 与 diff 合并成一个二进制，是因为两者都是无外部依赖的纯计算、拆进程换不来隔离收益。taskqueue 与 worker 不合并，是因为 **worker 是 taskqueue 的 HTTP 客户端，不是它的同进程协程**：worker 通过 `GORGE_WORKER_TASK_QUEUE_URL` 拨 taskqueue 的 `/api/queue/**` 租约，两者可以各自独立伸缩（一个 taskqueue 前面挂若干 worker，或给某个重类开一个专用 worker）。把它们塞进一个进程，要么把这层 HTTP 契约降级成进程内调用、要么逼 worker 直接调 `Store` 而绕过契约——两条路都把「可独立部署」这个既有事实弄没了。所以 `cmd/` 下是两个入口、compose 里是两个 service，本文档同时覆盖两个域。
 
-taskqueue 本身几乎是 webhook 的翻版（同为「有外部依赖 + 后台性质」），读它之前值得知道的三件事和 webhook 同源：契约固件只覆盖那几个只读/幂等端点、e2e 脚本能跑通完整的 enqueue→lease→complete 但碰不到 worker 侧的真实任务执行、字段名是硬约束。worker 则在一个维度上是本类第一个：**它没有 `db.go`**，不碰任何数据库，唯一的外部依赖是 taskqueue 服务本身，所以它的 `/readyz` 退化为 `/healthz`。
+taskqueue 本身几乎是 webhook 的翻版（同为「有外部依赖 + 后台性质」），读它之前值得知道的三件事和 webhook 同源：基础契约固件覆盖入队、租约及只读端点、e2e 脚本能跑通完整的 enqueue→lease→complete 但碰不到 worker 侧的真实任务执行、字段名是硬约束。worker 通过 HTTP 消费队列，并可直接连接 Feed/邮件 outbox 数据库；`/readyz` 校验队列协议、PHP capabilities、政策与原生执行依赖，`/healthz` 仍只报告进程存活。见 [worker](worker.md)。
 
 ## 1. 职责边界
 
@@ -23,15 +23,15 @@ taskqueue 本身几乎是 webhook 的翻版（同为「有外部依赖 + 后台�
 
 **不负责**：**定义任务**。哪个事务该排哪个 worker、任务负载长什么样、优先级取哪个带，全部由 Phorge 侧的 `PhabricatorWorker::scheduleTask` 决定并写好；本服务只入队、租出、归档。它也不建表、不改表结构、不需要 DDL 权限——三张 worker 表都是 Phorge 的 `bin/storage upgrade` 的产出。
 
-**它必须替换 Phorge 自己的 taskmaster 守护进程，而不是与之并存。** 队列在库里，`phd` 与 gorge-worker 谁都能取，所以「多一个消费者」在这个域里不是扩容而是**把每个任务跑两遍**。让路的方式是停掉 PHP 侧的 taskmaster，保留仍承担仓库拉取、trigger、fact 等职责的守护进程；与 webhook 第 38 条同源。
+**它必须替换 Phorge 自己的 taskmaster 守护进程，而不是与之并存。** 队列在库里，`phd` 与 gorge-worker 谁都能取，旧 PHP 消费者不参与新 fencing/finalize 协议，混用可能重复执行或丢失收尾结果。让路的方式是停掉 PHP 侧的 taskmaster，保留仍承担 trigger、fact 等职责的守护进程；本 fork 的仓库拉取 daemon 已退役；与 webhook 第 38 条同源。
 
-**有外部依赖，而且和 webhook 一样是这一类里最硬的那种。** 数据库不是它写穿的一个后端，而是它的工作本身——三张表就是队列。所以「一个后端都没配」这个状态在这里不存在，`/readyz` 只有一条判据（后端答话），见 3.5。选 Redis 后端时判据换成 Redis 答话，形状不变。
+**有外部依赖，而且和 webhook 一样是这一类里最硬的那种。** 基础 `/readyz` 检查队列后端是否答话；启用 scheduler 后还会检查调度来源与持久调度 schema，见 3.5 和 [scheduler](scheduler.md)。基础 ping 不保证所有队列表结构正确。
 
 ### worker
 
 **负责**：一个租约循环——从 taskqueue 租任务、按 task class 找到 handler 跑它、把结果（完成/永久失败/临时失败/yield）回报给 taskqueue。它是 `PhabricatorTaskmasterDaemon` 的等价物。
 
-**不负责**：**存储**。它不碰数据库，不知道队列在 MySQL 还是 Redis——它只认 taskqueue 的 HTTP 契约。它也不定义任务如何被执行的「真理」：本地实现的 handler 只覆盖几个类，其余全靠 Conduit 委派回 PHP（`worker.execute`），见 3.6。
+**不负责队列存储**：队列租约与归档通过 taskqueue HTTP 契约完成。Worker 可直接访问 Feed/邮件 outbox 数据库，运行原生 handler，并通过 Conduit 执行仍委派给 PHP 的任务。完整执行模式与就绪依赖见 [worker](worker.md)。
 
 **它的 `/api/worker/stats` 是只读的，而且是进程内计数**，不是查库——所以它描述的是「这个 worker 这辈子」的数字（重启即清零），与 taskqueue 的 `/api/queue/stats`（每次真查库）性质相反。
 
@@ -40,6 +40,7 @@ taskqueue 本身几乎是 webhook 的翻版（同为「有外部依赖 + 后台�
 ### taskqueue：`/api/queue`
 
 ```go
+// 基础路由摘录；执行协议、inbox 与 operations 路由见下表。
 func RegisterRoutes(app fiber.Router, deps *Deps) {
 	g := app.Group("/api/queue")
 	g.Use(auth.Token(deps.Token))
@@ -66,6 +67,10 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 | POST | `/api/queue/yield` | 需要 | 信封，`{"status":"ok"}` |
 | POST | `/api/queue/cancel` | 需要 | 信封，归档行 |
 | POST | `/api/queue/awaken` | 需要 | 信封，`{"awakened": N}` |
+| GET | `/api/queue/meta` | 需要 | 执行协议与 scheduler 能力 |
+| POST | `/api/queue/finalize`、`/api/queue/resolve`、`/api/queue/renew` | 需要 | 租约保护的结果提交、恢复与续租，见后文 |
+| POST | `/api/queue/enqueue-event` | 需要 | 持久 inbox 事件接收 |
+| GET | `/api/queue/operations` | 需要 | 后端运行盘点；不支持或查询失败为 503 |
 | GET | `/api/queue/stats` | 需要 | 信封，`{activeCount, leasedCount, archivedCount, failedCount}` |
 | GET | `/api/queue/tasks` | 需要 | 信封，活跃任务 `Task[]`（不含 `data`） |
 | GET | `/api/queue/tasks/:id` | 需要 | 信封，单个 `Task`（含 `data`）；不存在为 404、非数字 id 为 400 |
@@ -73,9 +78,11 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 **lease owner 走 `X-Lease-Owner` 头而不是 body**：它标识调用方（哪个 worker），不是这次请求。缺头时回落到 `IP:gorge-taskqueue`，够区分不同 worker 的租约。这个值直接写进 `worker_activetask.leaseOwner`，是 Phorge 的列、会被它的守护进程控制台读回，所以是契约的一部分。body 还可带 `taskClasses` 白名单；筛选发生在取得租约之前，避免专用 worker 先占用、再失败并延迟另一个池的任务。
 
-`Deps` 只有 `Store` 与 `Token`。**`Store` 是 interface，这是契约固件能存在的前提**：两个后端（MySQL/Redis）之外，固件与 handler 单测注入的是第三份手写内存实现（`memstore_test.go`），照 webhook 的做法。
+`Deps` 包含 `Store`、`Token`、`SchedulerEnabled` 与 `SchedulerReady`。**`Store` 是 interface，这是契约固件能存在的前提**：两个后端（MySQL/Redis）之外，固件与 handler 单测注入的是第三份手写内存实现（`memstore_test.go`），照 webhook 的做法。
 
 ### worker：`/api/worker`
+
+以下为 stats 路由摘录，完整接口见下表。
 
 ```go
 func RegisterRoutes(app fiber.Router, deps *Deps) {
@@ -88,12 +95,14 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 | 方法 | 路径 | 鉴权 | 成功响应 |
 |---|---|---|---|
+| GET | `/api/worker/meta` | 需要 | 静态执行协议能力 |
+| GET | `/api/worker/notification-stats` | 需要 | 可选通知统计，配置回调后才注册 |
 | GET | `/api/worker/stats` | 需要 | 信封，`{processed, failed, active, supported}` |
 | GET | `/`、`/healthz`、`/readyz` | 不需要（平台层注册） | 裸 `{"status":"ok"}` |
 
-`Deps` 是 `Consumer` 与 `Token`。stats 读的是 `Consumer` 里的原子计数器，永不失败，也就没有错误路径。`supported` 在配了 Conduit fallback 时含 `*`，让 setup check 能区分「把一切委派给 PHP」与「只handle固定几类」。
+`Deps` 包含 `Consumer`、`Token` 与可选的 `NotificationStats`。stats 读的是 `Consumer` 里的原子计数器，永不失败，也就没有错误路径。`supported` 在配了 Conduit fallback 时含 `*`，让 setup check 能区分「把一切委派给 PHP」与「只handle固定几类」。
 
-**两个 `main.go` 各多一个 goroutine，形状和 webhook 一样：** taskqueue 的 `main.go` 没有后台循环（它是被动服务），但 worker 的有——租约循环整个住在 `Consumer.Run` 里，`main.go` 起一个 goroutine 跑它，一个信号同时停两半（`srv.Run` 在 SIGINT/SIGTERM 返回、取消 context 让循环收尾），**先排空循环再退出**，否则在途任务的结果回报会被切断。taskqueue 的 `main.go` 则是显式 `store.Close()`（`os.Exit` 会跳过 `defer`），与 webhook / file-storage 同理。
+Worker 的 `Consumer.Run` 运行租约消费循环；taskqueue 启用 scheduler 时也运行后台调度循环。停机需先停止取新任务并收尾在途工作，再释放数据库资源。见 [worker](worker.md) 和 [scheduler](scheduler.md)。
 
 ## 3. 核心实现
 
@@ -142,9 +151,9 @@ SELECT id FROM worker_activetask
 
 `Awaken`（`PhabricatorWorker::awakenTaskIDs`：Phorge 想把 yield 的任务提前拉回）只拉「owner 是 `(yield)`、`failureCount = 0`、且 yield 窗口（一小时）还没过」的任务，把它们的 `leaseExpires` 提前。窗口外的老 yield 任务不动。
 
-### 3.5 `/readyz` 只 ping，不查表
+### 3.5 队列就绪与调度就绪
 
-判据只有一条——后端答话——因为这个服务在数据库之外无事可做（MySQL 后端 `PingContext`，Redis 后端 `Ping`）。**它不检查 worker 表存不存在**，理由与 webhook / file-storage 同源：三张表由 Phorge 的 `bin/storage upgrade` 建，跑那条命令的容器可能后启动，所以要求表存在等于把一个健康部署在它首次迁移期间报成坏的。`OpenDB` 同样**不 ping**、`NewMySQLStore` 也不在打不开时 `os.Exit`——那让排在数据库之前的容器进重启循环。
+未启用 scheduler 时，判据是后端答话（MySQL 后端 `PingContext`，Redis 后端 `Ping`）。基础队列探针不检查 worker 表存不存在；启用 scheduler 后还需校验调度 schema 和 Conduit source，见 [scheduler](scheduler.md)。**基础探针不查表**，理由与 webhook / file-storage 同源：三张表由 Phorge 的 `bin/storage upgrade` 建，跑那条命令的容器可能后启动，所以要求表存在等于把一个健康部署在它首次迁移期间报成坏的。`OpenDB` 同样**不 ping**、`NewMySQLStore` 也不在打不开时 `os.Exit`——那让排在数据库之前的容器进重启循环。
 
 和 webhook 一样，**「只 ping」没有把探针从首启闭环里摘出来**：`WorkerDSN()` 带的是库名 `{namespace}_worker`，库不存在时 ping 在连接阶段就失败（`Error 1049 Unknown database`），而那个库也是 `bin/storage upgrade` 建的。所以首次启动必有一段 `/readyz` 不通的窗口，由 Phorge 自己结束；编排侧对 taskqueue 用 `service_started` 而非 `service_healthy` 来躲开死锁，和 webhook 那条依赖同形。
 
@@ -210,7 +219,7 @@ inbox，不执行领域逻辑。`/readyz` 检查队列协议、配置的 Feed �
 | `GORGE_WORKER_CONDUIT_TOKEN` | 空 | Conduit token |
 | `GORGE_WORKER_TASK_CLASS_FILTER` | 空 | 逗号分隔的类白名单，空 = 全部支持的类 |
 
-规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。taskqueue 的连接池（`maxOpenConns=25` / `maxIdleConns=5` / `connMaxLifetime=5m`）定在 `db.go`，按「池与 Phorge 共用一台库、要留余量」定；**`platform/` 仍然没有数据库设施——三个域（file-storage / webhook / taskqueue）现在共用一个驱动，仍不构成共享关切**，判断同 [`../findings.md`](../findings.md) 第 39 条。
+规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。taskqueue 的连接池（`maxOpenConns=25` / `maxIdleConns=5` / `connMaxLifetime=5m`）定在 `db.go`，按「池与 Phorge 共用一台库、要留余量」定；`platform/operations` 提供只读数据库盘点辅助；连接池与写入策略仍由各域负责，判断同 [`../findings.md`](../findings.md) 第 39 条。
 
 ## 5. 兼容契约
 
@@ -229,7 +238,7 @@ inbox，不执行领域逻辑。`/readyz` 检查队列协议、配置的 Feed �
 
 ## 6. 域级错误码
 
-**taskqueue 与 worker 都没有域级错误码，这是决定不是遗漏，理由同 webhook。**
+**基础队列操作使用平台错误码，扩展执行协议有专用冲突码。** `ERR_LEASE_CONFLICT`（409）表示租约已失效或不属于当前执行；`ERR_EVENT_CONFLICT`（409）表示事件身份与内容冲突；`ERR_OPERATIONS`（503）表示观测不可用或后端不支持。详见 execution、inbox 与 operations 的实现。
 
 taskqueue 的失败模式要么是入参错（`taskClass` 为空、`taskID` 缺失、id 非数字 → `ERR_BAD_REQUEST` 400；任务不存在 → `ERR_NOT_FOUND` 404），要么是「后端没答话」（→ 平台 `ERR_INTERNAL` 500）。真正需要区分的「服务活着但连不上队列」由 `/readyz` 报告并附原因，一个 `ERR_QUEUE_UNAVAILABLE` 在这上面改进不了任何东西，只会得到第二处更差的说法。
 
@@ -254,9 +263,9 @@ worker 的 `/api/worker/stats` 读进程内计数器，永不失败，连错误�
 
 `worker.execute` 独立校验 `X-Service-Token`，`gorge.conduit.token` 必须配置非空值并与 Go worker 和 gateway 使用的 token 一致。部署顺序为先更新 taskqueue 和 PHP，再更新 worker；升级期间暂停 taskmaster/worker 消费，完成后只恢复 Go 消费者。旧 worker 与新版 PHP 的委派协议不兼容，回滚应同步回滚配套组件。
 
-Feed HTTP 新任务包含 deliveryVersion=1、uri 和 PHP 生成的完整表单 body。Go 在 PHP prepare 阶段检查当前 silent 和 hooks 配置后发送快照；旧 key/uri 任务仍委派 PHP 处理，避免丢弃队列存量。
+Feed HTTP 新任务包含 deliveryVersion=1、uri 和 PHP 生成的完整表单 body。配置 Feed policy 文件时，Go 每次执行读取当前 silent 和 hooks 政策后发送快照；未配置时保留 PHP prepare；旧 key/uri 任务仍委派 PHP 处理，避免丢弃队列存量。
 
-旧 complete/fail/yield 接口和 PHP 队列实现仍保留兼容用途；本批次尚未为旧结果接口增加租约校验，也未删除整个 PHP taskmaster。下一阶段应补齐失败/yield 的所有权保护、持久化执行回执和跨仓库持续验证，再收缩原生队列实现。
+旧 complete/fail/yield 接口仍保留兼容用途；新消费者使用 finalize/resolve 的租约保护。原生 PHP taskmaster 已退役，不能将失败结果回退到它。后文描述当前生命周期协议与持久回执；旧格式任务须单独排空。
 
 验证：`go test ./...`；真实 Redis 使用 `GORGE_TEST_REDIS_ADDR=host:port go test ./internal/taskqueue -run TestExecutionRedisIntegration -v`，测试只清理自己创建的随机前缀。PHP 使用 `GORGE_TEST_ARCANIST_DIR=/path/to/arcanist php tests/contract/worker/execution.php`。
 

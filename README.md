@@ -2,7 +2,7 @@
 
 Phorge 的 Go 服务层单仓库。
 
-Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及将来 PHP 侧的适配层。
+Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及 PHP 接入的兼容约束。
 
 仓库产出若干个二进制，每个二进制承载一个或多个域。**当前有哪些域、各由哪个二进制在哪个端口上服务，见 [`docs/README.md`](docs/README.md) 的模块表**——那张表是唯一一处需要维护这份清单的地方，这里刻意不重复它。
 
@@ -15,7 +15,7 @@ Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能
 ├── go/                       单一 Go module（github.com/soulteary/gorge/go）
 │   ├── cmd/<二进制名>/        二进制入口，一个 cmd 一个服务
 │   ├── internal/contracts/   线上数据结构，PHP / Go / OpenAPI / 固件的唯一真源
-│   ├── internal/platform/    httpx / auth / health / config，不依赖任何业务域
+│   ├── internal/platform/    HTTP、鉴权、配置、Conduit client 与只读观测基础设施
 │   ├── internal/<域名>/       一个域一个包：引擎 + HTTP 路由 + 配置
 │   └── Dockerfile            一份 Dockerfile 服务所有二进制（ARG SERVICE 选择）
 ├── api/openapi/<域名>.yaml    各域的 HTTP 契约
@@ -23,7 +23,7 @@ Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能
 ├── deploy/compose/           本地与单机部署编排
 ├── deploy/kubernetes/        （占位）
 ├── php/{extensions,adapters}/（占位）PHP 侧接入代码
-├── docs/                     技术文档，跨模块四份 + 一域一份
+├── docs/                     技术文档：架构、平台、测试、交付、运维与模块说明
 └── tests/
     ├── contract/<域名>/       语言中立的契约固件，Go 与 PHP runner 共读
     └── e2e/<域名>.sh          对着运行中实例做的冒烟测试
@@ -89,17 +89,17 @@ curl -s -H 'X-Service-Token: dev-token' \
   http://127.0.0.1:8140/api/highlight/render | jq -r .data.html
 ```
 
-输出里应当带 `class="k"` 这类 Pygments CSS 类名。跑完整冒烟：
+输出里应当带 `class="k"` 这类 Pygments CSS 类名。验证本服务的高亮路径：
 
 ```bash
-TOKEN=dev-token make e2e
+TOKEN=dev-token BASE_URL=http://127.0.0.1:8140 bash tests/e2e/render.sh
 ```
 
 ## 配置
 
 Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已经移除独立服务时期的裸变量别名；升级部署时必须同步更新编排文件。外部后端的原生变量仍受支持，例如 mailer 的 `SMTP_*` 以及 `MAILER_ACCESS_KEY`、`MAILER_SECRET_KEY`、`MAILER_REGION`、`MAILER_ENDPOINT`、`MAILER_API_KEY`、`MAILER_DOMAIN`、`MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`，还有 search 的 `ES_*` / `MEILI_*`；不要把这些名称改写成不存在的 `GORGE_*` 形式。`MAILER_CONFIG`、`MAILER_TYPE` 与 `MAILER_KEY` 不在例外范围内。
 
-下表是 `gorge-render` 的。**每个二进制有自己的一张表**，在 [`docs/modules/`](docs/modules/) 下各自的第 4 节；`GORGE_LISTEN_ADDR` 与 `GORGE_SERVICE_TOKEN` 是所有服务共有的两个，只有默认端口不同。
+下表是 `gorge-render` 的。其他服务配置见 [`docs/modules/`](docs/modules/) 对应模块；多数服务使用 `GORGE_LISTEN_ADDR` 与 `GORGE_SERVICE_TOKEN`，notification 用绑定主机和双端口且不使用 service token。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -107,10 +107,10 @@ Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已
 | `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
 | `GORGE_CONFIG_FILE` | 无 | JSON 配置文件路径 |
 | `GORGE_RENDER_MAX_BYTES` | `1048576` | 单次请求源码上限（字节） |
-| `GORGE_RENDER_TIMEOUT_SEC` | `15` | 请求超时（秒） |
+| `GORGE_RENDER_TIMEOUT_SEC` | `15` | 优雅关闭等待时间（秒），不限制单次请求 |
 | `GORGE_RENDER_ENABLE_DIFF` | `true` | 是否注册 `/api/diff/*` 路由 |
 
-`GORGE_RENDER_MAX_BYTES` 之外还有一道 `platform/httpx` 的传输层上限，固定 2M，不走环境变量。默认配置下前者（1MiB）更小，所以超限请求先被域级检查挡下；把它调到 2M 以上，挡下请求的就换成传输层中间件了。两条路径都返回 `413` + `ERR_TOO_LARGE`，只有 `message` 文案不同，客户端不必区分。
+`GORGE_RENDER_MAX_BYTES` 之外还有一道 `platform/httpx` 的传输层上限，固定 2M，不走环境变量。源码上限通常更小，但传输层先检查整个 JSON body，转义或其他字段也可能先触及 2M；把它调到 2M 以上，挡下请求的就换成传输层中间件了。两条路径都返回 `413` + `ERR_TOO_LARGE`，只有 `message` 文案不同，客户端不必区分。
 
 镜像里还有一个 `GORGE_HEALTHCHECK_PORT`（由 `go/Dockerfile` 的构建参数 `PORT` 决定，默认 `8140`）。它只被镜像的 `HEALTHCHECK` 指令使用，服务本身不读，所以不在上表里。改 `GORGE_LISTEN_ADDR` 的端口时要同步改它，否则探针一直打旧端口，容器会被判成 unhealthy。
 
@@ -118,9 +118,9 @@ Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已
 
 完整契约见 [`api/openapi/render.yaml`](api/openapi/render.yaml)。
 
-**鉴权**：请求头 `X-Service-Token` 优先，查询参数 `?token=` 兜底。服务端 token 为空时全部放行。
+**render/diff 鉴权**：请求头 `X-Service-Token` 优先，查询参数 `?token=` 兜底。服务端 token 为空时全部放行。
 
-**响应信封**：`/api/**` 返回 `{data, error}`，两者恰有一个非空。
+**响应信封**：普通 JSON API 返回 `{data, error}`，两者恰有一个非空。文件读取、图片输出与 maintenance metrics 的成功响应分别是原始字节或 Prometheus 文本；Conduit 使用自身信封，notification 遵循 Aphlict 协议。各域文档说明具体响应形状。
 
 ```json
 { "data": { "html": "...", "language": "python" } }
@@ -166,7 +166,7 @@ Gorge 服务自身的环境变量只接受 `GORGE_*` 规范名称。阶段四已
 2. `deploy/compose/docker-compose.yml` 加一个 service，`build.args.SERVICE` 填 `<name>`；
 3. `.github/workflows/release.yml` 的 `matrix.service` 加一项。
 
-`go/Dockerfile` 和 CI 不需要改。
+同步更新模块索引、端口、部署和验收配置；新运行依赖可能还需调整 Dockerfile 和 CI，见 [构建与交付](docs/delivery.md)。
 
 ## 开发
 
@@ -177,7 +177,7 @@ make lint          # golangci-lint
 make compose-config  # 校验 compose 文件
 ```
 
-CI 带 `paths` 过滤（`go/**`、`tests/**`、`.github/workflows/**`），纯 PHP 改动不会触发 Go 流水线。
+CI 带 `paths` 过滤（`Makefile`、`go/**`、`tests/**`、`.github/workflows/**`），纯 PHP 改动不会触发 Go 流水线。
 
 ## 与 Phorge 的兼容约束
 

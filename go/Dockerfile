@@ -2,7 +2,7 @@
 #
 # Build context is the "go/" directory, not the repository root:
 #   docker build -t gorge-render go/
-#   docker build -t gorge-diff --build-arg SERVICE=gorge-diff go/
+#   docker build -t gorge-search --build-arg SERVICE=gorge-search --build-arg PORT=8120 go/
 #
 # A single Dockerfile serves every binary under ./cmd; SERVICE selects which.
 

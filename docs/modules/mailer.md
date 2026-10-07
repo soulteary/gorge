@@ -15,7 +15,7 @@
 
 **负责**：把一封信交出去，并如实报告「交出去了没有」以及「这次失败还值不值得再试」。七个后端（SMTP / sendmail / SES / SendGrid / Mailgun / Postmark / test）按优先级串成 failover 链。
 
-**不负责**：队列、去重、退避重投、投递回执。**Phorge 的 worker 队列是重试的唯一权威**，本服务同步应答、不持久化任何东西——进程重启不会丢下待发邮件，因为它从来就没有持有过。第 4 节的重试是这条边界内的例外，且刻意被压到秒级。
+同步 `/send` 不持久化邮件，短重试由 Dispatcher 执行，外层重试由 worker 队列安排。启用原生持久投递后，Gorge 还负责不可变快照、提交账本、重试与结果恢复；PHP 保留收件人决策与附件授权。两种路径的重试和不确定结果规则不同，见后文。
 
 **有外部依赖**，这是它与 render / diff 的结构性差异，也是它单独占一个进程的原因：它持有适配器状态、要连出去打 SMTP 与各家 provider、并且有一个真实的就绪条件可报。按 [`../architecture.md`](../architecture.md) 的分界，它归到 notification 那一侧。
 
@@ -37,9 +37,9 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 | GET | `/api/mailer/mailers` | 需要 |
 | GET | `/`、`/healthz`、`/readyz` | 不需要（平台层注册） |
 
-`Deps` 三个字段：`Dispatcher` / `Token` / `BodyLimit`。`TestRoutePathsAreStable` 断言这两条路径仍注册着——Phorge 侧 `PhabricatorGorgeMailerClient` 已经在调它们。
+上述代码是同步兼容路由摘录。配置 `GORGE_MAILER_DELIVERY_DSN` 后还注册 POST `/api/mailer/deliver`、`/api/mailer/prepare`、`/api/mailer/execute`、`/api/mailer/cancel`，以及 GET `/api/mailer/delivery`、`/api/mailer/operations`、`/api/mailer/delivery-capabilities`；均使用同组 token 鉴权。`Deps` 包含 `Dispatcher`、`Token`、`BodyLimit` 和可选的 `Delivery`。`TestRoutePathsAreStable` 断言这两条路径仍注册着——Phorge 侧 `PhabricatorGorgeMailerClient` 已经在调它们。
 
-`main.go` 与另外两个二进制的唯一差别是那两行 `httpx.Config`：
+同步模式的服务器配置要点如下；启用原生投递时还会创建数据库连接与恢复循环，并扩展就绪检查：
 
 ```go
 srv := httpx.New(httpx.Config{
@@ -49,7 +49,7 @@ srv := httpx.New(httpx.Config{
 })
 ```
 
-**`/readyz` 是本域唯一一处比 `/healthz` 多说了点什么的地方。** 就绪判据只有一条：**至少有一个适配器配置成功**。这精确对应「服务活着、每一封信都失败」这个状态——迁入前 `/healthz` 在零后端时照样 200，compose 报 healthy，而没有任何一封信发得出去。
+`/readyz` 先检查至少一个适配器配置成功；启用原生投递时还检查持久账本 schema。它不保证下一封信会送达。
 
 刻意**不**在 `Ready` 里拨测 SMTP 或 provider：那会让就绪状态随第三方抖动而翻转，而多后端 failover 本来就是为此存在的。所以 200 的含义是「本服务能发起一次投递」，不是「下一封信会到」。
 
@@ -70,7 +70,8 @@ srv := httpx.New(httpx.Config{
   └─ 单个适配器内重试 MaxRetries 次，间隔 RetryWait
        ├─ 成功        → 返回 SendResult{mailerKey, messageId}
        ├─ PermanentError → 立即返回，不重试、也不换后端
-       └─ 临时失败     → 重试；重试用尽后换下一个适配器
+       └─ SafeRetryError → 确认未接受，可重试；耗尽后换下一个适配器
+       └─ 未分类失败  → 立即返回，不在 Dispatcher 重试或切换
 ```
 
 `mailerKeys` 只**收窄**候选集，不改变顺序——请求里写 `["b","a"]` 仍按服务端的优先级试。
@@ -79,22 +80,17 @@ srv := httpx.New(httpx.Config{
 
 ### 3.3 永久失败分类
 
-这是迁入时补上的真实缺口：老代码定义了 `PermanentError` 但七个适配器**从不返回它**，后果是收件人地址写错会被 Phorge 的 worker 无限重投。
+错误分类必须区分永久消息拒绝、已确认未接受的安全重试，以及提交结果不确定：
 
-| 后端 | 永久 | 临时 |
-|---|---|---|
-| SMTP | 5xx 应答码 | 4xx 应答码；无应答码的连接/TLS 失败 |
-| SES / SendGrid / Mailgun / Postmark | HTTP 4xx | **429**、5xx、网络错误 |
-| Postmark | 额外认 `ErrorCode` 300/406/409/422 | 其余 `ErrorCode` |
-| Mailgun | 附件不是合法 base64 | — |
-| sendmail | 退出码 64/65/66/67/68/77/78 | 75（`EX_TEMPFAIL`）、71、74、**以及任何未登记的码** |
+| 后端 | 永久消息拒绝 | 可安全重试/切换 | 不确定结果 |
+|---|---|---|---|
+| SMTP | 消息阶段明确 5xx | 提交前连接/TLS/认证失败；明确非永久拒绝 | DATA 发送或接受确认丢失；已确认接受后的 QUIT 失败仍算成功 |
+| SES / SendGrid / Mailgun / Postmark | 除 401/403/429 外的 HTTP 4xx | 429；401/403 标为后端配置问题 | 网络失败、5xx、异常成功响应 |
+| Postmark | `ErrorCode` 300/406/409/422 | 按 HTTP 状态分类 | 其余非零 ErrorCode 或无法解析的响应 |
+| Mailgun | 无效 base64 附件 | 按 HTTP 状态分类 | 不能确认接受状态的失败 |
+| sendmail | 退出码 64/65/66/67/68 | 进程无法启动；77/78 配置或权限错误 | 其他退出/执行错误 |
 
-两条贯穿全表的规则：
-
-- **429 是 4xx 里唯一的例外**。限流说的是「现在不行」而不是「永远不行」，跟着其余 4xx 判永久会让每一次 provider 限流都丢信。
-- **不认识的信号一律判临时**。两个方向的代价不对称：误判临时只是白费几次 worker 循环，误判永久是**静默丢信**，而且落在 Phorge 里的状态看起来就像地址写错了。
-
-handler 把 `*PermanentError` 映射到 422 + `ERR_PERMANENT_FAILURE`，其余失败到 502 + `ERR_SEND_FAILED`。
+`Dispatcher` 只对 `SafeRetryError` 重试或切换。未分类失败既不判永久，也不代表可以安全再发。同步 `/send` 把永久错误映射为 422 `ERR_PERMANENT_FAILURE`，其他失败仍是 502 `ERR_SEND_FAILED`，因此其 PHP 外层重试不能提供持久路径的 unknown 保护。原生账本路径将不确定提交记为 unknown，禁止盲目重发；详见后文。
 
 ### 3.4 MIME 构建
 
@@ -118,21 +114,21 @@ handler 把 `*PermanentError` 映射到 422 + `ERR_PERMANENT_FAILURE`，其余�
 
 规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
-各后端选项另有一批扁平变量（`SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_PROTOCOL`、`MAILER_ACCESS_KEY` / `MAILER_SECRET_KEY` / `MAILER_REGION` / `MAILER_ENDPOINT`、`MAILER_API_KEY` / `MAILER_DOMAIN` / `MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`），原样保留。**迁入时删掉了 `MAILER_FROM_NUMBER` / `MAILER_ACCOUNT_SID` / `MAILER_AUTH_TOKEN` 三条**：它们没有任何对应适配器，是某个 Twilio 实现的残留，SMS 在 Phorge 侧由原生 `PhabricatorMailTwilioAdapter` 负责。`TestMailerConfigDropsTwilioOptions` 钉住这次删除。
+各后端选项另有一批扁平变量（`SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_PROTOCOL`、`MAILER_ACCESS_KEY` / `MAILER_SECRET_KEY` / `MAILER_REGION` / `MAILER_ENDPOINT`、`MAILER_API_KEY` / `MAILER_DOMAIN` / `MAILER_API_HOSTNAME`、`MAILER_ACCESS_TOKEN`），原样保留。**迁入时删掉了 `MAILER_FROM_NUMBER` / `MAILER_ACCOUNT_SID` / `MAILER_AUTH_TOKEN` 三条**：它们没有任何对应适配器，是某个 Twilio 实现的残留，SMS 默认由 Phorge 的 `PhabricatorMailTwilioAdapter` 负责，也可显式迁入 [integrations](integrations.md)，不属于 gorge-mailer。`TestMailerConfigDropsTwilioOptions` 钉住这次删除。
 
-`Load()` 的取值顺序与 render 域一致：指了配置文件就读文件，否则读环境变量；走文件时**仍然从环境变量取 `GORGE_SERVICE_TOKEN`**。这一条在本域比在别处更要紧——mailer 的配置文件里装着这个部署的全部后端凭据。
+`Load()` 的取值顺序与 render 域一致：指了配置文件就读文件，否则读环境变量；走文件时先从环境变量预填 `GORGE_SERVICE_TOKEN`，但 JSON 中显式的 `serviceToken` 会覆盖它（包括空值）。这一条在本域比在别处更要紧——mailer 的配置文件里装着这个部署的全部后端凭据。
 
 ### 重试默认值是一次刻意的变更
 
-老默认值是 `MaxRetries=250` / `RetryWait=15`，但老代码**从不读它们**。迁入时把它们真正接进发送循环，同一组值会让一次 HTTP 请求最坏阻塞一小时以上，而 PHP 客户端只等 30 秒。所以默认值改为 **2 次 / 2 秒**，并让整个重试循环受 `c.Request().Context()` 约束——客户端断开即止。
+老默认值是 `MaxRetries=250` / `RetryWait=15`，但老代码**从不读它们**。迁入时把它们真正接进发送循环，同一组值会让一次 HTTP 请求最坏阻塞一小时以上，而 PHP 客户端只等 30 秒。所以默认值改为 **2 次 / 2 秒**，发送循环接收 Fiber 的 `c.Context()`；不能据此承诺客户端断开会立刻取消发送。
 
-这不是把重试变弱了：**Phorge 的 worker 队列仍然是外层重试的唯一权威**，Go 侧只吸收秒级抖动。记在 [`../findings.md`](../findings.md)。
+这不是把重试变弱了：同步路径仍由 worker 队列安排外层重试；原生持久投递的重试由账本状态决定，Go 侧只吸收秒级抖动。记在 [`../findings.md`](../findings.md)。
 
 ## 5. 兼容契约
 
 权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第六节，这里是概述。四条约定：`/api/mailer/*` 两条路径、wire 字段名一律 camelCase、`ERR_PERMANENT_FAILURE` 的语义、附件的 base64 编码位置。
 
-**最要紧的是 `ERR_PERMANENT_FAILURE`**，因为它是本域唯一一个改变 Phorge **行为**而不只是改变它**报告内容**的码：PHP 客户端把它转成 `PhabricatorMetaMTAPermanentFailureException`，worker 队列见到这个异常才停止重投，其余任何失败都会被重新入队。
+**最要紧的是 `ERR_PERMANENT_FAILURE`**，因为它在同步发送路径中决定 Phorge 是否停止重试：PHP 客户端把它转成 `PhabricatorMetaMTAPermanentFailureException`，worker 队列见到这个异常才停止重投，其余任何失败都会被重新入队。
 
 把它收敛进平台码，或者把某个临时失败误报成它，都不会有任何一处报错：前者让写错的收件人地址被永久重投，后者让本可以发出去的信被记成 `FAIL`。两个方向都只在几天后的邮件统计里看得出来。
 

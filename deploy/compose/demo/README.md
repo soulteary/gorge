@@ -45,7 +45,7 @@ docker compose -f docker-compose.demo.yml ps
 
 ### 1. 搜索（Meilisearch + Elasticsearch）
 
-`gorge-search` 的 `/readyz` 通过即表示两个后端都已配好可读：
+`gorge-search` 的 `/readyz` 通过仅表示至少配置了一个可读后端，不拨测每个后端：
 
 ```bash
 curl -s http://127.0.0.1:8120/readyz        # {"status":"ok"}

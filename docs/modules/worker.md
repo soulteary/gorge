@@ -1,3 +1,12 @@
+# Worker 模块
+
+`gorge-worker` 默认监听 `:8170`，通过 taskqueue HTTP 租约执行任务，按任务类选择 Go 原生 handler 或 PHP Conduit 委派。它不直接替代 PHP 的业务对象、权限与事务。
+
+## 接口与共用配置
+
+`GORGE_LISTEN_ADDR`、`GORGE_SERVICE_TOKEN` 控制本服务的监听与鉴权；状态接口使用 `X-Service-Token`；当前共享中间件也接受 query token，运维请求应使用 header。`GET /api/worker/meta` 返回静态协议，`GET /api/worker/stats` 返回计数与已注册类，可选 `GET /api/worker/notification-stats` 返回通知计数。`/healthz` 表示进程存活，`/readyz` 检查执行依赖。
+
+队列 URL/token、Conduit URL/token、并发与领取批量见 [taskqueue](taskqueue.md) 的配置节；全部规范变量以 [worker/config.go](../../go/internal/worker/config.go) 为准。原生邮件、Feed、通知的 policy/outbox 配置见下文；执行、心跳和原子收尾见 [taskqueue](taskqueue.md)，恢复与退役验收见 [operations](../operations.md)。
 
 ## 空闲轮询
 

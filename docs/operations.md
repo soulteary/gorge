@@ -62,7 +62,7 @@ truncated=true 时字节/计数为下界，不能作为完整容量报告。用 
 返回三张表的近似分配空间及当前载荷保留策略；InnoDB 数据/索引空间不是精确载荷大小。
 统一报告补充 PHP 删除终态、入站回执、outbox、队列归档/数据、搜索源墓碑的记录数与
 近似空间；`/api/queue/operations`、`/api/mailer/operations`、
-`/api/search/projection/operations` 补充各 Go 域的历史计数与状态。每张缺表/失败单独
+`/api/search/projections/operations` 补充各 Go 域的历史计数与状态。每张缺表/失败单独
 标为 unavailable，不能作为零。Redis 同时输出存留归档索引数和累计归档数；SCANNED
 key memory/inbox 在 truncated=true 时为下界，memoryIncomplete 表示部分空间观测失败。
 报告保留 unknown、最早逾期与 Fact 进展。

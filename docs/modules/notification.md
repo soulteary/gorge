@@ -43,7 +43,7 @@ diff 并进 render 的理由是「两个域都是无外部依赖的纯计算，�
 
 client 那一条填错时的表现值得单独记一下：`PhabricatorNotificationServerRef::getWebsocketURI()` 是把地址**发给浏览器**的，所以填了 `gorge-notification` 这种只在 compose 内网解析得开的名字，服务端一切健康、Config → Cluster → Notification 页面两台服务器都显示正常，只有每个真实用户的浏览器连不上。**服务端没有任何一处会察觉到这件事。**
 
-镜像的 `HEALTHCHECK` 指向 admin 口（`deploy/compose/docker-compose.yml` 里传 `PORT: 22281`，`.github/workflows/release.yml` 的 matrix 里也带同一个值）。它可以指向任意一个口——两个口都注册了 `/healthz`——选 admin 是因为它是纯 HTTP，探针不必关心 WebSocket。这个构建参数只喂 `ENV GORGE_HEALTHCHECK_PORT`，服务本身不读它；漏传的话它会停在 render 的 8140 默认值上，探针打向一个没人监听的端口，容器起来之后反复重启。
+镜像的 `HEALTHCHECK` 指向 admin 口（`deploy/compose/docker-compose.yml` 里传 `PORT: 22281`，`.github/workflows/release.yml` 的 matrix 里也带同一个值）。它可以指向任意一个口——两个口都注册了 `/healthz`——选 admin 是因为它是纯 HTTP，探针不必关心 WebSocket。这个构建参数只喂 `ENV GORGE_HEALTHCHECK_PORT`，服务本身不读它；漏传的话它会停在 render 的 8140 默认值上，探针打向一个没人监听的端口，容器会被标记 unhealthy，是否重启由编排决定。
 
 ## 1. 职责边界
 
@@ -55,7 +55,7 @@ render 域替换的是一次 `fork` + Python 解释器初始化，省下的是�
 - 交付形态与仓库里其他服务对齐——同一份参数化 `go/Dockerfile`、同一个 `httpx` 引导、同一批探针路径（见 [`../delivery.md`](../delivery.md)）；
 - Aphlict 的 `bin/aphlict start` 那套 pidfile + 日志文件的进程管理不再需要，日志直接进 stdout 交给容器运行时收（这也是 Aphlict 配置里 `logs` 与 `pidfile` 两个键被丢掉的原因，见第 4.5 节）。
 
-代价是引入了一条兼容边界，而它的形状是各域里最难受的：Aphlict 的线协议既被 PHP 侧调用、又被浏览器里的 `JX.Aphlict` 调用，两侧都不读本服务的错误信息。
+代价是引入了一条兼容边界，而它的形状是各域里最难受的：Aphlict 的线协议既被 PHP 侧调用、又被浏览器里的 `JX.Aphlict` 调用，两侧的业务消息处理不等同于投递确认，PHP required 政策会报告网络/API 失败。
 
 ### 1.2 负责与不负责
 
@@ -67,22 +67,11 @@ render 域替换的是一次 `fork` + Python 解释器初始化，省下的是�
 
 ### 1.3 「可降级」是好几处设计的前提
 
-状态全在内存、失败只告警不阻塞、peer 中继失败只 `slog.Warn` 不重试——这些选择的共同前提是 `PhabricatorNotificationClient::tryToPostMessage()` 在 PHP 侧的这段代码：
+Go notification 的连接、history 和 peer 去重状态在内存中；重启不能恢复消息。peer 中继失败会记录日志，不提供持久重试。
 
-```php
-foreach ($servers as $server) {
-  try {
-    $server->postMessage($data);
-    return;
-  } catch (Exception $ex) {
-    // Just ignore any issues here.
-  }
-}
-```
+当前 PHP `tryToPostMessage()` 依次尝试已启用的 admin server。全部失败时，fallback 政策记录降级与异常后返回；required 政策抛出聚合异常。没有 endpoint 时仍沿用 no-op，不能把这一行为当成成功送达。`tryAnyConnection()` 的状态读取失败也会成为 setup issue。
 
-通知丢了没人会收到报错——这既是它可以被简单实现的原因，也是它出问题特别难发现的原因。
-
-**但「PHP 侧全吞」这句话有一个例外，值得单独记住**：`/status/` 的失败是可见的。`PhabricatorAphlictSetupCheck` 调 `tryAnyConnection()`，它对第一台 admin 服务器打 `loadServerStatus()`，抛异常就在 Config 里挂出一条 "Unable to Connect to Notification Server" 的 setup issue。所以两个 admin 端点的可观测性是不对称的：**`GET /status/` 坏了会报，`POST /` 坏了不会**。第 5 节四条约束的危险程度排序就是从这条不对称来的。
+原生通知 worker 使用自己的 required/fallback/off 政策和重试，见 [worker](worker.md)。PHP/Go 请求成功都只表示服务接受消息，不保证浏览器接收；消息内容与收件人过滤仍须实际验收。
 
 ### 1.4 PHP 侧给的时间预算是 2 秒
 
@@ -93,7 +82,7 @@ foreach ($servers as $server) {
 | PHP 等本服务应答 | 2 秒（`HTTPSFuture::setTimeout`） |
 | 本服务中继给一个 peer | 5 秒（`peer.broadcastTimeout`） |
 
-所以 `Peers.BroadcastMessage` 里那句 `go p.BroadcastMessage(...)` 不是「顺手并发一下」：**同步做的话，一个不可达的 peer 就会让 PHP 侧超时**，而超时被上面那个 catch 吞掉，表现是通知偶发丢失、且只在某台 peer 挂掉时发生。goroutine 把 5 秒挪到了请求响应之外。
+所以 `Peers.BroadcastMessage` 里那句 `go p.BroadcastMessage(...)` 不是「顺手并发一下」：**同步做的话，一个不可达的 peer 就会让 PHP 侧超时**，超时将按当前 PHP 政策报错或记录降级，且影响本节点本可完成的投递。goroutine 把 5 秒挪到了请求响应之外。
 
 `setFollowLocation(false)` 也在那个方法里，注释写着 Aphlict 从不发 `Location:`，收到就说明有事不对——本域同样从不发重定向，改动路由时别引入一个。
 
@@ -355,7 +344,7 @@ admin 与 client 两类必须都在，缺任一类启动即失败；顺带拒掉
 
 ## 5. 兼容契约
 
-权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第五节，这里是概述。四条约束加一处已知偏离，共同特征仍然是**破坏后不报错**，而本域比 render/diff 更彻底：PHP 侧不读本服务的响应体，`tryToPostMessage()` 还把异常整个吞掉。其中 5.4 更进一步——破坏之后**连异常都没有**，因为那个 POST 成功了。
+权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第五节，这里是概述。部分约束破坏时 PHP 会明确报错，部分会造成静默内容或显示异常。当前 required 政策会报告投递失败，但若 5.4 的错误解析仍返回 HTTP 成功，政策检查也发现不了内容损坏。
 
 按「破坏之后还有谁能发现」排序：
 
@@ -450,9 +439,9 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 
 | 层 | 本域的内容 | 只有它能覆盖的东西 |
 |---|---|---|
-| 单元测试 | `admin_test.go` 10 个、`client_test.go` 14 个、`config_test.go` 12 个、`hub/hub_test.go` 10 个、`peer/peer_test.go` 9 个 | 用 `httptest.NewServer` 起真 listener 之后的真 WebSocket 会话 |
+| 单元测试 | admin/client/config/hub/peer 的当前测试用例 | 用 `httptest.NewServer` 起真 listener 之后的真 WebSocket 会话 |
 | 分层测试 | `layering_test.go` 的 `forbiddenPrefixes` 里那行 `internal/notification` | 平台层不反向依赖本域 |
-| 契约固件 | `admin/` 7 份 + `client/` 4 份 | 跨语言：将来的 PHP runner 读同一批文件 |
+| 契约固件 | `admin/` 7 份 + `client/` 4 份 | 共享 JSON 契约；配对 PHP runtime contracts 另验真实消费链路 |
 | e2e | `tests/e2e/notification.sh` 5 条场景 | **101 握手**——`httptest.NewRecorder` 不实现 `http.Hijacker`，升级在内存里完不成 |
 
 分层测试那一行是迁入时**手工**补的。这是全仓库唯一需要人工维护的测试，漏补的话它对新域静默失效——照样通过，只是不再检查任何新东西（[`../findings.md`](../findings.md) 第 8 条）。

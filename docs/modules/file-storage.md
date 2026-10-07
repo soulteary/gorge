@@ -15,9 +15,9 @@
 
 **负责**：把一个文件的字节收下来、放进某个后端，并如实报告「放进了哪个后端、拿什么 handle 取回来」；以及按这对 `(engine, handle)` 把字节交回去、删掉。三个后端——MySQL blob、本地磁盘、S3——按优先级排成写入候选链。
 
-**不负责**：文件的**元数据**。名字、大小、MIME 类型，以及那对 `(engine, handle)` 本身，全都存在 **Phorge 自己的数据库**里。本服务不认识「文件」这个概念，只认识「一段字节」和「一个不透明的 handle」——handle 只对铸出它的那个引擎有意义，所以读和删都必须同时给出引擎名，服务端不做推断。
+**不负责**：文件的**元数据**。名字、大小、MIME 类型，以及那对 `(engine, handle)` 本身，全都存在 **Phorge 自己的数据库**里。基础 blob API 只处理「一段字节」和「一个不透明的 handle」——handle 只对铸出它的那个引擎有意义，所以读和删都必须同时给出引擎名，服务端不做推断。
 
-也不负责去重、垃圾回收策略与分块。去重与 GC 是 Phorge 的 `PhabricatorFile` 与它的 GC daemon 的事，本服务连「哪些 handle 还有人引用」都不知道；**分块则是 Phorge 的 chunked storage engine 在上游就做完了**——超过 8 MB 的文件在到达这里之前已经被切成 4 MB 的块，每一块走一次独立的 `POST`。这也是第 2 节那个 `16M` 传输上限的由来：它不是文件大小上限，是「一次合法请求最大能有多大」的两倍余量。
+业务去重、引用关系与 GC 决策由 Phorge 管理。传统 chunked storage engine 在 PHP 侧将文件切块，每块独立调用 blob API；启用可恢复上传后，Gorge 管理持久字节 session、分块完整性与范围读取，启用删除 outbox 后还消费物理删除任务。文件权限、元数据与对象销毁仍由 PHP 决定。两条路径不能混为一谈，见 [file-lifecycle](file-lifecycle.md)。第 2 节的 `16M` 是 blob 请求传输上限，不是可恢复上传的总文件大小上限。
 
 **有外部依赖**，与 mailer 同属一类，也是它单独占一个进程的原因：本地磁盘要挂卷、blob 要连数据库、S3 要连对象存储，并且有一个真实的就绪条件可报。它比 mailer 更进一步——**这是仓库里第一个打开数据库连接的二进制**。
 
@@ -45,9 +45,9 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 **三个方法压在同一条路径上，而 handle 走查询参数而不是路径段**，这两件事是同一个原因：本地磁盘的 handle 是 `ab/cd/{28 hex}`、S3 的 handle 是 `phabricator/ab/cd/{16 hex}`，**handle 里带斜杠**。做成路径段就要求每一个客户端都记得转义它，而漏转义的表现是 404 而不是报错。`TestHandlesWithSlashesSurviveTheQueryString` 钉住这一条，两种斜杠写法各跑一遍——`PhutilURI` 会把它转义成 `%2F`，而 curl 与 e2e 脚本原样发送，两种都合法且必须解出同一个 handle；`TestRoutePathsAreStable` 钉住四条路径本身——`PhabricatorGorgeFileStorageClient` 已经在按字面调它们。
 
-`Deps` 只有两个字段：`Router` 与 `Token`。没有 `BodyLimit`——mailer 需要它是因为正文截断发生在 handler 里，而这里的大小判据来自各引擎自己的 `MaxFileSize()`，传输上限则整个交给平台中间件。
+`Deps` 包含 `Router`、`Token`、可选的 `Uploads` 与 `DeletionEnabled`。本节路由代码为基础 blob/engine 摘录；扩展见 [file-lifecycle](file-lifecycle.md)，`GET /api/file/lifecycle/meta` 使用 header-only token，报告部署能力与后端身份。没有 `BodyLimit`——mailer 需要它是因为正文截断发生在 handler 里，而这里的大小判据来自各引擎自己的 `MaxFileSize()`，传输上限则整个交给平台中间件。
 
-`main.go` 与另外三个二进制的差别是那两行 `httpx.Config`，外加一次显式关闭：
+基础模式的服务器配置与连接关闭摘录如下。启用上传或删除 DSN 后，还运行过期清理/删除循环；`/readyz` 额外 ping 删除数据库，但不代替 schema/capability 验收：
 
 ```go
 srv := httpx.New(httpx.Config{
@@ -62,7 +62,7 @@ runErr := srv.Run()
 if closeErr := router.Close(); closeErr != nil { … }
 ```
 
-`Close` 是**显式调用而不是 `defer`** 的：下面那条失败分支要 `os.Exit`，而 `os.Exit` 不跑 `defer`——这里唯一值得在退出路径上释放的就是那个连接池。
+`Close` 是**显式调用而不是 `defer`** 的：下面那条失败分支要 `os.Exit`，而 `os.Exit` 不跑 `defer`——当前入口先取消后台循环并等待收尾，再关闭删除数据库与各存储引擎。
 
 ## 3. 核心实现
 
@@ -109,7 +109,7 @@ type StorageEngine interface {
 | 本地磁盘 | `local-disk` | 5 | 无 | `ab/cd/{28 hex}` | 是 |
 | S3 | `amazon-s3` | 100 | 无 | `phabricator[/{instance}]/ab/cd/{16 hex}` | 是 |
 
-优先级的含义是「小文件优先落进数据库（Phorge 自己的备份已经覆盖它），其余落磁盘，有对象存储时也只在它是唯一后端时才用到 S3」。**三个 identifier 与三种 handle 形态都是兼容契约**，见第 5 节。
+优先级的含义是「小文件优先落进数据库（Phorge 自己的备份已经覆盖它），其余落磁盘，S3 在前面引擎不收该大小或写入失败时作为后续候选」。**三个 identifier 与三种 handle 形态都是兼容契约**，见第 5 节。
 
 三处实现细节值得单独知道：
 
@@ -138,7 +138,7 @@ type StorageEngine interface {
 
 ### 3.4 读答原始字节，删除幂等
 
-**成功的 `GET /api/file/blob` 是全仓库 `/api/**` 里唯一不套 `{data, error}` 信封的成功响应**：handler 设置 `Content-Type: application/octet-stream` 后调用 `c.SendStream(rc, size)`。失败仍然是信封。所以客户端的判据只能是**状态码**：200 就把 body 当文件，其余就交给信封解析器。**不能拿「body 是不是空的」当判据**——0 字节文件是一个合法的 200 加空 body。平台层为此**没有**改任何代码，理由见 [`../platform.md`](../platform.md) 第 1.1 节。
+**成功的 `GET /api/file/blob` 是不套 `{data, error}` 信封的二进制成功响应**：handler 设置 `Content-Type: application/octet-stream` 后调用 `c.SendStream(rc, size)`。失败仍然是信封。所以客户端的判据只能是**状态码**：200 就把 body 当文件，其余就交给信封解析器。**不能拿「body 是不是空的」当判据**——0 字节文件是一个合法的 200 加空 body。平台层为此**没有**改任何代码，理由见 [`../platform.md`](../platform.md) 第 1.1 节。
 
 引擎知道长度时会带上 `Content-Length`（`size >= 0`），这是客户端区分「完整文件」与「被截断的文件」的唯一依据；引擎不知道长度时（`ReadFile` 返回 `-1`）就干脆不带，让响应走 chunked——**猜一个长度比不给更坏**。`TestReadBlobAnswersRawBytes`、`TestReadBlobAnswersAnEmptyFile` 与 `TestReadBlobOmitsContentLengthWhenTheSizeIsUnknown` 分别压这三种情形。
 
@@ -223,7 +223,7 @@ S3 要求五个齐全，是因为半套配置会造出一个每次请求都失�
 权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第八节，这里是概述。前六条**破坏之后都不报错，只是既有文件从此读不出来**——而且是对全部存量文件同时发生，新写入的一切照常，所以「写一个读回来」这个最自然的验证动作完全看不见它；最后一条性质不同，它让整个栈在首次启动时死锁。
 
 - **三个 engine identifier 字符串**——`blob` / `local-disk` / `amazon-s3`——Phorge 对每一个写在这里的文件都记着其中一个，且它们和 Phorge 自己的引擎 identifier 是同一批字符串。
-- **复合 handle `engine/handle`，按第一个斜杠切**：Phorge 的 `file` 表只有一个 handle 列，所以引擎名编在里面。这个复合串是 PHP 侧独有的——本服务答的是 `engine` 与 `handle` 两个字段，拼接与拆解都在 `PhabricatorGorgeFileStorageEngine`，**Go 侧没有任何测试守得住它**。
+- **复合 handle `engine/handle`，按第一个斜杠切**：Phorge 的 `file` 表只有一个 handle 列，所以引擎名编在里面。这个复合串是 PHP 侧独有的——本服务答的是 `engine` 与 `handle` 两个字段，拼接与拆解都在 `PhabricatorGorgeFileStorageEngine`，仅 Go handler 单测不足以验证 PHP 拆解，须运行配对 PHP 文件客户端契约。
 - **三种 handle 形态**：本地磁盘的 `ab/cd/{28 hex}`（与 Phorge 自己的本地磁盘布局一致，**同时还是一道安全边界**，见 3.2），blob 的自增行 id，S3 的对象 key。
 - **S3 的 key 前缀 `phabricator[/{instance}]/`**：这是 Phorge 自己的前缀，不是装饰。改掉它，桶里每一个对象都原地不动地变成不可达。
 - **blob 后端与 Phorge 原生 `PhabricatorMySQLFileStorageEngine` 写同一张表、用同一套自增 id handle 方案**——`{namespace}_file.file_storageblob`。这是一个需要知道的隐患而不是一个特性，`bin/storage` 的维护与 GC 也碰这些行。

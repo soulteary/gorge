@@ -203,12 +203,11 @@ components:
 
     HighlightRequest:
       type: object
-      required: [source]
       properties:
         source:
           type: string
           description: |
-            Source code to highlight. An empty string is accepted and yields a
+            Source code to highlight. An absent source or empty string is accepted and yields a
             200 with empty `html`, rather than an error.
           example: "print('hello')"
         language:

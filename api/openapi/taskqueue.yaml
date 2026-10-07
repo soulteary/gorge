@@ -3,6 +3,11 @@ openapi: 3.0.3
 info:
   title: Gorge Task Queue API
   description: |
+    Scope: queue and execution lifecycle APIs, worker capabilities and status,
+    and read-only queue operations. Detailed execution policies are documented
+    in docs/modules/worker.md and docs/operations.md. Startup and scheduler
+    readiness are specified in docs/modules/scheduler.md.
+
     HTTP contract for the `gorge-taskqueue` binary, which serves Phorge's daemon
     work queue: it owns `{namespace}_worker.worker_activetask`, `worker_taskdata`
     and `worker_archivetask`, enqueues tasks, leases them to workers, and
@@ -41,7 +46,7 @@ info:
     `go/internal/contracts/taskqueue.go`, the single source of truth shared by
     the Go service, the PHP client, this document and the fixtures under
     `tests/contract/taskqueue/`. The database columns and the coupling of
-    `status`/`leaseOwner`/`failureCount` are a separate, stricter contract
+    `leaseOwner`/`leaseExpires`/`failureCount` are a separate, stricter contract
     documented in `compat/phorge/README.md`.
   version: 1.2.0
   license:
@@ -61,6 +66,50 @@ tags:
     description: Liveness and readiness probes
 
 paths:
+
+  /api/worker/notification-stats:
+    get:
+      tags: [worker]
+      summary: Read optional native notification counters
+      description: Served on the worker listener only when the notification statistics callback is configured; otherwise 404.
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: Read-only data in the standard data/error envelope.
+        '401':
+          description: Missing or invalid service token.
+
+  /api/worker/meta:
+    get:
+      tags: [worker]
+      summary: Read static worker execution capabilities
+      description: Served on the worker listener. Returns executionVersion 1 and leaseOutcomes true independently of full worker readiness.
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: Read-only data in the standard data/error envelope.
+        '401':
+          description: Missing or invalid service token.
+
+  /api/queue/operations:
+    get:
+      tags: [queue]
+      summary: Read queue backend operational inventory
+      description: Returns ERR_OPERATIONS (503) when the backend does not support observation or the query fails.
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: Read-only data in the standard data/error envelope.
+        '401':
+          description: Missing or invalid service token.
+        '503':
+          description: Queue observation unavailable or unsupported.
 
   /api/queue/meta:
     get:

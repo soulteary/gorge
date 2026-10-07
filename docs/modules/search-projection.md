@@ -1,9 +1,11 @@
 # Search projection extraction
 
-This change implements the first migration boundary and the durable acceptance
-primitive. It does **not** switch live search writes or implement the rebuild
-controller yet. Existing `/api/search/index`, CLI selection, local indexes and
-PHP SearchWorker delegation remain in use.
+The current implementation includes PHP snapshot extraction and shadow capture,
+durable ingress/source relay, fenced delivery, generation backfill and bounded
+business-source scans. These are opt-in; enabling PHP shadow capture alone does
+not transfer production write ownership or activate a generation. Existing
+synchronous indexing and PHP domain builders remain in use. Later sections
+specify the separate rollout and recovery boundaries.
 
 ## Implemented boundary
 
@@ -101,9 +103,10 @@ have been removed. Index initialization remains destructive; it is not an online
 rebuild implementation.
 
 `SubmitDocument`, `TaskState` and `WaitTask` expose the adapter boundary needed
-for a future durable consumer to persist task UIDs rather than blocking one
-HTTP request. The durable generation lane/unknown-submit recovery is not yet
-implemented; these methods must not be treated as cross-worker ordering fences.
+for a future asynchronous durable consumer to persist task UIDs rather than
+blocking one HTTP request. The current durable worker requires a version-fenced
+backend and supports ES; Meili durable lane and uncertain-submit recovery are
+not implemented. The synchronous adapter methods are not cross-worker fences.
 
 ## Verification
 
@@ -125,50 +128,27 @@ go test -race ./internal/search/...
 The MySQL integration creates/drops its own randomly named database. Meili uses a
 randomly named index. Use dedicated test services and credentials.
 
-## Remaining migration steps
+## Migration and rollout boundaries
 
-1. Integrate durable materialization into batched export and source changes;
-   separate exported versions from local and externally applied versions.
-   Shadow snapshot capture and per-object revision allocation are implemented.
-2. Wire the control store, durable delivery state machine and native wakeups;
-   ES versions/tombstones and a polling delivery loop are implemented; native
-   wakeups and Meili durable lane recovery remain.
-3. Ingress, source relay and ES shadow delivery are opt-in. Validate complete
-   shadow generations before switching production external writes.
-4. Implement bounded source scans, persisted rebuild jobs/shards, real source
-   barriers, generation validation, activation and rollback.
-5. Capture business dirty intents and dependency invalidation in their source
-   transactions; retain periodic repair for uncovered/cross-database changes.
-6. Drain old SQL/Redis tasks and remove only obsolete external execution paths.
-   Ferret, Ngram, Edge and the PHP domain builder remain in scope for PHP.
+The implemented ingress, delivery, rebuild and source-scan controllers are
+described below. Production activation still requires their explicit configuration,
+complete shadow validation and a separately authorized cutover; the production
+Compose override does not activate projection generations.
 
-## Follow-up audit
+Business dirty intents and dependency invalidation are not captured in every
+source transaction. Destruction capture covers engine-mediated Lisk objects,
+not direct SQL or arbitrary non-Lisk deletion. Keep PHP domain builders and
+Ferret/Ngram/Edge indexing, periodic repair and historical receipts.
 
-The audit corrected three omissions: inbox rows now retain the complete immutable
-historical envelope (`LoadEvent`), PHP relationship timestamps normalize numeric
-SQL strings to integers, and the projection decoder rejects duplicate keys and
-case-alias collisions before hashing. Tests cover these boundaries. Prototype
-control databases created from the earlier schema need an envelope-column
-migration and source-outbox replay before consumers can use historical events;
-`CREATE TABLE IF NOT EXISTS` does not upgrade an existing table. A latest head
-cannot reconstruct lost historical payloads.
+Prototype databases must be migrated to the current control schema before
+consumers use historical events. `CREATE TABLE IF NOT EXISTS` does not upgrade
+an old table, and a latest head cannot reconstruct a missing historical envelope.
+The decoder rejects duplicate keys and case aliases; relationship timestamps
+are canonical integers.
 
-The module supports opt-in ES shadow delivery. Production cutover blockers are:
-
-- Meili task receipts and unknown-submit/lane recovery remain unimplemented;
-- generation validation, read activation and rollback remain unimplemented;
-- business dirty intents and dependency invalidation are not covered by shadow
-  capture; destruction capture covers only the engine-mediated Lisk fulltext
-  path, not direct SQL or other deletion paths; upsert sourceVersion is a hash;
-- rebuild scan/job/barrier/validation/activation/rollback remain unimplemented;
-- periodic backend health, operational alerting and cleanup policies still
-  need integration before production operational use;
-- tests still need actual PHP concurrent publishers, Worker capture-failure
-  classification, real object exports and full source-to-backend crash recovery.
-
-Do not remove legacy SearchWorker/RebuildIndexesWorker or enable outbox-only
-production delivery on the strength of the current primitive-level tests.
-
+Do not retire SearchWorker/RebuildIndexesWorker or claim production cutover
+from primitive tests alone. Acceptance and recovery requirements are described
+in the generation/source-scan sections and [operations](../operations.md).
 
 ## Opt-in durable ingress and source relay
 

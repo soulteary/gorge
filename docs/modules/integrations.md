@@ -25,6 +25,26 @@ Phorge 配置示例（目标键应与 Go 文件一致；SMS 映射左侧是现�
 
 通过 `bin/config set gorge.integrations '<JSON>'` 设置。先部署并校验 `/readyz` 和 `/api/integrations/capabilities`（协议版本 2），通过 `php scripts/setup/manage_gorge_integrations.php --action check` 核对两侧 provider/target/type 和 Fact 开关，再逐域切换；不能直接把示例凭据作为有效配置。Phorge 基础 Compose 可以叠加 `docker-compose.integrations.yml`，它没有公开宿主机业务端口。使用 Phorge overlay 时，配置文件中的 conduitURI 应为 `http://gorge-conduit:8150`，数据库主机应对应当前 Compose 的实际写库。
 
+## HTTP 路由
+
+所有域接口前缀为 `/api/integrations`，仅接受 `X-Service-Token`，不接受 query token。成功使用 `{data,error}` 信封；健康探针 `/healthz`、`/readyz` 另行注册。
+
+| 方法 | 完整路径 | 用途 |
+|---|---|---|
+| GET | `/api/integrations/capabilities` | 协议、目标类型和启用域 |
+| GET | `/api/integrations/health` | 持久投递积压与 Fact 进展 |
+| GET | `/api/integrations/usage` | 状态分组计数 |
+| GET | `/api/integrations/capacity` | 容量与保留策略 |
+| GET | `/api/integrations/effect` | 按 id 检查单次副作用 |
+| POST | `/api/integrations/effect` | 带稳定身份的外部写入 |
+| POST | `/api/integrations/read` | 连接器只读网络操作 |
+| POST | `/api/integrations/auth` | OAuth 协议交换，不保存 token |
+| GET | `/api/integrations/inbound` | 按 id 检查入站处理状态 |
+| POST | `/api/integrations/inbound` | 接收、标准化并持久接受邮件 |
+| POST | `/api/integrations/resolve` | 有证据的人工终态核对 |
+
+下文的 `/effect`、`/read`、`/auth`、`/inbound`、`/health` 等均指上述域前缀下路径，不是根路径。结构与校验以 `go/internal/integrations` 中对应 request 类型和 handlers 为准。
+
 ## 入站邮件
 
 `scripts/mail/mail_handler.php` 在启用 raw 后直接转交最多 6 MiB 原始邮件，Go 负责嵌套 multipart、Base64/quoted-printable、字符集、编码头和附件解析；不加载 PHP MIME parser，也不要求 mailparse。保留 `--process-duplicates` 调试选项，为这次显式处理生成新身份。服务或持久写入失败时脚本以非零状态退出，让 MTA 保留／重试邮件。切换前应审查既有邮件大小，6 MiB 以上邮件会明确拒绝，不能静默丢弃。

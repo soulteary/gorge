@@ -19,8 +19,8 @@ info:
       balancers consume them directly. Do not "unify" them.
 
     `/readyz` carries more information here than in the other services: it
-    reports whether any backend is configured at all, which is the one failure
-    mode that otherwise looks completely healthy while every message fails.
+    reports whether any backend is configured. In native delivery mode it also
+    verifies the durable ledger schema; liveness alone checks neither condition.
 
     The schemas under `components.schemas` mirror
     `go/internal/contracts/mailer.go` and `mail_delivery.go`, which define
@@ -44,6 +44,20 @@ tags:
     description: Liveness and readiness probes
 
 paths:
+
+  /api/mailer/operations:
+    get:
+      tags: [mailer]
+      summary: Read native mail ledger inventory
+      description: Available only when native delivery is configured. Reports read-only ledger and attempt table observations; does not submit mail.
+      security:
+        - ServiceTokenHeader: []
+        - ServiceTokenQuery: []
+      responses:
+        '200':
+          description: Read-only data in the standard data/error envelope.
+        '401':
+          description: Missing or invalid service token.
 
   /api/mailer/send:
     post:
@@ -160,7 +174,8 @@ paths:
       tags: [health]
       summary: Readiness probe
       description: |
-        Succeeds once at least one backend is configured. This is the probe
+        Requires at least one configured backend and, in native delivery mode,
+        a ready durable ledger schema. This is the probe
         container orchestration should be pointed at.
 
         It deliberately does **not** dial SMTP or ping a provider. Readiness
@@ -174,7 +189,7 @@ paths:
         '200':
           $ref: '#/components/responses/HealthOK'
         '503':
-          description: No backend is configured
+          description: Backend configuration or native delivery ledger is unavailable
           content:
             application/json:
               schema:
@@ -695,7 +710,8 @@ components:
     PermanentFailure:
       description: |
         A backend rejected the message itself, and retrying cannot change that:
-        a malformed recipient, an unverified sender domain, a revoked API key.
+        a malformed recipient or an unverified sender domain. Revoked API keys
+        are backend configuration failures, not permanent message rejection.
 
         **This code changes what the caller does, not just what it reports.**
         Phorge's client raises it as
@@ -706,9 +722,9 @@ components:
         What produces it, per backend: an SMTP 5xx reply; an HTTP 4xx from SES,
         SendGrid, Mailgun or Postmark, **except 401, 403 and 429**, since rate limiting says
         "not now" rather than "not ever"; a sendmail exit code from the
-        `EX_NOUSER` / `EX_DATAERR` / `EX_NOHOST` family. Anything unrecognised
-        is reported as transient instead, because dropping mail costs more than
-        a wasted retry.
+        `EX_NOUSER` / `EX_DATAERR` / `EX_NOHOST` family. Unclassified submission errors
+        are nonpermanent in this synchronous API, but are not safe for
+        Dispatcher retry/failover; native delivery records them as unknown.
       content:
         application/json:
           schema:
@@ -720,9 +736,9 @@ components:
 
     SendFailed:
       description: |
-        Every eligible backend failed transiently — the message may well go out
-        on a later attempt. Also what naming only unknown `mailerKeys`
-        produces.
+        A nonpermanent failure occurred, including ambiguous acceptance, or no
+        backend matched the requested `mailerKeys`. This code does not prove
+        the provider failed to accept the message.
 
         Reported as 502 because the failure is downstream of this service.
         Phorge re-queues on this code.

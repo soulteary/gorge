@@ -288,7 +288,6 @@ components:
 
     DiffRequest:
       type: object
-      required: [old, new]
       properties:
         old:
           type: string
@@ -367,7 +366,6 @@ components:
 
     ProseRequest:
       type: object
-      required: [old, new]
       properties:
         old:
           type: string
@@ -412,6 +410,14 @@ components:
             the list is already in the shape a two-column renderer wants.
 
             Empty inputs on both sides yield an empty list.
+
+    ProseResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ProseResult'
+        error:
+          $ref: '#/components/schemas/Error'
 
     ErrorResponse:
       type: object

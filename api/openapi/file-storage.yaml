@@ -6,14 +6,18 @@ info:
     HTTP contract for the `gorge-file-storage` binary, which serves the file
     storage domain: the *bytes* of Phorge's files go in, and come back out.
 
-    This service owns no metadata. A file's name, size, MIME type and the
+    This specification describes the blob/engine APIs. Optional resumable
+    uploads, deletion recovery and capacity inspection are documented in
+    docs/modules/file-lifecycle.md and docs/operations.md; their schemas live
+    in go/internal/contracts and their route registrations in filestorage.
+
+    Phorge owns business file metadata; the optional upload runtime owns byte-session manifests. A file's name, size, MIME type and the
     `(engine, handle)` pair that points here all live in Phorge's own database.
     What crosses this API is a byte stream and an opaque handle, and a handle
     is only meaningful to the engine that minted it — which is why every read
     and every delete has to name the engine as well. Nothing is inferred.
 
-    **Three response shapes coexist here, one more than in any other gorge
-    service.** Getting the distinction wrong is the failure this document
+    **JSON envelopes, binary reads and bare health probes coexist here.** Getting the distinction wrong is the failure this document
     exists to prevent:
 
     - `/api/**` endpoints return the `{data, error}` envelope, with exactly one
@@ -21,8 +25,7 @@ info:
       reached a handler for — an unknown path, a body over the transport limit,
       a recovered panic — because `httpx` replaces the framework's default
       error handler.
-    - **A successful `GET /api/file/blob` is the one exception in all of
-      `/api/**`.** It answers the file's raw bytes as
+    - **A successful `GET /api/file/blob` uses a binary response.** It answers the file's raw bytes as
       `application/octet-stream`, with no envelope and no JSON at all. Every
       *failure* of that same endpoint answers the envelope.
     - Health endpoints (`/`, `/healthz`, `/readyz`) return a bare
@@ -36,7 +39,7 @@ info:
 
     The transport body limit is `16M` rather than the platform's `2M`, since
     the file arrives as the raw request body. That is not a file size limit:
-    Phorge's chunked storage engine splits anything over 8 MB into 4 MB chunks
+    The legacy Phorge chunked storage engine splits files over 8 MB into 4 MB chunks
     before it reaches this service, so 16M is roughly twice the largest single
     request that can legitimately arrive.
 
@@ -45,7 +48,7 @@ info:
     shared by the Go service, the PHP adapter and the contract fixtures under
     `tests/contract/file-storage/`. The handle formats and engine identifiers
     are a separate, stricter contract, documented in
-    `compat/phorge/README.md` section 7 — breaking one of those makes existing
+    `compat/phorge/README.md` section 8 — breaking one of those makes existing
     files unreadable without producing an error anywhere.
   version: 1.0.0
   license:
@@ -458,7 +461,7 @@ components:
         escaped by every client that ever calls this service.
 
         The formats are part of the compatibility contract, not an
-        implementation detail; see `compat/phorge/README.md` section 7. The
+        implementation detail; see `compat/phorge/README.md` section 8. The
         local disk pattern is also validated on read and delete as a security
         boundary, since `filepath.Join` would otherwise resolve `..` out of the
         storage root.

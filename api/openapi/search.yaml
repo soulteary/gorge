@@ -3,6 +3,12 @@ openapi: 3.0.3
 info:
   title: Gorge Search API
   description: |
+    Scope: synchronous indexing/query APIs and rebuild/source-scan management.
+    Optional durable projection ingress, capabilities, delivery inspection and
+    operations are documented in docs/modules/search-projection.md. Their
+    authoritative wire structures live in go/internal/contracts and the
+    projection HTTP registrations in go/internal/search.
+
     HTTP contract for the `gorge-search` binary, which serves the search
     domain: Phorge's fulltext documents and queries in, PHIDs and index
     lifecycle answers out, across whichever store a deployment configured —
@@ -413,15 +419,16 @@ paths:
         Readiness would then flip with every third-party hiccup, and the
         per-host health table plus the failover chain already exist to absorb
         exactly that. So a 200 here means "this service can attempt a search",
-        not "the next search will succeed" — and, more usefully, a 503 here
-        always means "misconfigured", never "the cluster is having a moment".
+        not "the next search will succeed". With durable projection configured,
+        readiness also pings the control database; database unavailability
+        can therefore return 503 even when search backend roles are valid.
       operationId: readyz
       security: []
       responses:
         '200':
           $ref: '#/components/responses/HealthOK'
         '503':
-          description: No backend is configured, or none holds the read role
+          description: No readable backend is configured, or the projection control database is unavailable
           content:
             application/json:
               schema:

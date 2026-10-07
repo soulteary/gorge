@@ -39,7 +39,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 路径按**域**命名而非按二进制命名（`/api/highlight/*` 而不是 `/api/render/*`），理由见 [`../architecture.md`](../architecture.md) 第 4.3 节。`TestRoutePathsAreStable` 遍历 `app.GetRoutes(true)` 断言这两条路径仍然注册着——Phorge 侧 `PhabricatorGorgeRenderClient` 已经在调它们，重命名是 PHP 侧的破坏性变更。
 
-`Deps` 是一个三字段结构体（`Highlighter` / `Token` / `MaxBytes`），由 `main.go` 组装。整个仓库没有引入 DI 框架，也没有包级单例——`main.go` 串联「加载配置 → 建服务器 → 注册两个域的路由 → Run」四步。`cfg.ServiceToken` 同时传给两个域：token 认证的是调用方对这个进程的身份，不是对某个路由分组的身份。
+`Deps` 是一个三字段结构体（`Highlighter` / `Token` / `MaxBytes`），由 `main.go` 组装。入口显式装配依赖；Highlighter 有包级 formatter/style，但任务引擎与 HTTP 依赖由入口创建——`main.go` 串联「加载配置 → 建服务器 → 注册两个域的路由 → Run」四步。`cfg.ServiceToken` 同时传给两个域：token 认证的是调用方对这个进程的身份，不是对某个路由分组的身份。
 
 ## 3. 渲染处理器
 
@@ -94,13 +94,13 @@ defaultStyle = styles.Get("pygments")
 
 | 配置 | 作用 | 改掉的后果 |
 |---|---|---|
-| `styles.Get("pygments")` | 决定输出的 CSS **类名**体系（`k`/`nf`/`nb`/`s2`/`mi`/`c1`…） | 换成 `monokai`、`github` 会输出另一批类名，页面上所有 token 失去样式 |
+| `styles.Get("pygments")` | 当前选择的样式基准 | class 名由 Chroma token 类型与 formatter 生成；不能把换 style 等同于换一套类名。变更仍须核对实际输出 |
 | `WithClasses(true)` | 输出 `class="k"` 而非内联 `style="color:#008000"` | 内联样式绕过 Phorge 样式表与暗色主题，且体积暴涨 |
 | `PreventSurroundingPre(true)` | 只输出 token 片段，不带外层 `<pre>` | Phorge 自己渲染外层容器，会造成嵌套 `<pre>` |
 
-三项失效都不会报错，只会静默丢样式，所以 `compat_test.go` 的 `TestPygmentsCSSClassCompatibility` 显式断言这批类名的存在。
+`WithClasses` 与 wrapper 设置影响 PHP 渲染边界。`TestPygmentsCSSClassCompatibility` 检查至少一个预期类名出现；共享 render 固件对具体样本断言多项类名，二者的覆盖强度不同。
 
-Chroma 本身就是 Pygments 的 Go 移植，用 `pygments` style 时类名体系天然一致：
+Chroma 本身就是 Pygments 的 Go 移植，class 模式使用 Pygments 风格的 token 类名：
 
 | 类名 | 含义 | 例 |
 |---|---|---|
@@ -126,13 +126,13 @@ language ──► resolveLexer()（别名表）──► lexers.Get()
                                      Tokenise → Format → HTML
 ```
 
-三级兜底保证 `Highlight()` 不会因为「不认识这个语言」而失败——未知语言退化成纯文本，是有意义的输出。`Coalesce` 合并相邻同类型 token，减少输出里的 `<span>` 数量。
+三级兜底保证 `Highlight()` 不会因为「不认识这个语言」而失败——未知名称先进行内容嗅探，嗅探失败才退化成纯文本。`Coalesce` 合并相邻同类型 token，减少输出里的 `<span>` 数量。
 
 返回的 `language` 字段有一处容易误解的语义（OpenAPI 里有完整描述）：请求带了非空 `language` 就**原样回显**，别名、未知名、原始大小写都不变，所以 `py` 回 `py` 而不是 `python`；只有省略 `language` 的请求才回报内容嗅探选中的 lexer 名（小写）。
 
 ### 4.3 别名表与大小写敏感
 
-`buildLexerMap()` 有 184 条映射，对应 PHP 侧 `PhutilPygmentsSyntaxHighlighter::getPygmentsLexerNameFromLanguageName()` 的 166 条，Go 侧多出 20 条现代语言键（`ts`/`tsx`/`jsx`/`rs`/`kt`/`swift`/`toml`/`tf`/`hcl`/`graphql` 等）与小写补充。
+`buildLexerMap()` 对齐 PHP 侧的 Pygments 语言别名，并增加现代语言键（`ts`/`tsx`/`jsx`/`rs`/`kt`/`swift`/`toml`/`tf`/`hcl`/`graphql` 等）与小写补充。
 
 **这张表区分大小写**，`resolveLexer` 的查找顺序是「先原样查，未命中才降级到小写再查」：
 
@@ -146,7 +146,7 @@ if mapped, ok := h.lexerMap[lang]; ok {
 }
 ```
 
-原因是 PHP 侧用 `idx()` 查一个普通的大小写敏感数组，而传进来的语言名是 `getLanguageFromFilename()` 从文件名里切出的扩展名，**没有归一化**，所以 `foo.R` 真的以 `R` 的形式到达。表里有两组同字母异映射：
+原因是 旧 PHP 映射区分大小写，当前传进来的语言名仍是 `getLanguageFromFilename()` 从文件名里切出的扩展名，**没有归一化**，所以 `foo.R` 真的以 `R` 的形式到达。表里有两组同字母异映射：
 
 | 键 | 目标 lexer | 含义 |
 |---|---|---|
@@ -154,22 +154,21 @@ if mapped, ok := h.lexerMap[lang]; ok {
 | `r` | `rebol` | REBOL，Chroma 无对应 lexer，退化为纯文本 |
 | `s` | `gas` | GAS 汇编 |
 
-早期实现无条件先 `ToLower`，把 `R` 折成 `r`、`S` 折成 `s`，结果所有 `.R` 文件按 REBOL 处理（即无高亮）、所有 `.S` 文件按汇编处理。这是这套兼容约束目前唯一一次真实漂移，修复见 `7c0d996`，现在由 `TestCaseSensitiveAliasesReachDistinctLexers` 与两份大小写固件锁住。`lexermap.go` 末尾单列了一组混合大小写键，与 PHP 表逐条对应，方便 diff。
+早期实现无条件先 `ToLower`，把 `R` 折成 `r`、`S` 折成 `s`，结果所有 `.R` 文件按 REBOL 处理（即无高亮）、所有 `.S` 文件按汇编处理。这是已修复的一次兼容漂移，修复见 `7c0d996`，现在由 `TestCaseSensitiveAliasesReachDistinctLexers` 与两份大小写固件锁住。`lexermap.go` 末尾单列了一组混合大小写键，保留历史映射语义，便于检查。
 
 ## 5. 与 Phorge 的兼容契约
 
 权威描述在 [`compat/phorge/README.md`](../../compat/phorge/README.md)，这里是判据的概述。三件事的共同特征：**破坏后不报错，只静默失效。**
 
-### 5.1 别名表：PHP 表是下界，Go 表可以是超集
+### 5.1 历史别名继续由 Go 解释
 
-约束是**不对称**的，根源在 PHP 侧的 `idx($map, $language, $language)`——未命中就把语言名原样透传给 pygmentize。
+别名表来自已退役的 PHP Pygments 映射，用于保留存量语言标识。当前 PHP 传递语言名，旧 `PhutilPygmentsSyntaxHighlighter` 仅是返回 plain highlighter 的 shim，不再启动 Python，也不再提供 alias map。
 
-- **PHP → Go 必须同步**：PHP 表里做了非恒等映射的键（现存 166 条全部满足），Go 侧必须有且映射到等价 lexer。漏一条，Go 会把 `adb` 原样交给 Chroma 落到内容嗅探，两个后端就此分叉。
-- **Go → PHP 不必回补**：Go 独有的 20 条无害，因为 pygmentize 本身就认 `ts`、`rs`、`kt` 这类别名，PHP 透传后落到同一个 lexer。新增 Go 独有键时唯一要确认的就是这个前提。
+保留历史非恒等映射与大小写语义；新增 Go 别名要确认目标 lexer 和历史标识不冲突，并补固件。未知名会尝试内容嗅探，成功输出不能证明落到了预期 lexer。具体特殊映射见下表，不能将这里读成两张在线 PHP/Go 表的同步流程。
 
 ### 5.2 命名偏离的完整清单
 
-「能照抄就照抄」——即使 Chroma 接受同义写法，目标名也一律用 PHP 的那个（`rb` 而非 `ruby`、`coffee-script` 而非 `coffeescript`），这样两张表能逐字 diff。已实测（Chroma v2.27）的偏离只有四组：
+「能照抄就照抄」——即使 Chroma 接受同义写法，目标名也一律用 PHP 的那个（`rb` 而非 `ruby`、`coffee-script` 而非 `coffeescript`），便于核对历史映射。当前映射中的命名偏离如下；依赖版本以 `go/go.mod` 为准：
 
 | PHP 写法 | Chroma 情况 | Go 侧 |
 |---|---|---|
@@ -196,11 +195,11 @@ if mapped, ok := h.lexerMap[lang]; ok {
 | `GORGE_SERVICE_TOKEN` | 空 | 服务间认证 token，为空则不鉴权 |
 | `GORGE_CONFIG_FILE` | 无 | JSON 配置文件路径 |
 | `GORGE_RENDER_MAX_BYTES` | `1048576` | 单次请求源码上限（字节） |
-| `GORGE_RENDER_TIMEOUT_SEC` | `15` | ⚠️ 名不副实，见 [`../findings.md`](../findings.md) 第 1 条 |
+| `GORGE_RENDER_TIMEOUT_SEC` | `15` | 优雅关闭等待时间（秒）；不限制单次高亮请求 |
 
 规范变量命名规则见 [`../platform.md`](../platform.md) 第 4 节。
 
-`Load()` 的取值顺序：指了 `GORGE_CONFIG_FILE` 就读 JSON 文件，否则读环境变量。走文件时**仍然从环境变量取 `GORGE_SERVICE_TOKEN`**，其余字段先填默认值再由文件覆盖，这样密钥可以单独注入而不进配置文件。
+`Load()` 的取值顺序：指了 `GORGE_CONFIG_FILE` 就读 JSON 文件，否则读环境变量。走文件时先从环境变量预填 `GORGE_SERVICE_TOKEN`，但 JSON 中显式的 `serviceToken` 会覆盖它（包括空值），域字段先填默认值再由文件覆盖，未写入 JSON 的域字段不会继续读取对应环境变量；要单独注入密钥，应省略 JSON 的 `serviceToken`。
 
 ## 7. 域级错误码
 

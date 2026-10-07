@@ -1,34 +1,32 @@
 # Phorge 兼容契约
 
-本文件记录 Gorge 的 Go 服务与 Phorge PHP 端之间**不能随意改动**的十项约定。这些约束此前只以注释形式散落在代码里，而它们的共同特征是：**破坏之后不会有任何报错**。（第九项是这句话第一次要打折扣的地方，理由见那一节开头——它的一半约束的对手不是 Phorge，而是一个按 Phorge 原本的投递写好的第三方接收端。）
+本文件记录跨语言字段、路由、输出字节及执行协议的兼容边界。破坏这些约定可能造成静默降级、明确错误或重复执行，不能仅凭 HTTP 成功判断兼容。
 
-| 约定 | 破坏后的表现 |
+| 章节 | 必须保持的边界 |
 |---|---|
-| 一、语言别名表 | 两个高亮后端把同一语言解析到不同 lexer，无断言捕捉 |
-| 二、Chroma formatter 配置 | 全站高亮静默失效——页面正常渲染，只是没有颜色 |
-| 三、端口与路由 | PHP 侧配置指错地方，表现为 `ERR_NOT_FOUND` |
-| 四、unified diff 输出格式 | 解析器接受错误的 hunk 头，然后**静默地把之后每一行都放错位置**（第 4.6 节写明了保证到哪里为止） |
-| 五、Aphlict 线兼容（通知） | 四条子约束，最坏的一条（5.4）**连错误状态码都不产生**：请求答 200、fingerprint 合法、`messages.in` 照常增长，只有消息内容被静默揉碎 |
-| 六、mailer 的错误码与字段名 | 唯一一项会**改变 PHP 侧行为**的约定：`ERR_PERMANENT_FAILURE` 决定 worker 要不要重投这封信，两个方向的误判分别是「无限重投」与「静默丢信」，都要几天后看邮件统计才发现 |
-| 七、search 的字段名与分析器链 | 五条子约束，全部是「写得进去、答 200、就是查不到」型。7.3 的 4 字符字段名与 7.5 的 `cjk` 子字段是其中最安静的两条：索引照常增长、每条路径照常 200，只有检索结果悄悄变空 |
-| 八、file storage 的 handle 与 engine identifier | **既有文件变得读不出来，而且是从改动生效那一刻起、对全部存量文件同时发生**：新写入的文件一切正常，所以问题会在很久以后才以「某些旧附件 404」的形式露头。另有一条不同性质的子约束（8.7）：`/readyz` 的判据会让整个栈在首次启动时**死锁**——而且实测表明，遵守「不查表」这条约定**仍然不够**，DSN 里那个库名足以独立触发它 |
-| 九、webhook 投递的字节与回写字段 | 分成性质相反的两半。出站那半（9.1 payload 的 2 空格缩进与末尾换行、9.2 签名头）**会**报错，只是错误在**别人的服务器上**——签名算的是整个字符串含末尾换行，所以改缩进就是改签名，而你这一侧只看到一批 4xx；回写那半完全静默，其中 9.4 的 `status` 取值域还是 Go 侧整个抢占机制的地基。另有一条独一份的（9.7）：`gorge.webhook.uri` 是**接管开关**而非服务地址，漏配的表现不是失效而是**每个 webhook 发两次**，且接收方分不出它与真正的重复事件 |
-| 十、task queue 与 worker 的字段名与租约语义 | 整节静默型。`taskClass`/`dataID`/`leaseOwner`/`failureCount` 直接映射 `worker_activetask` 列名，改错一个只让 PHP 侧读到空值；`leaseExpires` 与 `(yield)` 哨兵是抢占地基，写坏就让任务被两个 worker 同时取走；必须替换 `phd` 而非并存，否则每个任务跑两遍 |
-| 十一、db-api 的字段名、错误码与库/表名 | 整节静默型。`refKey`/`isFatal`/`connectionStatus` 等是 PHP 侧 `PhabricatorDatabaseRef` / `DatabaseSetupCheck` / `MySQLSetupCheck` 直接按键读的契约，改错一个只让对方读到空值——其中 `isFatal` 决定 Phorge 把一个 setup issue 当阻断还是当告警；库名 `{namespace}_meta_data`、表名 `patch_status`/`hoststate` 都是 Phorge 的，不能顺手现代化。另有一条编排约束（第 8.7 节的逐字翻版）：`/readyz` 若查表或让 DSN 带库名，会让首启死锁 |
+| 一、语言别名 | PHP 到 Go 的映射及大小写语义 |
+| 二、formatter | PHP 样式依赖的 CSS 类和 wrapper |
+| 三、端口与路由 | 配置地址和实际注册路径 |
+| 四、unified diff | hunk、尾换行标记及歧义对齐的保证范围 |
+| 五、Aphlict | 双端口、响应形状、消息字节与实例隔离 |
+| 六、mailer | 同步字段、永久错误、安全重试与原生账本边界 |
+| 七、search | 字段、类型常量、分析器及索引兼容 |
+| 八、file storage | 历史 engine/handle、bootstrap 与生命周期扩展 |
+| 九、webhook | 签名字节、状态、claim 与 PHP 兼容终态 |
+| 十、task queue / worker | 字段、租约、认证与 versioned 执行协议 |
+| 十一、db-api | 只读诊断、字段、错误码与 bootstrap |
 
-第四项是其中最隐蔽的：它没有「失效」这个状态，只有「悄悄错位」。第五项走得更远：5.4 破坏之后**没有任何一处产生错误**——不是「错误被 PHP 吞掉」，是压根没有错误可吞，因为那个 POST 成功了。第六项的性质又不一样：它**会**产生一个明确的失败状态，只是方向是反的，所以看日志找不出问题——每条记录看起来都合理。第七项则是把「静默」推到了另一个维度：破坏之后**写入侧一切正常**，索引在长大、统计在增加、集群面板全绿，错的只是「写进去的键」与「查出来的键」对不上，而没有任何一层会去比对这两者。第八项的时间尺度是独一份的：它破坏的是**存量数据的可达性**，而验证一次改动是否安全的常规办法（写一个文件、读回来、通过）恰恰完全看不见它——新旧两条路都自洽，只是不再互通。第九项换的是另一个维度：**它的一半约束的对手不在这个系统里。**payload 的字节与签名头是给第三方接收端看的，而那些接收端是按 Phorge 原本的投递写好的、并不知道换了实现；所以这一半破坏之后**会**报错，只是错误发生在别人的服务器上，你这一侧看到的是一批 4xx，而 Herald 界面上它和「接收端自己坏了」没有任何区别。它还带着全仓库唯一一处失配方向是反的东西（9.7）：漏配接管开关的表现不是「配了不生效」，而是每个 webhook 发两次。
-
-改动其中任何一项，都必须同步改动 PHP 侧并在这里更新说明。
+更新跨语言边界时同步检查 Go、PHP、OpenAPI 和测试。持久邮件、投影、文件生命周期、scheduler、cleanup、integrations 等扩展以 [模块索引](../../docs/README.md) 和对应 runtime contracts 为补充；这里的基础约定不构成完整扩展接口清单。
 
 ## 自动防漂移：清单 + 校验器（第六、七、九、十、十一节各守住了一部分）
 
 上表中**字段名、HTTP 路由、错误码**这一类「改名即静默失效」的条目，现在不再只靠人记得同步——它们被一份机器可读的清单和一个 CI 校验器锁住了，破坏之后从「静默失效」升级为「CI 报错」。
 
-- **清单（单一真源）**：[`go/internal/contracts/manifest.go`](../../go/internal/contracts/manifest.go) 枚举 mailer / search / webhook / taskqueue / db-api 五域的 wire 字段名、HTTP 路由与错误码，并为每一项标注它在 phorge-fork 侧应当作为字符串字面量出现的具体 PHP 文件。数据源就是现有的结构体 json tag、`http.go` 路由注册与 `ERR_*` 常量，不臆造字段。当前登记 **180 项**，其中 **163 个「项×文件」对**真的与 phorge-fork 比对。
+- **清单（单一真源）**：[`go/internal/contracts/manifest.go`](../../go/internal/contracts/manifest.go) 枚举 mailer / search / webhook / taskqueue / db-api 五域的 wire 字段名、HTTP 路由与错误码，并为每一项标注它在 phorge-fork 侧应当作为字符串字面量出现的具体 PHP 文件。数据源就是现有的结构体 json tag、`http.go` 路由注册与 `ERR_*` 常量，不臆造字段。实际登记范围与配对数量以 manifest 和本次检查日志为准。
 - **校验器**：[`go/internal/doccheck/contractsync_test.go`](../../go/internal/doccheck/contractsync_test.go)，三个测试：
   - `TestManifestMatchesGoContracts` 每次 `go test` 都跑，无外部依赖，断言清单里的每个名字都真实存在于 Go 侧（json tag、注册路由或常量值），使清单**无法**偏离它所描述的 Go 源码。
   - `TestManifestMatchesPhorgeFork` 是真正的跨仓校验：读环境变量 `PHORGE_FORK_DIR` 指向的 phorge-fork 树，逐项断言同名字面量确实出现在清单指定的 PHP 文件里，缺失即 `t.Error` 并**指出具体是哪个字段、应改哪个 PHP 文件**；`PHORGE_FORK_DIR` 未设置时 `t.Skip`，所以 gorge 单独 clone 时 CI 不会因缺少 phorge-fork 而变红。
-  - `TestManifestMatchesPhorgeForkInReverse` 是反方向：正向只能查出「登记了的名字还在不在」，查不出「PHP 侧多出一个 Go 侧没有的键」——而后者同样是漂移（一次拼错的重命名看起来就像「清单还没跟上」）。它扫十个线边界 PHP 文件，把出现在三种 wire-key 位置（`idx($x,'k')` / `'k' =>` / `$x['k']`）上的 lowerCamelCase 键逐个对清单查，查不到即报错。范围与例外的划法写在 `contracts.ReverseScanFiles` 的注释里。
+  - `TestManifestMatchesPhorgeForkInReverse` 是反方向：正向只能查出「登记了的名字还在不在」，查不出「PHP 侧多出一个 Go 侧没有的键」——而后者同样是漂移（一次拼错的重命名看起来就像「清单还没跟上」）。它扫描 `ReverseScanFiles` 登记的 PHP 线边界文件，把出现在三种 wire-key 位置（`idx($x,'k')` / `'k' =>` / `$x['k']`）上的 lowerCamelCase 键逐个对清单查，查不到即报错。范围与例外的划法写在 `contracts.ReverseScanFiles` 的注释里。
 - **挂载点**：`make docs-check`（即 `go test ./internal/doccheck`）自动带起这三个测试；单仓 CI 见 [`.github/workflows/docs.yml`](../../.github/workflows/docs.yml)（跨仓那两个在此 skip）。跨仓那两个在 [`.github/workflows/contract-drift.yml`](../../.github/workflows/contract-drift.yml) 里真正执行——它同时 checkout gorge 与 phorge-fork 并把 `PHORGE_FORK_DIR` 指向后者。
 
 **改共享字段名的正确顺序**（顺序是有意义的，反着来会让清单变陈旧而校验器对着错误的真源亮绿灯）：
@@ -37,50 +35,32 @@
 2. 跑 `make docs-check`（或带 `PHORGE_FORK_DIR` 跑 `contractsync_test.go`）——它会 fail 并点名要改的那个 phorge-fork 文件；
 3. 按提示改那个 PHP 字面量使其一致，重跑直到通过。
 
-**覆盖面不是整节，读标记要读到限定词。**下文五节的标题带 **[CI 已守：…]** 标记，冒号后面那句就是覆盖面的**全部**——没写进去的东西没有被守住。逐节的缺口与理由：
+**覆盖面不是整节，读标记要读到限定词。**下文五节的标题带 **[CI 已守：…]** 标记，冒号后面那句就是覆盖面的**全部**——没写进去的东西没有被守住。逐节的缺口与理由如下；具体登记项以 `go/internal/contracts/manifest.go` 为准，新增接口或字段需要同步扩展清单：
 
 | 节 | 守住了 | 没守住，以及为什么 |
 |---|---|---|
-| 六、mailer | 2 条路由、`ERR_PERMANENT_FAILURE`、请求侧 17 个字段名（含最外层信封键 `message`） | `ERR_SEND_FAILED`（PHP 不按字面量分支）、应答的 `mailerKey` / `messageId`（适配器把 `data` 段整个交给调用方，一个键都不点名） |
-| 七、search | 7 条路由、16 个四字符常量、7.2 的 31 个文档／查询／统计字段名、4 个信封字段名 | 5 个域级错误码（PHP 无消费者）、应答的 `count` / `status`（PHP 侧从不点名） |
-| 九、webhook | 9.8 的 2 条路由、9.1 payload 的 10 个键 | 9.4–9.6 的回写列（是 `herald_webhookrequest` 的列名、两侧都走 SQL，Go 侧没有 json tag 可锚）、9.8 的 5 个统计字段（客户端一个键都不点名）。**9.1 的字节序与键顺序也不在此校验之内**，那是 `TestPayloadIsByteExact` 的事 |
-| 十、taskqueue | 9 条路由、13 个 API 字段名、4 个 `worker_activetask` 列名 | `dataID`——`PhabricatorWorkerTask` 把它写成属性声明（`protected $dataID;`）而不是 `CONFIG_COLUMN_SCHEMA` 里的带引号键，没有字面量可比 |
-| 十一、db-api | 7 条路由、PHP 侧真的按键读取的 38 个字段名 | 3 个域级错误码（只作为文本活在异常消息里）、PHP 侧从不按名读取的那些字段（`isMaster` / `expected` / `actual` / `clusterStateDigest` 等） |
+| 六、mailer | 清单登记的路由、`ERR_PERMANENT_FAILURE`、请求侧字段名（含最外层信封键 `message`） | `ERR_SEND_FAILED`（PHP 不按字面量分支）、应答的 `mailerKey` / `messageId`（适配器把 `data` 段整个交给调用方，一个键都不点名） |
+| 七、search | 清单登记的路由、四字符常量、文档／查询／统计字段名与信封字段名 | 5 个域级错误码（PHP 无消费者）、应答的 `count` / `status`（PHP 侧从不点名） |
+| 九、webhook | 清单登记的路由与 payload 键 | 9.4–9.6 的回写列（是 `herald_webhookrequest` 的列名、两侧都走 SQL，Go 侧没有 json tag 可锚）、9.8 的统计字段（客户端一个键都不点名）。**9.1 的字节序与键顺序也不在此校验之内**，那是 `TestPayloadIsByteExact` 的事 |
+| 十、taskqueue | 清单登记的路由、API 字段名与 `worker_activetask` 列名 | `dataID`——`PhabricatorWorkerTask` 把它写成属性声明（`protected $dataID;`）而不是 `CONFIG_COLUMN_SCHEMA` 里的带引号键，没有字面量可比 |
+| 十一、db-api | 清单登记的路由与 PHP 侧按键读取的字段名 | 3 个域级错误码（只作为文本活在异常消息里）、PHP 侧从不按名读取的那些字段（`isMaster` / `expected` / `actual` / `clusterStateDigest` 等） |
 
 清单头部注释逐项写明了每一项为何在／不在校验范围内。**注意「不在范围内」是一句关于事实的陈述而不是一个类别**——它说的是「今天的 phorge-fork 里没有这个拼法的带引号字面量」，理由写在那一项的 `Note` 里。这份注释此前有四处与事实不符（声称 §9.1、§7.2、§10.1 的名字「不作为字面量出现」，而它们都出现了），那比没有注释更危险：它给出的是一个看起来充分、实则错误的不比对理由。改动清单时，如果要给某一项留空 `PHPFiles`，先去那棵树里 grep 一遍。
 
 ---
 
-## 一、Pygments 语言别名表：PHP 表是下界，Go 表可以是超集
+## 一、保留历史语言别名语义
 
-**Go 侧**：`go/internal/render/highlight/lexermap.go` 的 `buildLexerMap()`
-**PHP 侧**：`PhutilPygmentsSyntaxHighlighter::getPygmentsLexerNameFromLanguageName()`
-（参考实现见 `phorge-fork/src/infrastructure/markup/syntax/highlighter/PhutilPygmentsSyntaxHighlighter.php`）
+**Go 侧**：`go/internal/render/highlight/lexermap.go` 的 `buildLexerMap()`。
+**PHP 侧**：当前 `PhutilDefaultSyntaxHighlighterEngine` 传递语言名，`PhabricatorGorgeSyntaxHighlighter` 调用 Go。旧 `PhutilPygmentsSyntaxHighlighter` 仅为兼容 shim，返回内置 plain highlighter；Python/pygmentize 已退役，旧查表方法也已删除。
 
-Go 侧的别名表是从 PHP 侧那张 `static $map` 抄过来的（PHP 166 条，Go 184 条）。它的作用是把 Phorge 数据库里存量的语言标识（`adb`、`ads`、`ahkl`、`bat`、`cxx` 这类历史别名）翻译成 Chroma 认得的 lexer 名。
+Go 别名表最初来自旧 PHP Pygments 映射，用来保留数据库中 `adb`、`ads`、`ahkl`、`bat`、`cxx` 等历史标识。现在维护的是这些存量标识的解释，不是两张仍在线的 PHP/Go 表同步。不能以 PHP 旧类还存在为理由把它列为可选语言后端。
 
-要防的是什么：Phorge 并没有全量切到 Go 服务，`PhutilPygmentsSyntaxHighlighter` 仍是可选的高亮后端。两个后端把同一个语言标识解析到不同 lexer 时，产生的 HTML 不同，且没有任何断言会捕捉到。**但这不等于两张表必须逐条相等**，下面两小节把范围划准。
-
-### 必须同步的方向只有 PHP → Go
-
-PHP 侧查表是 `idx($map, $language, $language)`：**未命中就把语言名原样透传**给 pygmentize。这条透传语义决定了约束是不对称的。
-
-判据是「PHP 表对该键做了**非恒等映射**」——现存 166 条恰好全部满足（`adb` → `ada` 这类），所以实践上就是一句话：**PHP 表有的键，Go 侧必须有，且映射到等价的 lexer。**非恒等映射意味着 pygmentize 认不得原始名、或认得但指向另一个 lexer，必须靠表改写；这种键 Go 侧漏掉时，Go 会把 `adb` 原样交给 Chroma，落到内容嗅探，两个后端就此分叉。**漏一条就是一次静默漂移，这是本节真正要守的东西。**
-
-### 反过来，Go 表可以是 PHP 表的超集
-
-Go 目前独有 20 条，**这不算违约，也不要求补到 PHP 侧**：
-
-- 15 条现代语言键：`ts` / `tsx` / `jsx` / `rs` / `kt` / `kts` / `swift` / `toml` / `tf` / `hcl` / `gradle` / `dockerfile` / `containerfile` / `graphql` / `gql`
-- 5 条 PHP 混合大小写键的小写补充：`gnumakefile` / `rakefile` / `rout` / `sconscript` / `sconstruct`
-
-无害的理由就在上面那条透传语义：pygmentize 本身就认 `ts`、`rs`、`kt` 这类别名，PHP 未命中后把原始名透传过去，落到的是同一个 lexer。两个后端结果一致，没有漂移可言。Go 侧多这几条只是省掉一次 Chroma 的猜测。
-
-新增 Go 独有键时唯一要确认的就是这个前提：**pygmentize 透传该名字后能落到与 Go 相同的 lexer**。若不成立（pygmentize 完全不认，PHP 侧会退回 `PhutilDefaultSyntaxHighlighter`），那就得同时补 PHP 侧。
+历史非恒等映射不可随意删改；新增别名应确认 Chroma 的实际 lexer、与存量标识是否冲突，并增加固件。现代语言键可以扩展，不需要恢复已退役的 PHP alias map。未命中时 Go 会尝试小写名和内容嗅探，最后使用纯文本 fallback，因此一次普通请求成功不能证明别名解释正确。
 
 ### 这张表区分大小写
 
-PHP 侧是一个普通 PHP 数组加 `idx()`，键的大小写原样参与匹配；而传进来的语言名是 `PhutilDefaultSyntaxHighlighterEngine::getLanguageFromFilename()` 从文件名里切出来的扩展名，**没有做归一化**，所以 `foo.R` 真的会以 `R` 的形式到达这里。表里有两组同字母异映射：
+旧映射区分大小写；当前传进来的语言名仍是 `PhutilDefaultSyntaxHighlighterEngine::getLanguageFromFilename()` 从文件名里切出来的扩展名，**没有做归一化**，所以 `foo.R` 真的会以 `R` 的形式到达这里。表里有两组同字母异映射：
 
 | 键 | 目标 lexer | 含义 |
 |---|---|---|
@@ -88,13 +68,13 @@ PHP 侧是一个普通 PHP 数组加 `idx()`，键的大小写原样参与匹配
 | `r` | `rebol` | REBOL，Chroma 无对应 lexer，退化为纯文本 |
 | `s` | `gas` | GAS 汇编 |
 
-因此 Go 侧 `resolveLexer()` **先用原始字符串查表，未命中才降级到 `strings.ToLower` 再查一次**。早期实现无条件先 `ToLower`，把 `R` 折成 `r`、`S` 折成 `s`，结果是所有 `.R` 文件按 REBOL 处理（即无高亮）、所有 `.S` 文件按汇编处理。这是本约束唯一一次真实漂移，`tests/contract/render/render-language-case-{uppercase,lowercase}.json` 与 `TestCaseSensitiveAliasesReachDistinctLexers` 现在把它锁住了。`lexermap.go` 末尾单列了一组混合大小写键，与 PHP 表逐条对应，方便 diff。
+因此 Go 侧 `resolveLexer()` **先用原始字符串查表，未命中才降级到 `strings.ToLower` 再查一次**。早期实现无条件先 `ToLower`，把 `R` 折成 `r`、`S` 折成 `s`，结果是所有 `.R` 文件按 REBOL 处理（即无高亮）、所有 `.S` 文件按汇编处理。这是已修复的一次真实漂移，`tests/contract/render/render-language-case-{uppercase,lowercase}.json` 与 `TestCaseSensitiveAliasesReachDistinctLexers` 现在把它锁住了。`lexermap.go` 保留混合大小写映射；这些映射表达历史语义，不应做全表小写归一化。
 
 ### Chroma 与 Pygments 的 lexer 命名差异不算漂移
 
 Go 侧的目标名必须是 Chroma 真的认得的，否则 `lexers.Get()` 返回 nil，请求静默退化成内容嗅探——补了等于没补。
 
-**能照抄就照抄。**即使 Chroma 同时接受某个同义写法，目标名也一律用 PHP 的那个（`rb` 而不是 `ruby`、`coffee-script` 而不是 `coffeescript`、`Cucumber` 而不是 `cucumber`），这样两张表能逐字 diff，不必每次都判断「写法不同但等价」。下表是**偏离的完整清单**，已逐条实测（Chroma v2.27），下一个人不必重查：
+**能照抄就照抄。**即使 Chroma 同时接受某个同义写法，目标名也一律用 PHP 的那个（`rb` 而不是 `ruby`、`coffee-script` 而不是 `coffeescript`、`Cucumber` 而不是 `cucumber`），便于核对历史语义。当前特殊映射如下；依赖版本以 `go/go.mod` 为准，升级后仍须运行 lexer 与输出检查：
 
 | PHP 写的名字（涉及的键） | 在 Chroma 里 | Go 侧写什么 |
 |---|---|---|
@@ -110,7 +90,7 @@ Go 侧的目标名必须是 Chroma 真的认得的，否则 `lexers.Get()` 返�
 
 `v` 那条是对齐时最容易踩的坑，也是判据的来处：**`lexers.Get()` 返回非 nil 不代表解析对了。**要对齐某个写法时，比对的是两个写法拿到的 lexer **身份**（`Config().Name`）是否相同，只判空会把 `sv` → `v` 放过去。
 
-**新增别名的检查清单**：PHP 表有的键 Go 必须有，键的大小写照抄；Go 独有键先确认 pygmentize 透传后落到同一 lexer；目标名先用 `lexers.Get()` 确认 Chroma 认得；最后在 `tests/contract/render/` 补一条固件。
+**新增别名的检查清单**：保留存量映射和大小写语义，用 `lexers.Get()` 确认目标 Chroma lexer，并增加跨 HTTP 固件；不再要求与已删除的 PHP 表比对。
 
 ## 二、Chroma formatter 的三项配置是固定的
 
@@ -124,15 +104,15 @@ formatter = html.New(
 defaultStyle = styles.Get("pygments")
 ```
 
-三项都不能改，各有各的理由：
+当前配置如下；变更须验证相应渲染边界：
 
 | 配置 | 原因 |
 |---|---|
-| `styles.Get("pygments")` | Chroma 的 style 决定输出的 CSS **类名**。只有 `pygments` 这一套的类名（`k`、`nf`、`nb`、`s2`、`mi`、`c1` …）与 Phorge 既有样式表对得上。换成 `monokai`、`github` 之类会输出另一批类名，页面上所有 token 都失去样式。 |
+| `styles.Get("pygments")` | 当前样式基准；class 名来自 Chroma token/formatter，不由 style 名决定。变更应核对实际输出，不能声称其他 style 必然改变全部类名。 |
 | `WithClasses(true)` | 输出 `class="k"` 而不是内联 `style="color:#008000"`。内联样式会绕过 Phorge 的样式表与暗色主题，且体积暴涨。 |
 | `PreventSurroundingPre(true)` | 只输出 token 片段，不带外层 `<pre>`。外层容器由 Phorge 自己渲染（它要挂行号、diff 高亮等附加结构），Chroma 再包一层会造成嵌套 `<pre>`。 |
 
-守住这条的是 `go/internal/render/highlight/compat_test.go` 的 `TestPygmentsCSSClassCompatibility`：它断言输出里出现 `k`/`n`/`nf`/`nb`/`s2`/`mi`/`c1` 这批类名。render 域的契约固件同样只做 contains 断言——Chroma 升级会改变 HTML 的具体结构，精确 golden 匹配必然频繁误报，真正要锁死的只是类名集合。
+守住这条的是 `go/internal/render/highlight/compat_test.go` 的 `TestPygmentsCSSClassCompatibility`：它断言至少一个登记的 Pygments 类名出现，并非每个类名都必须出现；共享固件另外检查具体样本的多个类名。render 域的契约固件同样只做 contains 断言——Chroma 升级会改变 HTML 的具体结构，精确 golden 匹配必然频繁误报，真正要锁死的只是类名集合。
 
 （第四项约定的固件反过来做**整值**比对。断言精度按输出的稳定性来定，不是全仓库一个口径；判据见 [`../../tests/contract/README.md`](../../tests/contract/README.md)。）
 
@@ -194,7 +174,7 @@ diff 域的两条路径同样属于契约：
 
 PHP 侧原先 `proc_open` 调 `diff -U65535 -L <name> -L <name>`，输出交给 `ArcanistDiffParser` 与 `DifferentialHunkParser`。所以 Go 侧要复现的不是「一份合法的 unified diff」，而是 **GNU（以及 Apple/FreeBSD）diff 逐字节写出来的那一份**。
 
-**偏离不会在任何地方报错。**解析器接受一个错误的 hunk 头，然后静默地把它之后的每一行都放错位置——错误在代码评审页面上表现为渲染错位，离出错点已经很远，而且没有任何测试或日志会指向格式。
+**解析器可能静默接受格式偏离。**错误的 hunk 头可能让后续行被放错位置，最终在代码评审页面上表现为渲染错位。契约固件比对完整 diff 文本，可以捕捉所覆盖样例的格式变化；生产解析器本身并不保证为这种偏离报错。
 
 ### 4.1 行是 `(文本, 是否有尾换行)` 的二元组
 
@@ -305,7 +285,7 @@ diff -U65535 -L 'a 9999-99-99' -L 'b 9999-99-99' a b
 |---|---|
 | `unified_test.go` 的 11 组格式契约 | 与 GNU 整值比对（另有 4 组 identical 分支照 PHP） |
 | `systemdiff_test.go` | 直接调系统 `diff` 交叉验证：尾换行/行数矩阵 100 组要求**全等**，另一组刻意构造歧义输入只要求 hunk 头与编辑数相同 |
-| `tests/contract/diff/` 的 9 份固件 | 对 `data.diff` 整值比对 |
+| `tests/contract/diff/` 的契约固件 | 对 `data.diff` 整值比对 |
 | `tests/e2e/diff.sh` | 过一趟真实 HTTP，唯一能验证含反斜杠的标记不被 JSON 转义改坏的一层 |
 
 第二层是这条约定的主力：它每次 `go test` 都真的去问系统 `diff`，所以格式漂移不需要有人记得重跑命令就会被发现。`diff` 不在 PATH 时它 skip 而非失败。
@@ -326,20 +306,7 @@ diff -U65535 -L 'a 9999-99-99' -L 'b 9999-99-99' a b
 **PHP 侧**：`PhabricatorNotificationServerRef`、`PhabricatorNotificationServersConfigType`、`PhabricatorNotificationClient`
 （参考实现见 `phorge-fork/src/applications/notification/`，被替换掉的 Node 实现见 `phorge-fork/support/aphlict/server/`）
 
-替换 Aphlict 与替换 Pygments 的差别，在于 PHP 侧怎么处理失败。高亮失败至少还渲染出一个没有颜色的代码块，是可见的；通知失败什么都不留：
-
-```php
-foreach ($servers as $server) {
-  try {
-    $server->postMessage($data);
-    return;
-  } catch (Exception $ex) {
-    // Just ignore any issues here.
-  }
-}
-```
-
-这就是 `PhabricatorNotificationClient::tryToPostMessage()` 的全部错误处理。**PHP 侧从不读本服务的响应体，也从不上报它的失败**，所以本节的判据不是「PHP 会不会报错」——它不会——而是「破坏之后还有谁能发现」。
+当前 PHP `tryToPostMessage()` 会收集 admin endpoint 的投递异常；全部失败时 required 政策抛出聚合异常，fallback 政策记录降级和异常后返回。没有 endpoint 时保持 no-op。Go 内存 history 与 peer 中继不构成持久送达保证。即使 required 没报错，HTTP 成功也不能证明浏览器收到正确内容。
 
 按这个判据，下面四条从最容易发现排到最难：
 
@@ -356,8 +323,8 @@ foreach ($servers as $server) {
 
 `PhabricatorNotificationServersConfigType::validateStoredValue()` 遍历 `notification.servers` 时要求两件事：
 
-- 至少一条未禁用的 `type: "admin"`，至少一条未禁用的 `type: "client"`，缺任一类直接抛异常（第 121-137 行）；
-- `"{$host}:{$port}"` 在列表里不得重复（第 109-118 行）。
+- 至少一条未禁用的 `type: "admin"`，至少一条未禁用的 `type: "client"`，缺任一类直接抛异常；
+- `"{$host}:{$port}"` 在列表里不得重复。
 
 所以「一个端口同时当 admin 和 client」这种配置 PHP 侧**根本存不下来**：写两条记录会撞 host:port 检查，写一条记录又凑不齐两个 type。这也是 notification 不能像 diff 并进 `gorge-render` 那样共用一个端口的直接原因。
 
@@ -370,11 +337,11 @@ foreach ($servers as $server) {
 
 client 那条填错不算破坏约定，但和 5.4 一样属于「服务端观察不到」的那一类：`getWebsocketURI()` 是把这个地址**发给浏览器**的，所以填成只在内网解析得开的服务名之后，服务端一切正常、`testClient()` 通过、集群面板双绿，只有每个真实用户连不上。
 
-走 Traefik 之类反向代理时，client 条目改填 `path: "/ws/"` + 443 + https。注意 `path` **只对 client 类型合法**，给 admin 条目加 `path` 会被上面那个校验单独拒掉（第 95-104 行）。
+走 Traefik 之类反向代理时，client 条目改填 `path: "/ws/"` + 443 + https。注意 `path` **只对 client 类型合法**，给 admin 条目加 `path` 会被上面那个校验单独拒掉。
 
 ### 5.2 client 端口的 `GET /` 必须回 501，响应体逐字节
 
-`PhabricatorNotificationServerRef::testClient()`（第 181-203 行）把 501 当健康信号，把 200 当故障：
+`PhabricatorNotificationServerRef::testClient()`把 501 当健康信号，把 200 当故障：
 
 ```php
 try {
@@ -460,7 +427,7 @@ map[string]any{"{\"type\":\"notification\"}": ""}
 
 一个键、值为空串，`msg["type"]` 是 nil。handler 拿着这坨东西照常往下走：`AddFingerprint` 看不到 `touched` 于是判定「消息是新的」，`Publish` 把它塞进 history 并按「没有 subscribers」当广播扇出，最后 `c.JSON` 答一个**完全合法的 200 加真 fingerprint**。
 
-于是**根本没有异常给 5.1 上面那个 catch 吞**——PHP 侧的 `postMessage()` 顺利返回，它以为消息发出去了。症状是通知内容被静默揉碎：浏览器要么收到一条没有 `type` 的垃圾消息，要么因为原本的 `subscribers` 已经丢失而收到本不该收到的广播。而 Config → Cluster → Notification 页面**两台服务器全绿**（那个页面走 `/status/` 与 `testClient()`，都不经过这个 handler），`messages.in` 照常增长，**本服务日志里连一条 4xx 都没有**。
+此时 PHP `postMessage()` 顺利返回，required 政策也没有异常可报告。症状是通知内容被静默揉碎：浏览器要么收到一条没有 `type` 的垃圾消息，要么因为原本的 `subscribers` 已经丢失而收到本不该收到的广播。而 Config → Cluster → Notification 页面**两台服务器全绿**（那个页面走 `/status/` 与 `testClient()`，都不经过这个 handler），`messages.in` 照常增长，**本服务日志里连一条 4xx 都没有**。
 
 这是本文件所有约束里最彻底的一条：其余几条至少在某处留下一个错误状态码，这一条什么都不留。
 
@@ -525,7 +492,7 @@ curl -s http://127.0.0.1:22281/status/
 
 ### 6.2 `ERR_PERMANENT_FAILURE` 的语义：本域最要紧的一条
 
-这是全仓库唯一一个**改变 PHP 侧行为**而不只是改变它报告内容的错误码。
+这个错误码会改变 PHP 的重试行为，而不只是改变报告内容。
 
 | 码 | 状态 | PHP 侧的反应 |
 |---|---|---|
@@ -537,7 +504,7 @@ curl -s http://127.0.0.1:22281/status/
 - **永久判成临时**：收件人地址写错，Phorge 的 worker 无限重投同一封信。这正是迁入前的实际状态——老代码定义了 `PermanentError` 但七个适配器从不返回它。
 - **临时判成永久**：provider 限流或抖动了一下，本可以在下一次投递成功的信被直接丢掉，且在 Phorge 里的状态看起来就像地址写错了。
 
-所以 Go 侧的分类是**保守**的：只有明确描述「这封信」的信号才判永久——SMTP 5xx、provider HTTP 4xx（**429 除外**，限流说的是「现在不行」）、sendmail 的 `EX_NOUSER` / `EX_DATAERR` / `EX_NOHOST` 一族退出码。**任何不认识的信号一律判临时。**
+Go 区分永久消息拒绝、已确认未接受的 `SafeRetryError` 与不确定提交。HTTP 401/403、sendmail 77/78 属于后端配置错误，429 可以安全重试；未知网络/5xx/执行失败不能在 Dispatcher 中盲目重试或切换。同步 `/send` 仍将非永久失败报为 `ERR_SEND_FAILED`，PHP 外层可重投；原生持久邮件把不确定结果记为 unknown 并要求核对。完整分类见 [mailer](../../docs/modules/mailer.md)。
 
 改动分类规则时，先想清楚要往哪个方向错。`tests/contract/mailer/send-permanent-failure.json` 与 `send-temporary-failure.json` 是成对的，缺一条就只守住了一半。
 
@@ -559,17 +526,17 @@ curl -s http://127.0.0.1:22281/status/
 
 ### 6.5 顺带记一条不属于契约但会被误读的事
 
-`/readyz` 返回 503 的含义是「一个后端都没配」，**不是**「SMTP 连不上」。Go 侧刻意不拨测第三方：那会让就绪状态随外部抖动翻转，而多后端 failover 本来就是为此存在的。所以 PHP 侧的 setup check 把 `/readyz` 失败单独报出来是对的——它精确对应「服务活着但一个后端都没配」这个最容易踩的状态——但不要据此推断「就绪 = 下一封信会到」。
+同步模式的 `/readyz` 检查是否有已配置适配器，不拨测 SMTP/provider；启用原生持久投递后，还会检查账本 schema。503 不能一概解释为“没有后端”，200 也不保证下一封邮件到达。
 
 ---
 
-## 七、search 的字段名与分析器链：五条约定 [CI 已守：路由、16 个四字符常量与 7.2 的字段名；应答的 count / status 未守]
+## 七、search 的字段名与分析器链：五条约定 [CI 已守：路由、四字符常量与 7.2 的字段名；应答的 count / status 未守]
 
 **Go 侧**：`go/internal/search/http.go`（七条路由）、`go/internal/search/esquery/builder.go`（16 个四字符常量与 `cjk` 子字段名）、`go/internal/search/engine/backend.go`（默认索引名）、`go/internal/search/engine/elasticsearch/backend.go`（`buildIndexConfig()` 与 `buildSearchSpec()`）、`go/internal/contracts/search.go`
 **PHP 侧**：`PhabricatorGorgeFulltextStorageEngine`、`PhabricatorGorgeSearchClient`、`PhabricatorSearchDocumentFieldType`、`PhabricatorSearchRelationship`
 （参考实现见 `phorge-fork/src/applications/search/`）
 
-第六节是唯一一节会改变 PHP 侧**行为**的，本节回到另一个极端：**五条全部是「写得进去、答 200、就是查不到」型。**判据与第五节相同——不是「PHP 会不会报错」，而是「破坏之后还有谁能发现」。
+本节约束同步搜索字段与索引形状。字段不一致可能导致写入正常而查询无结果，分析器或路由不一致也可能明确报错。判据与第五节相同——不是「PHP 会不会报错」，而是「破坏之后还有谁能发现」。
 
 先说清本节五条共同的形状，因为它是这一整节的组织原则：**写入侧与查询侧是两条独立的路径，各自都能独立地完全正常。**一份文档按 `titl` 写进去、一个查询按 `title` 查出来，两侧都合法、都答 200，索引在长大、`/api/search/stats` 的文档数在上涨、集群面板全绿。Elasticsearch 对「查一个不存在的字段」不报错，它只是不匹配；而**没有任何一层会去比对「写进去的键」与「查出来的键」**。所以本节守的不是某个值「对不对」，是两条路径上的**同一个名字有没有分叉**。
 
@@ -697,7 +664,7 @@ bq.AddShould(map[string]any{
 
 ### 改动本节任何一条之后怎么验证
 
-7.1 与 7.2 靠固件：`tests/contract/search/` 的 17 份加 `unavailable/` 的 6 份，路径、字段名与五个域级错误码都在其中。7.3 靠 `esquery/builder_test.go` 那两个测试，它们是这 16 个名字唯一的守卫——**别把那张对照表简化成一个字符串列表**，表里的 `phpConstant` 列是它的全部价值，它让「改了值」在失败信息里直接指向要同步改的那个 PHP 常量。
+7.1 与 7.2 靠固件：`tests/contract/search/` 及 `unavailable/` 的固件，路径、字段名与五个域级错误码都在其中。7.3 靠 `esquery/builder_test.go` 那两个测试，它们直接验证这些名字与 PHP 常量的对应——**别把那张对照表简化成一个字符串列表**，表里的 `phpConstant` 列是它的全部价值，它让「改了值」在失败信息里直接指向要同步改的那个 PHP 常量。
 
 7.5 的两半各有守卫，都在 `engine/elasticsearch/backend_test.go`：断言 mapping 里三个语料字段都带 `cjk` 子字段且分析器是 `cjk_text`（上半）、断言第二条 should 子句的 `analyzer` 与三个 `*.cjk` 字段都在（下半）。另有两条断言「删掉子字段的索引必须报 not sane」与「删掉分析器的索引必须报 not sane」——**这两条守的是 `configDeepMatch` 本身不被削弱**，因为削弱它是让一次强制重建「消失」的最省事的办法。
 
@@ -750,7 +717,7 @@ blob/12345
 amazon-s3/phabricator/ab/cd/0123456789abcdef
 ```
 
-**这个复合串是 PHP 侧独有的，Go 侧从头到尾没见过它。**服务答的是 `{"engine": …, "handle": …}` 两个字段（`contracts.WriteResult`），拼接与拆解都发生在 `PhabricatorGorgeFileStorageEngine`：`writeFile()` 返回 `$engine.'/'.$handle`，`parseHandle()` 再拆回来交给客户端。所以这一条**没有任何 Go 侧的测试守得住它**，它只存在于 PHP 与库里那些字符串之间。
+**这个复合串是 PHP 侧独有的，Go 侧从头到尾没见过它。**服务答的是 `{"engine": …, "handle": …}` 两个字段（`contracts.WriteResult`），拼接与拆解都发生在 `PhabricatorGorgeFileStorageEngine`：`writeFile()` 返回 `$engine.'/'.$handle`，`parseHandle()` 再拆回来交给客户端。因此仅靠 Go 的响应测试无法覆盖 PHP 的拼接与拆解；还需结合 PHP 文件存储测试和真实文件读写验证。
 
 **必须按第一个斜杠切，不是最后一个，也不是 `explode('/')` 取两段。**三个 identifier 都不含斜杠而 handle 含（8.3），所以第一个斜杠是唯一无歧义的分界。按最后一个切会把 `local-disk/ab/cd/{28 hex}` 拆成引擎 `local-disk/ab/cd` 和 handle `{28 hex}`，`Router.GetEngine` 随即答 `unknown storage engine`；`explode` 取前两段则会把 handle 截成 `ab`。两种写法都能通过「写一个文件再读回来」——因为写和读用的是同一份代码——只有存量文件全数 404。
 
@@ -807,7 +774,7 @@ phabricator[/{instance}]/ab/cd/{16 hex}
 | `GET /api/file/blob` 失败 | `{data, error}` 信封（404 `ERR_NOT_FOUND` 居多） |
 | 其余三条路径的成功与失败 | 一律信封 |
 
-这是全仓库 `/api/**` 里**唯一**一个成功响应不是信封的端点（平台层为它没改任何代码，理由见 [`../../docs/platform.md`](../../docs/platform.md) 第 1.1 节）。所以 PHP 侧的判据只能是**状态码**：200 就把 body 当文件交出去，其余一律交给信封解析器。
+这是返回裸文件字节的端点；图片、metrics、Conduit 与 Aphlict 也有独立响应协议（平台层为它没改任何代码，理由见 [`../../docs/platform.md`](../../docs/platform.md) 第 1.1 节）。所以 PHP 侧的判据只能是**状态码**：200 就把 body 当文件交出去，其余一律交给信封解析器。
 
 **不能拿「body 是不是空的」当判据**，因为 **0 字节文件是一个合法的 200 加一个空 body**——Phorge 真的存空文件。照 body 判的客户端会把一个正常的空文件报成错误，而这种文件在库里通常只有零星几个，问题会以「偶发的、无法复现的附件损坏」形式出现。
 
@@ -864,7 +831,7 @@ GET /readyz  → 503
 
 还有一个方向的推论仍然成立：**不要在启动时 ping**。`OpenDB` 用 `sql.Open` 而它是惰性的，所以数据库还没起来时服务照常启动、照常答 `/healthz`，由 `/readyz` 去报告连不上——这正是编排区分「正在启动」与「坏了」所需要的。在启动路径上 ping 只会让一个「慢」的依赖把容器打进重启循环。这一条不受上面的修正影响，因为它说的是「别把探针的判据搬到启动路径上」，而不是「那个判据是安全的」。
 
-## 九、webhook 投递：出站的字节与回写的字段 [CI 已守：9.8 的路由与 9.1 payload 的 10 个键；9.4–9.6 的回写列与 9.8 的统计字段未守]
+## 九、webhook 投递：出站的字节与回写的字段 [CI 已守：9.8 的路由与 9.1 payload 键；9.4–9.6 的回写列与 9.8 的统计字段未守]
 
 **Go 侧**：`go/internal/webhook/`（`dispatcher.go` 的 `buildPayload` / `signPayload` / `phidType`、`model.go` 的全部常量、`store.go` 的 `UpdateResult`）、`go/internal/contracts/webhook.go`
 **PHP 侧**：`HeraldWebhookRequest`、`HeraldWebhookWorker`、`HeraldWebhook`、`PhabricatorGorgeWebhookClient`
@@ -920,7 +887,7 @@ return string(encoded) + "\n", nil
 }
 ```
 
-`TestPayloadIsByteExact` 拿的就是这一整段做整值比对。**这份契约无法由契约固件承载**：固件的形式是「一个请求加它的期望应答」，而这是本服务**发出**的东西，不是它答的东西。这也是本域固件只有 5 份的原因，别据此以为它的契约面小（见 [`../../docs/testing.md`](../../docs/testing.md) 第 2 节）。
+`TestPayloadIsByteExact` 拿的就是这一整段做整值比对。**这份契约无法由契约固件承载**：固件的形式是「一个请求加它的期望应答」，而这是本服务**发出**的东西，不是它答的东西。这也是本域基础固件不覆盖出站投递的原因，别据此以为它的契约面小（见 [`../../docs/testing.md`](../../docs/testing.md) 第 2 节）。
 
 两处容易被当成冗余的细节：
 
@@ -959,7 +926,7 @@ queued | sent | failed
 三个值，一个都不能多。这不是「别改枚举」那种整洁性要求，它有两个具体的、独立的持有者：
 
 - **Phorge 的 UI 按 status 渲染图标。**一个它不认识的值让那一行显示不出状态。
-- **`HeraldWebhookWorker::doWork()` 的前置检查要求 `status === queued`。**这是 PHP 的回退路径——把 `gorge.webhook.uri` 撤掉之后投递该回到 phd 手里——所以一个卡在自造状态上的行，在回退之后**永远不会被投递，也永远不会被报告**。
+- **兼容 `HeraldWebhookWorker::doWork()` 的前置检查要求 `status === queued`。**当前 worker 不再发送 HTTP，只处理旧任务、静默终态及无消费者错误；撤掉 URI 不会恢复 PHP 网络投递。自造 status 会使兼容任务误判终态。
 
 **这一条正是 Go 侧不得不用 `dateModified` 做乐观版本号的原因。**抢占的自然写法是把行标成 `claimed`，而那个值不能存在，于是「正在投递」与「在队列里等着」从查询侧看起来一模一样，抢占只能靠另一列。整套机制（lease、`dateModified = dateCreated` 那一半条件、`GREATEST(+1, now)`）都是从这个约束推出来的，见 [`../../docs/modules/webhook.md`](../../docs/modules/webhook.md) 第 3.1 节与 [`../../docs/findings.md`](../../docs/findings.md) 第 30 条。
 
@@ -999,29 +966,13 @@ queued | sent | failed
 
 最后一行是一处**已知遗留**：传输失败时 `errorCode` 是 Go 的原始错误字符串，会连同它解析出的 IP 与端口一起渲染到请求详情页上。保留是为了与旧服务及 Phorge UI 既有观感一致，但要知道 **Phorge 自己在这个位置放的是短码**，所以本服务是在扩大那一栏的值域。登记在 [`../../docs/findings.md`](../../docs/findings.md) 第 34 条。
 
-### 9.7 `gorge.webhook.uri` 不是「服务地址」，是**接管开关**
+### 9.7 接管配置与兼容任务
 
-这是本节最容易被误判的一条，也是全仓库唯一一个失配方向是反的域。
+`gorge.webhook.owner` 明确选择消费者；URI/token 是诊断端点配置，投递本身经数据库，不使用服务 token。默认栈将 owner 设为 gorge，由迁移任务写入 deployment.json。
 
-其余五个 `gorge.*.uri` 都是「PHP 要调 Go，得知道打哪儿」。本域的 PHP 与 Go 之间一次 HTTP 都不发，所以这个配置项的作用完全不同：**它一写进去，Phorge 就立刻停止给 `HeraldWebhookWorker` 派任务。**
+`PhabricatorGorgeWebhookClient::isDeliveryDelegated()` 是 PHP 是否继续创建兼容任务的判据，同时检查全局静默。`HeraldWebhookRequest::queueCall()` 在委派时不创建网络投递任务；当前 `HeraldWebhookWorker` 保留为旧任务反序列化与静默终态的兼容 sink，不发送 HTTP。
 
-| 配置项 | 作用 |
-|---|---|
-| `gorge.webhook.uri` | 接管开关（`setLocked(true)`）。非空且全局静默未开 ⇒ PHP 侧不再调度投递 |
-| `gorge.webhook.token` | 只用于那两个诊断端点（`setHidden(true)`）。**投递本身不经过它**——投递走数据库，签名用每个 hook 自己的 HMAC key |
-
-**守卫的单一真源是 `PhabricatorGorgeWebhookClient::isDeliveryDelegated()`**，两个插桩点都问它而不是各自去读配置项：
-
-- `HeraldWebhookRequest::queueCall()`——满足条件时不 `scheduleTask`，INSERT 逻辑照旧留在 PHP。
-- `HeraldWebhookWorker::doWork()`——CLI 的 `webhook call` 会 `setRunAllTasksInProcess(true)` 绕过队列，所以这条路必须同样守卫。**位置在现有的 silent 检查之后**，顺序很重要。
-
-两处问同一个方法，是为了让「队列这条路」与「`bin/webhook call` 这条路」不会漂开。
-
-**由此得到的失配规则必须记住：容器在跑、而 `gorge.webhook.uri` 没写进 Phorge，等于 phd 与本服务同时排空同一个队列——每个 webhook 发两次。**而接收方**无法把这种重复与一次真正的重复事件区分开**：payload 逐字节相同（同一个 `dateCreated`、同一批 transaction PHID），签名也相同。所以「两个消费者共用一个队列」不是扩容方案，要横向扩容就多起几个 `gorge-webhook`（抢占机制正是为此存在的）。登记在 [`../../docs/findings.md`](../../docs/findings.md) 第 38 条。
-
-反过来那个方向是安全的：撤掉配置项，投递就回到 phd 手里——前提是 9.4 那个 `status` 取值范围没被破坏。
-
-编排侧下发这两项的是 `docker/entrypoint.sh` 的 `gorge_config_set` 段，走 render / file-storage 那种标量覆盖模式，不需要 mailer / search 的 JSON 合并。
+PHP 原生网络消费者已退役。撤掉 URI 或选择 phorge 不会回到旧投递路径；迁移任务拒绝 disable，setup check 报告无消费者。仍使用旧版 PHP 的节点不能与 Go 同时排空该队列，升级前必须停止旧消费者。Go 多实例扩容使用 claim，不能靠恢复旧 PHP worker。见 [findings 第 38 条](../../docs/findings.md)。
 
 ### 9.8 两条路径与端口
 
@@ -1081,7 +1032,7 @@ SELECT status, lastRequestResult, lastRequestEpoch, properties
 
 ---
 
-## 十、task queue 与 worker：任务字段名与租约语义 [CI 已守：路由、API 字段名与 4 个 worker_activetask 列名；dataID 未守]
+## 十、task queue 与 worker：任务字段名与租约语义 [CI 已守：路由、API 字段名与 worker_activetask 列名；dataID 未守]
 
 **Go 侧**：`go/internal/taskqueue/`（`mysql_store.go` / `redis_store.go` 的 SQL 与键结构、`http.go` 的路由）、`go/internal/worker/`（`consumer.go` 的回报分岔、`handlers/` 的 Conduit 委派）、`go/internal/contracts/taskqueue.go`（全部字段名与常量）
 **PHP 侧**：`PhabricatorWorkerActiveTask`、`PhabricatorWorkerArchiveTask`、`PhabricatorWorker`、`PhabricatorWorkerLeaseQuery`、`PhabricatorTaskmasterDaemon`
@@ -1136,7 +1087,7 @@ dateCreated  dateModified  data
 
 ### 10.4 部署耦合：必须替换 `phd`，Redis 后端读不到旧队列
 
-- **`gorge-taskqueue` + `gorge-worker` 必须替换 Phorge 的 `phd` taskmaster 守护进程，而不是与之并存。**队列在库里，`phd` 与 gorge-worker 谁都能租 `worker_activetask`——两边同时跑就是每个任务跑两遍，且不报错。上线本管线前先停掉 PHP 侧的 `phd`。与第九节 9.7、[`../../docs/findings.md`](../../docs/findings.md) 第 38 条同源（webhook 是同一类耦合）。
+- **`gorge-taskqueue` + `gorge-worker` 必须替换 Phorge 的 `phd` taskmaster 守护进程，而不是与之并存。**队列在库里，`phd` 与 gorge-worker 谁都能租 `worker_activetask`——两边同时跑就是每个任务跑两遍，且不报错。上线前停止旧 PHP taskmaster 消费者；仍承担 trigger/fact 等职责的 daemon 保留，当前 fork 已退役 taskmaster。与第九节 9.7、[`../../docs/findings.md`](../../docs/findings.md) 第 38 条同源（webhook 是同一类耦合）。
 - **选 Redis 后端时，队列不在 Phorge 的库里。**于是 Phorge 的 `bin/worker` 与 Web UI 的任务视图读到一个空队列——这不是 bug，是「把队列挪出主库」的代价。要保留 Phorge 自己的任务视图就用默认的 MySQL 后端。
 
 **验证本节**：入队一个任务后读表确认列名与值——
@@ -1154,17 +1105,17 @@ lease 一次确认 `leaseOwner` 被写成请求的 `X-Lease-Owner`、`leaseExpir
 gorge-worker 租到一个自己没有本地实现的 task class 时，经 conduit 网关（`GORGE_WORKER_CONDUIT_URL`）调 Phorge 的 `worker.execute` 把业务逻辑交回 PHP。这里有两条硬约束：
 
 - **请求必须是表单编码，不能是 `application/json`。**Phorge 的 `PhabricatorConduitAPIController` 会**显式拒绝** `Content-Type: application/json`（"Use form-encoded data to submit parameters to Conduit endpoints"），而它无法当作 Conduit 请求解析的 body 会被更外层的 HTTP 栈用一张 **HTML 页面**回应——这正是迁入时委派环节 `invalid character '<'` 的真实故障。Go 侧 `handlers/conduit.go` 因此照 Phorge 自家客户端（arcanist 的 `ConduitClient`、旧的 `PhabricatorGoConduitGatewayClient`）的线格式发：`POST /api/worker.execute`，`Content-Type: application/x-www-form-urlencoded`，body 带一个 `params` 字段（值是参数 map 的 JSON，token 塞在 `__conduit__.token`），外加 `output=json`；网关另用 `X-Service-Token` 头认证。
-- **`worker.execute` 是 phorge-fork 侧新增的 Conduit method**（`PhabricatorWorkerExecuteConduitAPIMethod`），必须存在于 `__phutil_library_map__.php` 里，否则 Phorge 会以 Conduit 的方法未知错误（JSON 信封）或——若请求格式又不对——HTML 回应。它 `shouldRequireAuthentication()=false` 且 `shouldAllowUnguardedWrites()=true`（网关已认证、无用户会话、无 CSRF 面），按 `taskClass`+`data` 用 `newv()` 造出真正的 worker 跑 `executeTask()`，把分类**回报**而非自己驱动队列：`success` / `yield`（带 `retry`）/ `permanent-failure` / `failure`（临时）。gorge-worker 据此翻译成 `complete` / `yield` / `fail(permanent)` / `fail(临时)`。改这个方法名或它的返回分类，会让委派回来的任务全部被当成临时失败反复重试。
+- **`worker.execute` 必须实现当前 versioned 协议并登记到 PHP library map。** PHP 不要求用户 Conduit session，但独立验证非空 `X-Service-Token` 与配置的 conduit token，不能绕过网关直接匿名执行。请求带 `executionVersion=1`、phase、taskID、failureCount、priority、leaseOwner 和 leaseExpires；capabilities 先握手，执行前校验上下文。成功导出 followups，由 Go 通过 finalize 原子提交；失败、yield 与 retry 通过 resolve，均受租约保护。旧 complete/fail/yield 路由不是新消费者的失败回退路径。见 [taskqueue](../../docs/modules/taskqueue.md) 和 [worker](../../docs/modules/worker.md)。
 
 ---
 
-## 十一、db-api：字段名、错误码与库/表名 [CI 已守：路由与 PHP 侧按键读取的 38 个字段名；PHP 未按名读取的字段与三个错误码未守]
+## 十一、db-api：字段名、错误码与库/表名 [CI 已守：路由与 PHP 侧按键读取的字段名；PHP 未按名读取的字段与三个错误码未守]
 
 **Go 侧**：`go/internal/dbapi/`（`health.go` / `diff.go` / `setup.go` / `migration.go` 的探测逻辑、`router.go` 的分区路由、`errors.go` 与 `mysqlerr.go` 的错误分类、`config.go` 的 DSN 与库名拼接）、`go/internal/contracts/dbapi.go`（全部字段名）
 **PHP 侧**：`PhabricatorDatabaseRef`、`PhabricatorDatabaseSetupCheck`、`PhabricatorMySQLSetupCheck`、`PhabricatorConfigSchemaQuery`、`PhabricatorGorgeDBClient`
 （参考实现见 `phorge-fork/src/applications/config/` 与 `src/infrastructure/storage/`）
 
-**这一节与 render / mailer / search 那几节同源——本服务与 Phorge PHP 之间是真的走 HTTP 的**（PHP 打 Go 的 `/api/db/**` 读回集群自省），所以它没有 webhook / taskqueue 那种「队列在库里、一次 HTTP 都不发」的特殊性。它值得单独一节的地方，是它同时是好几个「第一」的反面：它像 file-storage 那样**只读**（不建库、不建表、不跑迁移，只 `SHOW` / `SELECT` / `INFORMATION_SCHEMA`），又像 render 那样**由入站请求驱动**（七条路由全是「有人来问、答一句」，没有后台循环），所以它既没有 webhook 第 38 条那种「必须替换不能并存」的耦合，也没有 taskqueue 那种双写同一张表的隐患——**观察一个不改动它的集群，多一个观察者不会弄坏任何东西**。
+**这一节与 render / mailer / search 那几节同源——本服务与 Phorge PHP 之间是真的走 HTTP 的**（PHP 打 Go 的 `/api/db/**` 读回集群自省），所以它与直接消费 Herald 数据库的 webhook 不同，调用方通过 HTTP 读取诊断。它值得单独一节的地方，是它同时是好几个「第一」的反面：它的诊断接口**只读**（不建库、不建表、不跑迁移，只 `SHOW` / `SELECT` / `INFORMATION_SCHEMA`），又像 render 那样**由入站请求驱动**（七条路由全是「有人来问、答一句」，没有后台循环），所以它既没有 webhook 第 38 条那种「必须替换不能并存」的耦合，也没有 taskqueue 那种双写同一张表的隐患——**观察一个不改动它的集群，多一个观察者不会弄坏任何东西**。
 
 整节的判据与第五、七节相同：不是「PHP 会不会报错」，而是「破坏之后还有谁能发现」。按这个判据本节分五组，全部是静默型，只有最后一条（11.5 的编排约束）例外——它会让首启死锁，不是静默失效。
 
@@ -1216,7 +1167,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 映射由 `codeForKind` 完成（`errors.go`）：域内先把驱动错误按 errno 分类成 `DBError`（`mysqlerr.go`，access-denied 一族 → `kindAccessDenied`，2006/2013 连接中断 → `kindUnreachable`），handler 的 `fail` 再把可被调用方处置的 kind 翻成上面三个码，**并且只答一句通用文案**——`genericMessage` 只说「哪一类东西出了问题」，绝不带主机名、库名或查询。一个通过了 token 校验的服务间调用方仍不该从响应体里拿到集群拓扑；真正的错误留给 `slog` 日志（走 `ERR_INTERNAL` 那条 `return err` 的路径）。
 
-**`ERR_READONLY` 目前是一条定义了但七条只读路由都到不了的码。** 它随 `Router` 的只读降级逻辑（抄自 Phorge 的 `PhabricatorLiskDAO`：连不上 master 时翻只读、后续写被 `GetWriter` 拒成 `ERR_READONLY`）一起从旧服务搬来，保留是为了忠实复现 Phorge 的路由/降级语义、也为后续可能的写路径留着接口；但当前七个 handler 全是只读探测，走各 service 自己开的短连接，不经过 Router 的写入分支。**别因为「用不到」就把它删掉**，也别把它塌进平台码——它的语义是调用方可处置的，与另外两个同理。见 [`../../docs/modules/dbapi.md`](../../docs/modules/dbapi.md) 第 1、6 节。
+`ERR_READONLY` 属于共享只读连接的拒写语义，当前诊断 handler 不提供写入路由。旧 Router/事务/写重试已迁到 `internal/dbproxy`，不在 db-api 的运行请求路径上；不能用保留该错误码推断已有写 API。见 [ADR 0001](../../docs/adr/0001-isolate-db-proxy.md)。
 
 ### 11.4 库名与表名约定：都是 Phorge 的，不能顺手现代化
 
@@ -1228,7 +1179,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 
 ### 11.5 `/readyz` 不能查表、探测 DSN 不能带库名（编排约束）
 
-这一条是第 8.7 节那条的**逐字翻版，而且走得更远一步**，所以本节结论先写在前面：**本服务的探测 DSN 根本不带库名，healthcheck 打 `/healthz` 而非 `/readyz`，phorge-fork 侧对它的依赖必须是 `service_started` 而非 `service_healthy`。** 三者任一被「顺手修正」都会让首启死锁。
+这一条是第 8.7 节那条的**逐字翻版，而且走得更远一步**，所以本节结论先写在前面：当前编排使用不带库名的探测 DSN、`/healthz` 容器检查和 `service_started` 依赖。关键约束是迁移角色不能等待由它自身创建的库或 schema。
 
 `/readyz` 的判据只有一条：至少一台配置的 master 能被 ping 通（`anyReachable`）。看起来该加的第二条——查一下 `{namespace}_meta_data` 或 `patch_status` 在不在——是一个闭环，与 file-storage / webhook 同源：这个库由 Phorge 的 `bin/storage upgrade` 建，那条命令跑在**排在本服务之后启动**的 Phorge 容器里，于是本服务等一个只有 Phorge 能建的库、Phorge 等本服务健康，两个容器一起停在启动阶段。
 
@@ -1242,7 +1193,7 @@ gorge-worker 租到一个自己没有本地实现的 task class 时，经 condui
 | ping **不带库名的 DSN** 是安全的 | 成立——这正是 db-api 采取的形状 |
 | ping **带 `{namespace}_meta_data` 的 DSN** 是安全的 | **不成立**——那个库由 Phorge 建，探针会重新指回等它的那个容器 |
 
-所以别把 healthcheck 改成 `/readyz`、别把依赖改成 `service_healthy`、也别为了「探得更实」给探测 DSN 补上库名——三者都会把这个躲开的死锁请回来。这个 compose 文件本身不声明 MySQL 也不声明 Phorge，所以那里没有 `depends_on` 要写，`service_started` 这条约束活在 phorge-fork 的编排里。见 [`../../deploy/compose/docker-compose.yml`](../../deploy/compose/docker-compose.yml) 里 `gorge-db-api` 那段注释、[`../../docs/modules/dbapi.md`](../../docs/modules/dbapi.md) 第 3.5 节，与本文件第 8.7 节。
+不要给 bootstrap 探测 DSN 补上待迁移的库名或表检查。单独改为等待不查库名的 readiness，或等待 `/healthz` 的 service_healthy，并不必然死锁；是否形成闭环取决于实际探针与依赖图。当前部署选择 service_started，变更须验证全新数据卷启动。这个 compose 文件本身不声明 MySQL 也不声明 Phorge，所以那里没有 `depends_on` 要写，`service_started` 这条约束活在 phorge-fork 的编排里。见 [`../../deploy/compose/docker-compose.yml`](../../deploy/compose/docker-compose.yml) 里 `gorge-db-api` 那段注释、[`../../docs/modules/dbapi.md`](../../docs/modules/dbapi.md) 第 3.5 节，与本文件第 8.7 节。
 
 ### 改动本节任何一条之后怎么验证
 
@@ -1267,69 +1218,20 @@ curl -s -H 'X-Service-Token: dev-token' http://127.0.0.1:8080/api/db/setup-issue
 
 ## 附：鉴权与响应信封
 
-使用共享信封的 PHP 客户端（Render / Mailer / Search / FileStorage / Webhook / DB，共同的请求构建与信封解析已抽到 `PhabricatorGorgeServiceClient` 基类）依赖以下两点，改动会直接打断 PHP 侧：
+普通 JSON 客户端共用 `PhabricatorGorgeServiceClient` 的请求构建与 `{data,error}` 解析。默认信封与平台错误码见 [platform](../../docs/platform.md)，不能将其推广为所有域的强制响应协议。
 
-（Webhook 那个是六个里的异类，值得知道：其余五个都是它们所代表的那份能力的**唯一**入口，而 webhook 的投递走数据库、与这个类无关——它上面最要紧的成员因此不是任何一个请求方法，而是 `isDeliveryDelegated()` 这个谓词。见 9.7。db-api 是六个里最规矩的一个，它的七条路由全走这个基类，没有 webhook 那样的旁路。）
+**鉴权**：PHP 客户端使用 `X-Service-Token`。平台默认支持 query token，但 db-api、文件 lifecycle、搜索 projection、image、maintenance、integrations 和 gitea meta 等路由显式禁用它；具体注册以域 handler 为准。notification 遵循 Aphlict，不鉴权。部分服务允许空 token 关闭鉴权，image/maintenance/integrations 等受保护能力要求非空值；不要从平台默认推断业务启动要求。
 
-**鉴权**：请求头 `X-Service-Token` 优先，查询参数 `?token=` 兜底；服务端 token 配置为空时全部放行。PHP 客户端走的是请求头。
+**响应**：普通 JSON API 在 data/error 中恰有一个非空。路由失败、BodyLimit 和 recover 默认也由 httpx 生成错误信封；HEAD 协议不允许响应体。健康探针是裸状态 JSON。成功文件读取、上传会话数据读取/图片二进制输出、Prometheus metrics、Conduit 与 Aphlict 各有独立协议。空文件是合法成功，按状态码和约定 Content-Type 判断，不按 body 是否为空判断。
 
-**响应信封**：`/api/**` 返回 `{data, error}`，`data` 与 `error` 恰有一个非空。PHP 客户端先检查 `$envelope['error']`，非空则抛异常（异常消息里带 `error.code`），否则返回 `$envelope['data']`。
+**错误码**：平台提供 ERR_BAD_REQUEST、ERR_UNAUTHORIZED、ERR_NOT_FOUND、ERR_METHOD_NOT_ALLOWED、ERR_TOO_LARGE、ERR_INTERNAL。域码与扩展执行冲突码见对应模块，不能维护一份全仓固定总数。httpx.Fail 已应答的域码不会被全局处理器覆写；ERR_INTERNAL 的驱动细节只进日志。
 
-这条对没进到 handler 就失败的请求同样成立。`go/internal/platform/httpx/errors.go` 通过 `fiber.Config.ErrorHandler` 替换框架默认处理器，所以路由不匹配、请求体超过传输上限、handler panic 被 Recover 兜住这几种情况，PHP 客户端拿到的仍是信封，而不是 Fiber 默认的纯文本响应——后者会让客户端既读不到 `error` 也读不到 `data`，退化成一句语焉不详的解析失败。**别把这个处理器摘掉，也别绕开 `httpx.New()` 另建 Fiber app。**
+- mailer 的 ERR_PERMANENT_FAILURE 改变 PHP 的重试行为；ERR_SEND_FAILED 用于可重试投递失败，见第六节。
+- search 的操作码进入通用 PHP service exception，用于识别失败类别，不代表存在对应 PHP 分支，见 [findings 第 21 条](../../docs/findings.md)。
+- file-storage 的 ERR_NO_ENGINE 区分没有可用后端与尝试后端失败，见第八节。上传/删除生命周期另有协议错误。
+- db-api 的 ERR_DB_UNREACHABLE、ERR_DB_ACCESS_DENIED 与只读守卫 ERR_READONLY 见第十一节；当前只读路由不会产生写拒绝。
+- taskqueue 的 ERR_LEASE_CONFLICT 和 ERR_EVENT_CONFLICT 是恢复与幂等协议的一部分，不能作为普通网络重试；operations 观测失败不等于队列为空，见 [taskqueue](../../docs/modules/taskqueue.md)。
 
-唯一不带信封的错误响应是 `HEAD` 请求：协议不允许带响应体，只有状态码。PHP 客户端只发 POST/GET，不受影响。
+传输上限由各二进制的 httpx.Config.BodyLimit 决定，域限制还可更小；实际配置见入口和模块文档。不能仅凭 GET/无 body 的正常调用断言某个服务永远不会遇到传输拒绝。
 
-平台级错误码六个：
-
-| 码 | 状态 | 出现场景 |
-|---|---|---|
-| `ERR_BAD_REQUEST` | 400 | 请求体不是合法 JSON |
-| `ERR_UNAUTHORIZED` | 401 | token 缺失或不匹配 |
-| `ERR_NOT_FOUND` | 404 | 没有路由匹配 |
-| `ERR_METHOD_NOT_ALLOWED` | 405 | 路径存在但不接受该方法 |
-| `ERR_TOO_LARGE` | 413 | 请求体超限 |
-| `ERR_INTERNAL` | 500 | panic 或其他非预期失败 |
-
-`ERR_NOT_FOUND` 对 PHP 侧最有诊断价值：`gorge.render.uri` 尾部多一个斜杠、或 base URL 拼接出双斜杠时，拿到的就是它；`cluster.search` 条目的 host/port 拼错时同理。两个路由细节别误判（对 `/api/highlight/**`、`/api/diff/**`、`/api/mailer/**`、`/api/search/**`、`/api/file/**`、`/api/webhook/**` 六个分组都成立）：分组的鉴权早于路由解析，不带 token 打不存在的路径返回 401 而不是 404；同样在这些分组下方法用错返回 404 而不是 405（分组为了鉴权匹配了所有方法），所以 `ERR_METHOD_NOT_ALLOWED` 实际只在健康探针路径上见得到。
-
-`ERR_TOO_LARGE` 有**三个**来源，同码是刻意的，PHP 客户端按码分支即可，不需要知道是哪一道：
-
-| 来源 | 阈值 | 检查点 |
-|---|---|---|
-| 域级字节数 | `GORGE_RENDER_MAX_BYTES` / `GORGE_DIFF_MAX_BYTES`（各默认 1MiB） | handler 内 |
-| 传输层 body | 固定 2M | `httpx` 中间件 |
-| LCS 表单元数 | 4,000,000（编译期常量，仅 diff 域） | 切完行之后 |
-
-默认配置下只会命中第一道；把域级上限调到 2M 以上就会改走第二道。第三道不能被前两道替代：LCS 表分配的是 `n*m` 而非行数，2001 行对 2001 行只有几十 KB 却要一张四百万单元的表，而 100 行对 100000 行反而便宜、必须放过。
-
-diff 域的字节检查算的是 **`len(old) + len(new)` 之和**，不是任一侧——两个 600 KiB 的文件加起来就超限了。
-
-`ERR_INTERNAL` 的 `message` 恒为一句通用文案，panic 值与堆栈只进 `slog` 日志。**排查 500 要看服务日志，不要指望响应体。**
-
-**db-api 的三个也没落进平台码，理由与 mailer 那两个同源——调用方需要区分。**`ERR_DB_UNREACHABLE`(503) / `ERR_READONLY`(409) / `ERR_DB_ACCESS_DENIED`(403) 分别对应「数据库 down 或还没起来」「写打在一个已降级只读的连接上」「库用户权限不足」，PHP 侧据不同的码走不同动作（等编排、改发 master、GRANT），塌成一个码就分不开了，见第十一节 11.3。其中 `ERR_READONLY` 当前是一条**定义了但七条只读路由都到不了**的码——它随 Router 的只读降级逻辑一起保留，不是遗漏。
-
-域级错误码都是迁移前就有、Phorge 侧已经在用的码，故未收敛进平台码：render 域的 `ERR_HIGHLIGHT_FAILED`(500)，mailer 域的 `ERR_PERMANENT_FAILURE`(422) 与 `ERR_SEND_FAILED`(502)，search 域的 `ERR_INDEX_FAILED` / `ERR_SEARCH_FAILED` / `ERR_INIT_FAILED` / `ERR_CHECK_FAILED` / `ERR_STATS_FAILED`（均 502），file-storage 域的 `ERR_NO_ENGINE`(503)，以及 db-api 域的 `ERR_DB_UNREACHABLE`(503) / `ERR_READONLY`(409) / `ERR_DB_ACCESS_DENIED`(403)。全局错误处理器不会覆盖它们——`httpx.Fail` 写响应前会在 Fiber `Locals` 标记已应答，处理器见到标记就不再落笔。
-
-**webhook 域一个都没加，而这是决定而不是遗漏。**它的两个端点都只做一件事——数行——所以唯一的失败是数据库没答话，平台的 `ERR_INTERNAL` 已经说完了；而真正需要被区分出来的那个状态（「服务活着但连不上队列」）由 `/readyz` 报告，还附带一句失败原因，一个新码在这上面改进不了任何东西。这个选择由 `tests/contract/webhook/unavailable/stats-database-unreachable.json` 从**反面**钉住：既然没有域码承载细节，message 就必须保持通用、body 不得泄漏 SQL、库名、主机或端口。**它与 diff 域「刻意没有域级错误码」不是同一个理由**——diff 是「没有可报告的失败模式」，webhook 是「失败模式只有一个，而平台码已经说完了」。判据是那个失败在调用方那里是否引出一个与平台码不同的动作。
-
-**taskqueue 与 worker 也都没加，同 webhook 的理由。**taskqueue 的失败要么是入参错（`ERR_BAD_REQUEST` 400、任务不存在 `ERR_NOT_FOUND` 404），要么是后端没答话（`ERR_INTERNAL` 500）；「服务活着但连不上队列」同样由 `/readyz` 报告。这个选择由 `tests/contract/taskqueue/unavailable/`（`stats.json`、`tasks.json`）从反面钉住：message 保持通用、body 不得泄漏 SQL、库名、主机、端口或「connection refused」。worker 的 `/api/worker/stats` 读进程内计数器，永不失败，连错误路径都没有。所以**域级错误码总数是十二个**（webhook / taskqueue / worker 三个域各自都没加，db-api 则带来三个，见上）。
-
-mailer 那两个的区别不是文案而是**行为**，见第六节 6.2；另外 mailer 域的后端失败一律落在 422 或 502，**不落 500**——那里的 500 只意味着服务自己出了问题。search 域的五个同理：全部 502，500 在那个域只意味着服务自己坏了。
-
-**但 search 那五个目前在 PHP 侧没有消费者。**`PhabricatorGorgeSearchClient` 没有覆盖 `newServiceErrorException()`（`PhabricatorGorgeMailerClient` 覆盖了，因为 6.2 那两个码必须分道），所以十一个码全部塌成同一个通用异常，码本身只作为文本活在异常消息里。这是当前**刻意保留**的行为，登记在 [`../../docs/findings.md`](../../docs/findings.md) 第 21 条——记录事实，不是提议改 Go 侧。五个码分开的价值在 `bin/search` 与运维读日志时兑现，不在 PHP 的异常分支上。
-
-`ERR_NO_ENGINE` 与它们又不同：它区分的是**「一次都没试」与「试了并且坏了」**。503 意味着没有任何已配置的后端会接下这个文件（一个后端都没配，或者这个大小没有后端能收），是一个运维改配置就能解决的状态，也是 Phorge 侧 setup check 唯一能据以行动的写失败；而某个后端真的坏了落 500。把两者混成一个码，「服务没配好」与「存储挂了」在 PHP 侧就不可分了。
-
-**diff 域刻意没有域级错误码。**两个引擎都没有可报告的失败模式：prose 引擎是全函数，unified 引擎唯一会拒绝的是过大的输入，而那已经是 `ERR_TOO_LARGE` 了。在那里造一个码，它永远不会被返回。新增域级错误码时加在自己的域包里，不要塞进 `platform/httpx`。
-
-**空 source 不是错误**：`{"source": ""}` 返回 200 与空 `html`，不返回 400。Phorge 渲染空文件时依赖这个行为。
-
-**健康探针不套信封**：`GET /`、`GET /healthz`、`GET /readyz` 返回裸 `{"status":"ok"}`。这是给容器探针和负载均衡用的，不要「顺手统一」成信封格式。
-
-本附录讲的是 `/api/**`，即 render、diff、mailer、search、file-storage、webhook、taskqueue、worker 与 db-api 九个域——九者的鉴权口径完全一致，信封口径有一处**记录在案的例外**，另外传输上限各不相同：
-
-- **例外只有一个**：file-storage 的 `GET /api/file/blob` **成功**时答原始 `application/octet-stream` 字节而非信封，失败仍是信封。所以那一条路径上按状态码分支，别按 body 形状分支，理由与陷阱见第八节 8.6。除它之外，本附录对九个域一字不差地成立——包括 file-storage 自己的另外三条路径，以及它端口上任何由框架产生的响应（`TestUnknownPathKeepsTheEnvelope` 断言这一点，webhook 与 taskqueue 域各有一份同名的）。
-- **`ERR_TOO_LARGE` 的来源**：render / diff 的传输层上限是 `2M` 并另有域级字节检查；mailer 是 `10M`（base64 让附件涨三分之一），没有域级字节检查，正文超限是静默截断而不是拒绝；search 用平台默认的 `2M`，也没有域级字节检查——一份文档多大是 Phorge 的事，而语料大到成问题时那是存储的配置问题，不是线上的；file-storage 是 **`16M`**（文件是裸请求体），它的「域级」检查是各存储引擎自己的 `MaxFileSize()`——只有在请求**指名了引擎**时才答 413，未指名而所有引擎都收不下时答的是 503 `ERR_NO_ENGINE`；webhook 用平台默认的 `2M` 而且**永远碰不到它**，因为它的两个端点都是 `GET`、没有请求体；taskqueue 用平台默认的 `2M`（入队的任务负载都远小于此），worker 只有一个 `GET` 状态端点、同样碰不到；db-api 的七条路由全是 `GET`、没有请求体，同样碰不到，用平台默认的 `2M`。
-- **webhook、taskqueue 与 worker 只在这个附录的范围内占一半。**它们的 `/api/**` 完全照本附录办事，但真正要紧的契约在别处：webhook 在它**发出去**的那份文档上（第九节），taskqueue 与 worker 在它们**读写的那几张 worker 表**上（第十节），那些东西都不由本仓库的任何一个端点承载。别把「这些端点都符合附录」读成「这几个域的兼容面已经覆盖了」。db-api 与它们相反——它的契约面**完全**落在这些端点上（字段名、错误码都在应答里），只有 11.4 的库/表名约定是个例外，那是它查询的对象而非它的应答。
-
-**notification 的两个端口不在这个范围内**：它们不鉴权、成功响应不套信封、client 口的 `GET /` 连探针都不是。要改那两个端口先看第五节，不要照这一节的口径推。
+Webhook 的第三方出站字节/签名、队列持久租约与业务副作用，以及图片的资源边界，都不由 JSON 信封一致性证明。对应契约见各模块与 [operations](../../docs/operations.md)。

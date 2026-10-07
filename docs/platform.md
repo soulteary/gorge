@@ -1,6 +1,6 @@
 # 平台层
 
-`go/internal/platform/` 下的四个包，被所有模块共用，且不允许反向依赖任何业务域（约束与强制手段见 [`architecture.md`](architecture.md) 第 3 节）。
+`go/internal/platform/` 下的共享包，被所有模块共用，且不允许反向依赖任何业务域（约束与强制手段见 [`architecture.md`](architecture.md) 第 3 节）。
 
 | 包 | 职责 |
 |---|---|
@@ -8,6 +8,8 @@
 | `auth` | 共享密钥中间件 |
 | `health` | 容器探针端点 |
 | `config` | 环境变量与 JSON 文件配置读取 |
+| `conduitclient` | 带服务 token 的表单编码 Conduit 客户端 |
+| `operations` | 有界只读数据库库存、容量与物理身份观测 |
 
 ## 1. httpx：统一的 HTTP 引导
 
@@ -35,7 +37,7 @@ type Response struct {
 }
 ```
 
-`/api/**` 的响应都是这个形状，`data` 与 `error` 恰有一个非空（一处记录在案的例外见下）。`OK(c, data)` 与 `Fail(c, status, code, message)` 是两个写入口。
+普通 JSON API 默认使用这个形状，`data` 与 `error` 恰有一个非空。域协议可以使用独立响应形状，见下文。`OK(c, data)` 与 `Fail(c, status, code, message)` 是两个写入口。
 
 平台错误码六个，域包可以定义自己的码，但不得重定义这六个：
 
@@ -48,7 +50,7 @@ type Response struct {
 | `ERR_TOO_LARGE` | 413 | 请求体超限 |
 | `ERR_INTERNAL` | 500 | panic 或其他非预期失败 |
 
-**`/api/**` 现在有一处记录在案的例外：成功的 `GET /api/file/blob` 答的是原始 `application/octet-stream` 字节，不是信封；它的失败仍然是信封。**所以调用方按**状态码**分支，200 就把 body 当文件——不能按「body 是不是空的」分，0 字节文件是一个合法的 200 加空 body。这条例外与第 3 节那条（健康探针答裸 `{"status":"ok"}`）是同一性质的东西：**平台层承诺的是一套默认形状，不是一条无法退出的强制**。
+**成功的 `GET /api/file/blob` 返回原始 `application/octet-stream` 字节，失败仍是信封。图片输出、maintenance metrics、Conduit 与 Aphlict 也有各自的响应协议，见对应模块文档。**所以调用方按**状态码**分支，200 就把 body 当文件——不能按「body 是不是空的」分，0 字节文件是一个合法的 200 加空 body。这条例外与第 3 节那条（健康探针答裸 `{"status":"ok"}`）是同一性质的东西：**平台层承诺的是一套默认形状，不是一条无法退出的强制**。
 
 **平台层为它没有改任何代码，这一点值得记下来。**`httpx` 从不强迫 handler 用 JSON 应答——`OK()` 是一个可以不调的入口，而不是一道中间件——所以 file-storage 的 handler 直接调 `c.SendStream(rc, size)` 就得到了它要的形状；失败路径上照旧走 `Fail()` 与 `errorHandler`，信封一个字都没少。换句话说，「域包要一种平台层没预设的响应形状」这件事，在当前设计下的正确答案是**域包自己写**，不是给平台层加开关。要点是别把它推广开：这是一个 handler 的性质，不是这个端口的性质，`TestUnknownPathKeepsTheEnvelope` 断言同一进程上其余任何响应仍然是信封。
 
@@ -67,7 +69,7 @@ type Response struct {
 两个特例：
 
 - **已应答检查**。Fiber 没有 `Response().Committed`，所以 `httpx.OK` / `Fail` 会在 `Locals` 记录已应答；全局处理器看到标记就不再改写。这是域级错误码不会退化成 `ERR_INTERNAL` 的原因，也避免了往响应体里追加第二个 JSON 文档。`render/http_test.go` 的 `TestHighlightFailedSurvivesTheErrorHandler` 用「先 Fail 再抛错」的形状把它钉住，并断言解码后 `decoder.More()` 为假。
-- **HEAD 请求只写状态码**。协议不允许 HEAD 响应带 body，处理器用 `SendStatus` 表达失败。这是信封承诺唯一的例外。
+- **HEAD 请求只写状态码**。协议不允许 HEAD 响应带 body，处理器用 `SendStatus` 表达失败。HEAD 不返回 JSON body；其他域协议例外见第 1.1 节。
 
 ### 1.3 状态码到错误码的映射是双向对齐的
 
@@ -75,7 +77,7 @@ type Response struct {
 var statusCodes = map[int]string{ ... http.StatusRequestEntityTooLarge: CodeTooLarge ... }
 ```
 
-同一个状态码，不论由 Fiber 还是由 handler 产生，都报同一个码。413 是实际会发生的那一例：域级限额与传输层限额是两道独立的检查，客户端不应该需要区分是哪一道挡下的。细节见 [`modules/render.md`](modules/render.md) 第 3.2 节。
+平台错误处理器按状态码映射平台码；域 handler 用 `Fail` 写出的域级码保留原样，不强制同一状态码使用同一码。413 是实际会发生的那一例：域级限额与传输层限额是两道独立的检查，客户端不应该需要区分是哪一道挡下的。细节见 [`modules/render.md`](modules/render.md) 第 3.2 节。
 
 ### 1.4 `RunAll`：一个进程多个监听器
 
@@ -103,7 +105,7 @@ if presented == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(expec
 
 - 用 `crypto/subtle` 做定长时间比较，避免按字节短路的比较泄漏 token 前缀。
 - `X-Service-Token` 请求头优先，`?token=` 查询参数兜底，后者是给无法设置请求头的场景（运维手册里的 curl 单行命令、浏览器直接打开的链接）。PHP 客户端走请求头。
-- 服务端 token 为空时中间件整个跳过。这是本地开发与 compose 默认值不需要额外配置的原因，代价是**空 token 等于完全不鉴权**，只在私网可接受。
+- 服务端 token 为空时中间件整个跳过；部分域或持久扩展在启动时拒绝空 token，不能将中间件的可选语义当成全部服务的部署规则。对允许空 token 的路由，**空 token 等于完全不鉴权**，只在私网可接受。
 
 中间件挂在路由组上，它不知道自己保护的是哪些路径。由此产生一个反直觉的行为：**鉴权早于路由解析**，所以不带 token 打一个不存在的路径返回 401 而不是 404。副作用是不会向未认证调用方泄漏哪些路径存在。
 
@@ -140,10 +142,16 @@ ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR"),
 
 `EnvInt` 在值解析失败时回落到默认值，而不是返回零值。`EnvBool` 同理，使用 `strconv.ParseBool`。
 
-`LoadJSONFile[T any](path, dst *T)` 用泛型解码到调用方预填了默认值的结构体，文件里没提到的字段保持原值——「文件只覆盖它提到的东西」这一语义因此不需要每个服务各写一遍。域侧的用法是：先填默认值，**再从环境变量取 token**，最后让文件覆盖其余字段，这样密钥可以单独通过 Kubernetes Secret 之类注入而不进配置文件。
+`LoadJSONFile[T any](path, dst *T)` 用泛型解码到调用方预填了默认值的结构体，文件里没提到的字段保持原值——「文件只覆盖它提到的东西」这一语义因此不需要每个服务各写一遍。render/mailer/search/conduit 的文件模式先填默认值与环境 token，再整体解码 JSON。显式 `serviceToken` 会覆盖环境值，包括空字符串；要通过环境单独注入 token，JSON 中应省略该键。文件模式下未提供的域字段保持预填默认值，不继续读取对应环境变量。具体来源优先级以域的 `LoadFromFile` 为准。
 
 ## 5. 覆盖率
 
 覆盖率是运行结果，不在模块说明里复制一份会随提交失效的数字。当前精确值用 `make cover` 生成；Release 或手动触发的 [Go Test Report workflow](../.github/workflows/test-report.yml) 也会保存报告 artifact。
 
 平台层的测试重点是行为边界：`RunAll` 用 `:0` 端口起真实 listener 并覆盖信号关闭；错误处理测试锁住信封、HEAD 与已应答分支；auth、health、config 分别覆盖鉴权、探针形状与配置回退。哪些边界无法由包内覆盖率准确表达，见 [`testing.md`](testing.md) 第 5 节。
+
+## 6. Conduit 客户端与只读观测
+
+`conduitclient` 共用表单编码传输和 Conduit 信封解析，领域业务仍由调用方决定。请求期限来自调用 context，不能给委派任务另加与租约不一致的固定等待时间。
+
+`operations` 接收域提供的连接与登记表清单，执行有界只读查询并逐表保留 unavailable。它不持有共享连接池、不写业务表，不将缺失观测填成零；近似分配字节和各次查询计数不是跨表一致快照。其报告由 [operations.md](operations.md) 的统一审计与运维工具消费。

@@ -1,6 +1,6 @@
 # conduit 模块
 
-Conduit API 的反向代理网关：接收 `ANY /api/:method`，完成 Service Token 鉴权与基于客户端 IP 的令牌桶限流后，反代到上游 Phorge PHP 的 `/api/*`。它是本仓库里唯一一个**消费方是其它 Go 服务而非 Phorge PHP** 的域——其它域都在 Phorge 前面被 Phorge 调用，而它挡在 Phorge 前面、被别的 Go 服务调用。
+Conduit API 的反向代理网关：接收 `ANY /api/:method`，完成 Service Token 鉴权与基于客户端 IP 的令牌桶限流后，反代到上游 Phorge PHP 的 `/api/*`。它为 worker、integrations、gitea 等 Go 服务提供访问 Phorge Conduit 的统一入口。
 
 | | |
 |---|---|
@@ -49,11 +49,11 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 
 1. 从路由参数取方法名，为空返回 400 `ERR-CONDUIT-CORE`。
 2. 拼 `{upstream}/api/{method}`，保留原始 query string。
-3. 用原始请求的 Context 构建上游请求（上下文取消能传播到上游）。
+3. 使用 Fiber 请求 context 构建上游请求，另外由配置的 HTTP client 超时约束调用；不能保证客户端断开就立即取消上游。
 4. 复制请求头，过滤 8 个 hop-by-hop 头（`Connection`、`Keep-Alive`、`Proxy-Authenticate`、`Proxy-Authorization`、`Te`、`Trailer`、`Transfer-Encoding`、`Upgrade`）。
 5. 注入 `X-Forwarded-For`、`X-Forwarded-Proto`、`X-Conduit-Gateway: go-conduit`。
 6. 通过复用的 HTTP 客户端发到上游；`CheckRedirect` 设为 `http.ErrUseLastResponse`，**不自动跟随重定向**——重定向响应原样回给调用方。
-7. 成功则把上游状态码、响应头、响应体**原样透传**（流式复制 body）。
+7. 完整缓冲上游 body 后原样发送字节和状态码，响应头过滤 hop-by-hop 项；读取失败返回 Conduit 502 错误。当前不使用流式转发。
 
 ### 3.2 令牌桶限流
 

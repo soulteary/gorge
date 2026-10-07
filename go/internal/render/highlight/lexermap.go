@@ -1,15 +1,15 @@
 package highlight
 
-// buildLexerMap mirrors the Pygments lexer alias map from
-// PhutilPygmentsSyntaxHighlighter::getPygmentsLexerNameFromLanguageName
-// to ensure PHP sends the same language names and gets correct results.
+// buildLexerMap preserves the historical Pygments aliases formerly held by
+// PhutilPygmentsSyntaxHighlighter. PHP now delegates language highlighting to
+// Gorge; its old Pygments class is a plain-text compatibility shim.
 //
-// The keys are case-sensitive, exactly as the PHP table is; see the
+// The keys retain the historical case-sensitive semantics; see the
 // mixed-case group at the bottom and resolveLexer for why.
 //
-// Target names are spelled exactly as PHP spells them, even where Chroma
+// Target names retain historical PHP spellings, even where Chroma
 // accepts a synonym ("rb" not "ruby", "coffee-script" not "coffeescript"), so
-// the two tables stay diffable. The only entries that deviate are the ones
+// historical mappings remain recognisable. Entries that deviate are the ones
 // where the PHP spelling would break: they carry a comment saying so.
 func buildLexerMap() map[string]string {
 	return map[string]string{
