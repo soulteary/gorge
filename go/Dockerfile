@@ -31,6 +31,8 @@ FROM alpine:${ALPINE_VERSION}
 
 ARG SERVICE=gorge-render
 ARG PORT=8140
+# Optional HTTPS APK mirror; preserve the Alpine version and repository paths.
+ARG ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine
 
 # busybox already provides the wget the healthcheck below needs.
 #
@@ -41,7 +43,9 @@ ARG PORT=8140
 # the volume is created root-owned and the unprivileged user below cannot write
 # a single file into it — which shows up as every upload failing on a service
 # whose healthcheck is green.
-RUN apk add --no-cache ca-certificates \
+RUN case "$ALPINE_MIRROR" in https://*) ;; *) echo "ALPINE_MIRROR must use HTTPS" >&2; exit 1 ;; esac \
+  && sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_MIRROR%/}|g" /etc/apk/repositories \
+  && apk add --no-cache ca-certificates \
   && adduser -D -u 10001 gorge \
   && install -d -o gorge -g gorge -m 0755 /var/lib/gorge/files
 
