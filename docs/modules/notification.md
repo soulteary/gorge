@@ -41,7 +41,15 @@ diff 并进 render 的理由是「两个域都是无外部依赖的纯计算，�
 | admin `:22281` | phorge 容器里的 PHP | compose 内网服务名（`gorge-notification`），生产部署里**不要**映射到宿主 |
 | client `:22280` | 用户浏览器里的 `JX.Aphlict` | **浏览器可达的外部地址**，必须映射到宿主 |
 
-client 那一条填错时的表现值得单独记一下：`PhabricatorNotificationServerRef::getWebsocketURI()` 是把地址**发给浏览器**的，所以填了 `gorge-notification` 这种只在 compose 内网解析得开的名字，服务端一切健康、Config → Cluster → Notification 页面两台服务器都显示正常，只有每个真实用户的浏览器连不上。**服务端没有任何一处会察觉到这件事。**
+`PhabricatorNotificationServerRef::getWebsocketURI()` 会把 client 地址交给浏览器，因此不能填写只有 Compose 内网能解析的服务名。地址是否可达取决于发起连接的位置：本地开发的浏览器可以连接宿主机的 `127.0.0.1:22280`，但 PHP 容器访问同一个地址时，`127.0.0.1` 指向 PHP 容器自身。PHP 无法访问这条公开地址，不能据此断言浏览器断线；远程用户浏览器中的 `127.0.0.1` 则指向用户自己的机器，应改用其可达的域名和端口。
+
+### 状态页分别观察服务端与当前浏览器
+
+通知服务器状态页中，启用的 admin 行由 PHP 请求 `/status/`，报告服务端是否可访问管理端口及其统计。真实的 admin 网络、响应或协议错误仍应明确展示；全局通知政策关闭或条目禁用时不应发送探测请求。client 行描述给浏览器使用的公开入口，状态页不再用 PHP 容器的 HTTP 探测结果代表浏览器连接。
+
+页面单独展示当前浏览器的实时通知连接状态，复用 `JX.Aphlict` 客户端的状态变化。多条 client 配置表示候选入口，浏览器实际使用选中的入口；当前连接状态不表示每一条入口都已经连接或逐一验证。关闭通知、没有启用的入口、页面协议不兼容或未登录时，显示相应状态，而不能从 admin 健康或配置列表推断浏览器已连接。
+
+这项浏览器状态也不等于通知收件证明。admin 接受消息、WebSocket 已连接、消息符合实例和订阅过滤、用户收到具体通知，是不同的观察点。排查时保留 `notification.servers` 中的公开 host/protocol/port/path，并检查生成的 WebSocket URI 与 `cluster.instance`；不要为让 PHP 容器探针成功而把浏览器入口改成 Compose 服务名。
 
 镜像的 `HEALTHCHECK` 指向 admin 口（`deploy/compose/docker-compose.yml` 里传 `PORT: 22281`，`.github/workflows/release.yml` 的 matrix 里也带同一个值）。它可以指向任意一个口——两个口都注册了 `/healthz`——选 admin 是因为它是纯 HTTP，探针不必关心 WebSocket。这个构建参数只喂 `ENV GORGE_HEALTHCHECK_PORT`，服务本身不读它；漏传的话它会停在 render 的 8140 默认值上，探针打向一个没人监听的端口，容器会被标记 unhealthy，是否重启由编排决定。
 
@@ -106,7 +114,7 @@ func RegisterAdminRoutes(app fiber.Router, deps *AdminDeps) {
 
 | 端口 | 方法 | 路径 | 谁在调 | 鉴权 |
 |---|---|---|---|---|
-| client | GET | `/`、`/*` | 浏览器（WS 升级）／Phorge 的 `testClient()`（纯 HTTP，期望 501） | 无 |
+| client | GET | `/`、`/*` | 浏览器（WS 升级）／独立诊断的 `testClient()`（纯 HTTP，期望 501；不代表浏览器状态） | 无 |
 | client | GET | `/healthz`、`/readyz` | 容器探针（平台层注册） | 无 |
 | admin | POST | `/` | `PhabricatorNotificationServerRef::postMessage()`、以及 peer 的中继 | 无 |
 | admin | GET | `/status/` | `loadServerStatus()`，集群面板与 `PhabricatorAphlictSetupCheck` | 无 |
@@ -165,7 +173,7 @@ httpx.RunAll(servers...)
 | 一个非法的百分号转义（`100% done` 这种） | `url.ParseQuery` 报错 → 400 `invalid URL escape "% d"` |
 | 其他任何东西 | 整段 JSON 变成一个没有 `=` 的垃圾键，`msg["type"]` 是 nil，**照常答 200 加真 fingerprint** |
 
-第二行才是真正的失败模式。它**不产生任何错误**：PHP 侧的 `postMessage()` 成功返回，`messages.in` 照常增长，集群面板全绿，日志里连一条 4xx 都没有，只有消息内容被静默揉碎。
+第二行才是真正的失败模式。它**不产生任何错误**：PHP 侧的 `postMessage()` 成功返回，`messages.in` 照常增长，admin 状态与浏览器连接仍可正常，日志里连一条 4xx 都没有，只有消息内容被静默揉碎。
 
 **415 不是这条兼容约束的判据。** `application/x-www-form-urlencoded` 是 binder 认识的类型，所以真实流量可能被按错误格式成功解析。当前 handler 直接对 `c.Body()` 调 `json.Unmarshal`，让 JSON 语义独立于 Content-Type；测试必须检查进入 hub 的字段，而不能只看 200。
 
@@ -329,8 +337,8 @@ admin 与 client 两类必须都在，缺任一类启动即失败；顺带拒掉
 | 约束 | 谁会发现 |
 |---|---|
 | 5.1 双端口不可合并 | PHP 侧存配置时就抛异常，当场可见 |
-| 5.2 client 口 501 | `testClient()` 抛异常，集群面板报 Connection Error |
-| 5.3 admin 不套信封 | 没人报错；面板的 Uptime/Clients/Messages 列变空白或 0 |
+| 5.2 client 口 501 | 独立 HTTP 诊断的 `testClient()` 抛异常；当前浏览器状态由 WebSocket 客户端报告 |
+| 5.3 admin 不套信封 | 状态页校验顶层版本与统计字段，错误形状显示管理端连接错误 |
 | 5.4 不能用 binder | **没有任何一处发现** |
 
 ### 5.1 两个端口不可合并
@@ -341,9 +349,11 @@ admin 与 client 两类必须都在，缺任一类启动即失败；顺带拒掉
 
 `PhabricatorNotificationServerRef::testClient()` 把 501 当健康信号，拿到 200 抛 `Got HTTP 200, but expected HTTP 501`。这与平台层无条件注册的 `GET / → 200` 正面冲突，`httpx.Config.SkipRootProbe` 就是为这一条存在的，整个仓库只有这一个端口设它。响应体也是逐字节的 `HTTP/501 Use Websockets\n`（Aphlict 的 `AphlictClientServer.js` 原文，末尾换行在内）。
 
+这个协议约束仍然有效。状态页将公开入口与当前浏览器状态分开展示，并不把 client 的普通 HTTP 响应改为 200，也不把 PHP 能否访问公开地址作为浏览器可达性的结论。诊断命令的 501 只能证明命令执行位置可访问该 HTTP 入口；真实 WebSocket 连接还需要浏览器完成升级握手。
+
 ### 5.3 admin 的成功响应不套信封
 
-`POST /` 回裸 `{"fingerprint":"..."}`，`GET /status/` 回带点号键的扁平 map。PHP 用 `phutil_json_decode($body)` 之后直接 `idx($details, 'clients.active')`，套上 `{data,error}` 会让每个字段都取不到而**不产生任何错误**。这两个 handler 因此用 `c.JSON()`。键里的点是字面量，不是嵌套约定；`contracts/notification.go` 的 json tag 就是这些带点的字面串。
+`POST /` 回裸 `{"fingerprint":"..."}`，`GET /status/` 回带点号键的扁平 map。PHP 用 `phutil_json_decode($body)` 之后在顶层读取 `idx($details, 'clients.active')` 等字段，套上 `{data,error}` 会让这些字段全部取不到。通知状态页现在先校验顶层版本与统计字段，错误形状会显示管理端连接错误，避免空白统计被误认作健康响应。这两个 handler 仍用 `c.JSON()`。键里的点是字面量，不是嵌套约定；`contracts/notification.go` 的 json tag 就是这些带点的字面串。
 
 `history.age` 在 history 为空时必须是 `null` 而不是 0，所以 `AphlictStatus.HistoryAge` 是指针。
 
@@ -403,9 +413,9 @@ Phorge 用 `HTTPSFuture` 发裸 JSON，Content-Type 是 curl 的默认 `applicat
 
 ## 8. 排查时的三处反直觉
 
-- **client 口的 501 是正常的。** 用 curl 打它拿到 501 说明它是健康的；拿到 200 说明有人把 `SkipRootProbe` 摘了，而 Phorge 会因此报连接错误。
+- **client 口的 501 是正常的。** 独立 HTTP 诊断拿到 501，说明命令执行位置可访问讲 Aphlict 协议的入口；拿到 200 会使 `testClient()` 报协议错误。通知状态页不再执行这项公开地址的服务端检查，浏览器连接状态由 WebSocket 客户端单独报告。
 - **admin 口不鉴权。** 它没有 token、没有 origin 检查，任何能连上它的东西都能给任意用户推任意通知。所以生产部署里它**不应该映射到宿主**——`deploy/compose/docker-compose.yml` 现在把两个端口都映射出来是本地开发的便利，`deploy/compose/.env.example` 里 `GORGE_NOTIFICATION_ADMIN_PORT` 的注释写明了这一点并要求真实部署删掉那条映射。
-- **服务端全绿不代表通知能用。** 服务健康、集群面板双绿、`/status/` 计数正常，与「浏览器收到了通知」之间还隔着两件服务端观察不到的事：client 地址是否浏览器可达，以及消息内容有没有被揉碎（第 3.1 节）。真正的验收是两个浏览器窗口登录不同账号互相触发通知。
+- **服务端与浏览器状态分别判断。** admin 统计正常不能证明公开 client 地址浏览器可达；PHP 容器无法探测公开 loopback 地址，也不能证明浏览器断线。状态页的当前浏览器状态提供实际客户端连接的观察，仍不证明某条通知已送达。最终验收应在两个浏览器窗口登录不同账号互相触发通知，确认实例、订阅过滤和消息内容。
 
 对着跑起来的实例做最短验证的命令在 [`compat/phorge/README.md`](../../compat/phorge/README.md) 第 5.5 节末尾，`tests/e2e/notification.sh` 跑的就是那几条。
 

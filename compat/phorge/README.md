@@ -313,8 +313,8 @@ diff -U65535 -L 'a 9999-99-99' -L 'b 9999-99-99' a b
 | 约束 | 破坏之后谁会发现 |
 |---|---|
 | 5.1 双端口 | PHP 侧存配置时就抛异常，当场可见 |
-| 5.2 client 口 501 | `testClient()` 抛异常，集群面板报 Connection Error |
-| 5.3 admin 不套信封 | 没人报错；集群面板的 Uptime/Clients/Messages 列变成空白或 0 |
+| 5.2 client 口 501 | 独立 HTTP 诊断的 `testClient()` 抛异常；状态页不再将服务端探测公开地址的结果作为浏览器状态 |
+| 5.3 admin 不套信封 | 状态页校验顶层版本与统计字段，错误形状显示管理端连接错误 |
 | 5.4 不能用 binder | **没有任何一处发现。**请求答 200、fingerprint 合法、计数照常增长，只有消息内容被揉碎 |
 
 5.4 甚至连上面那个 catch 都用不上——它没有异常可吞，因为 POST 成功了。
@@ -335,7 +335,9 @@ diff -U65535 -L 'a 9999-99-99' -L 'b 9999-99-99' a b
 | admin `:22281` | phorge 容器里的 PHP | compose 内网服务名 |
 | client `:22280` | 用户浏览器里的 `JX.Aphlict` | **浏览器可达的外部地址** |
 
-client 那条填错不算破坏约定，但和 5.4 一样属于「服务端观察不到」的那一类：`getWebsocketURI()` 是把这个地址**发给浏览器**的，所以填成只在内网解析得开的服务名之后，服务端一切正常、`testClient()` 通过、集群面板双绿，只有每个真实用户连不上。
+`getWebsocketURI()` 把 client 地址交给浏览器，不能用 PHP 的网络视角替代浏览器的网络视角。Compose 服务名可能由 PHP 解析并通过独立 `testClient()` 检查，却无法由外部浏览器解析；本地开发的公开 `127.0.0.1` 可能由宿主机浏览器正常连接，却指向 PHP 容器自身而使服务端探测失败。保留浏览器可达的公开 host/protocol/port/path，不应为消除探测提示改成内网服务名。
+
+状态页分别展示启用 admin 的 PHP `/status/` 检查和当前浏览器的 `JX.Aphlict` 状态；client 行展示公开连接入口，不逐项宣称连接成功。多条 client 配置是候选入口，独立浏览器状态只描述当前客户端。全局通知关闭或条目禁用时不探测该条目；关闭、无可用入口、页面协议不匹配或未登录时，不能从 admin 健康推断浏览器连接。
 
 走 Traefik 之类反向代理时，client 条目改填 `path: "/ws/"` + 443 + https。注意 `path` **只对 client 类型合法**，给 admin 条目加 `path` 会被上面那个校验单独拒掉。
 
@@ -362,7 +364,7 @@ throw new Exception(
 
 响应体也照抄：逐字节 `HTTP/501 Use Websockets\n`，末尾那个换行也在内（Aphlict 的 `AphlictClientServer.js:78` 原文）。PHP 目前不读这个 body，`tests/contract/notification/client/` 的固件按原文断言它，因为它是「这个端口还在讲 Aphlict 的话」唯一可见的证据，而将来客户端 JS 去读它的成本是零。
 
-**这条与平台层正面冲突，所以平台层为它长了一个字段。** `health.Register()` 本来无条件注册 `app.Get("/", Live())` 返回 200；`httpx.Config.SkipRootProbe` 为 true 时跳过这一条，把根路径让给域包。**全仓库只有 notification 的 client 端口设它**，理由写在 `health.go` 的注释里。摘掉这个字段、或者「为了一致性」把根探针加回这个端口，Phorge 会报 `Got HTTP 200, but expected HTTP 501`——这一条至少会报错，因为它走的是 `testClient()` 而不是 `postMessage()`。
+**这条与平台层正面冲突，所以平台层为它长了一个字段。** `health.Register()` 本来无条件注册 `app.Get("/", Live())` 返回 200；`httpx.Config.SkipRootProbe` 为 true 时跳过这一条，把根路径让给域包。**全仓库只有 notification 的 client 端口设它**，理由写在 `health.go` 的注释里。摘掉这个字段、或者把根探针加回这个端口，会使独立 `testClient()` 诊断报 `Got HTTP 200, but expected HTTP 501`。状态页不再调用该诊断来判断公开地址；这项界面修正不改变 client 的 501 裸响应协议。
 
 `/healthz` 与 `/readyz` 照样注册，所以容器探针不受影响。豁免只挑根路径，不是整包跳过。
 
@@ -373,7 +375,7 @@ throw new Exception(
 - `POST /` → 裸 `{"fingerprint":"..."}`
 - `GET /status/` → 带点号键的扁平 map
 
-PHP 侧的读法是 `phutil_json_decode($body)` 之后**直接索引**（`PhabricatorConfigClusterNotificationsController`）：
+PHP 侧用 `phutil_json_decode($body)` 解码后，先校验顶层版本与统计字段，再直接索引这些字段（`PhabricatorConfigClusterNotificationsController`）：
 
 ```php
 $clients = pht(
@@ -384,8 +386,8 @@ $clients = pht(
 
 两个推论：
 
-- **键里的点是字面量，不是嵌套约定。** 改成 `{"clients":{"active":…}}` 之后 `idx()` 全部落空，面板显示 0 或空白，不报错。`contracts/notification.go` 的 json tag 就是这些带点的字面串。
-- **套上信封同样是「取不到」而不是「取错」。** 每个字段都退到 `data` 下面，`idx($details, 'version')` 返回 null，面板显示一个后面什么都没有的 "Version"。
+- **键里的点是字面量，不是嵌套约定。** 改成 `{"clients":{"active":…}}` 之后 `idx()` 取不到原字段。`contracts/notification.go` 的 json tag 就是这些带点的字面串。
+- **套上信封同样是「取不到」而不是「取错」。** 每个字段都退到 `data` 下面，`idx($details, 'version')` 返回 null。状态页现在将这类缺少字段的响应显示为管理端连接错误，避免出现空白统计或无版本号的健康行。
 
 所以这两个 handler 用 `c.JSON()` 而**不是** `httpx.OK()`。`admin_test.go` 的 `decodeBare()` 在每条成功响应上断言「恰好一个 JSON 文档，且顶层没有 `data` / `error` 键」。
 
@@ -427,7 +429,7 @@ map[string]any{"{\"type\":\"notification\"}": ""}
 
 一个键、值为空串，`msg["type"]` 是 nil。handler 拿着这坨东西照常往下走：`AddFingerprint` 看不到 `touched` 于是判定「消息是新的」，`Publish` 把它塞进 history 并按「没有 subscribers」当广播扇出，最后 `c.JSON` 答一个**完全合法的 200 加真 fingerprint**。
 
-此时 PHP `postMessage()` 顺利返回，required 政策也没有异常可报告。症状是通知内容被静默揉碎：浏览器要么收到一条没有 `type` 的垃圾消息，要么因为原本的 `subscribers` 已经丢失而收到本不该收到的广播。而 Config → Cluster → Notification 页面**两台服务器全绿**（那个页面走 `/status/` 与 `testClient()`，都不经过这个 handler），`messages.in` 照常增长，**本服务日志里连一条 4xx 都没有**。
+此时 PHP `postMessage()` 顺利返回，required 政策也没有异常可报告。症状是通知内容被静默揉碎：浏览器要么收到一条没有 `type` 的垃圾消息，要么因为原本的 `subscribers` 已经丢失而收到本不该收到的广播。通知状态页的 admin `/status/` 检查与独立浏览器连接仍可正常，它们都不验证这个 handler 的消息内容；`messages.in` 照常增长，**本服务日志里连一条 4xx 都没有**。
 
 这是本文件所有约束里最彻底的一条：其余几条至少在某处留下一个错误状态码，这一条什么都不留。
 
@@ -464,7 +466,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 curl -s http://127.0.0.1:22281/status/
 ```
 
-`tests/e2e/notification.sh` 跑的就是这几条。5.1 只能在 PHP 侧验证：起栈之后打开 Config → Cluster → Notification，两台服务器都显示正常——这一步同时验证了 5.2 的 501 与 5.3 的响应形状。
+`tests/e2e/notification.sh` 跑的就是这几条。5.1 的配置校验须在 PHP 侧验证。起栈后打开通知服务器状态页，确认 admin 检查和统计正常、client 行保留公开 URI，并在登录浏览器中确认独立连接状态。5.2 的 501 由上面的独立 HTTP 诊断验证，页面不再探测公开 client 地址；admin 统计消费仍需符合 5.3 的裸响应形状。
 
 **但 5.4 用 curl 只能验到「没被拒」这一半。**「消息的键有没有原样进 hub」在 HTTP 层看不见：`/status/` 的 `messages.in` 在消息被揉碎的情况下同样会 +1。
 
