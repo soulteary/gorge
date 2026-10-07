@@ -137,6 +137,24 @@ jobs:
       DBAPI_PORT: '8080'
       DBAPI_TOKEN: cross-repo-ci-token
     steps:
+      - name: Configure MySQL SQL mode for Phorge
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: |
+          set -euo pipefail
+          # Match phorge's docker-compose.mysql.yml. Historical migrations
+          # use grouped queries incompatible with MySQL 8's default
+          # ONLY_FULL_GROUP_BY; retain strict writes with STRICT_ALL_TABLES.
+          docker exec -e MYSQL_PWD="$DB_PASS" "$MYSQL_CONTAINER" \
+            mysql --user="$DB_USER" \
+            --execute="SET GLOBAL sql_mode = 'STRICT_ALL_TABLES'"
+          # GLOBAL only affects new connections. Check a fresh session, as
+          # used by both Phorge's migration CLI and the Go service below.
+          mode=$(docker exec -e MYSQL_PWD="$DB_PASS" "$MYSQL_CONTAINER" \
+            mysql --user="$DB_USER" --batch --skip-column-names \
+            --execute='SELECT @@SESSION.sql_mode')
+          test "$mode" = STRICT_ALL_TABLES
+
       - name: Checkout gorge
         uses: actions/checkout@v6
         with:
