@@ -110,6 +110,12 @@ GitHub 回归见 [发布门禁说明](../deploy/release/README.md)。历史独�
 提示。准备 PR 更新正文和版本范围；准备状态及待完成检查写入 `docs/releases/`，
 正文应可直接用于正式 Release。工作流已创建 Release 时，不要手动创建同名版本。
 
+多架构发布锁使用 image index digest。发布前先检查基础和配对验收镜像的平台，
+防止把本机 ARM64 子 manifest 用于 AMD64 runner。[Release Build](../.github/workflows/release-build.yml)
+在相关 PR 中构建 render/image 的 AMD64 与 ARM64 镜像，不发布产物；AMD64
+runner 通过 QEMU 执行 ARM64 构建步骤。平台与恢复规则见
+[发布门禁说明](../deploy/release/README.md)。
+
 ## 5. 加一个服务的登记
 
 1. `go/cmd/<name>/main.go`
