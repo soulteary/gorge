@@ -43,3 +43,21 @@ digest 清单部署提示。发布准备 PR 应更新双语正文，把待发布
 构建、配对和运维范围见 [交付](../../docs/delivery.md) 与 [测试](../../docs/testing.md)。
 发布需要先提交两个仓库的配套修改，并更新固定 Phorge revision。旧 Phorge 版本缺少候选
 镜像与必测验收入口时会失败，不能降级绕过。
+
+基础镜像锁须使用多架构 index digest，而不是本机 `docker inspect` 得到的单架构
+manifest digest。候选构建前检查 Go/Alpine 同时包含 `linux/amd64`、`linux/arm64`，
+其余配对验收依赖至少包含 Ubuntu runner 的 `linux/amd64`。检查支持 OCI index 和
+Docker manifest list；网络、格式或平台检查失败时不进入十四项候选构建。
+
+[Release Build](../../.github/workflows/release-build.yml) 在发布工具和 Dockerfile PR
+中验证同一固定 Phorge 锁，并构建 render/image 的两个目标架构，不推送镜像或创建
+Release。AMD64 runner 通过显式配置的 QEMU 执行 ARM64 builder 和 runtime 步骤。
+这些构建检查不替代 tag 工作流的完整候选镜像验收。
+
+若已在 GitHub 页面手工创建同名 Release，即使没有资产，发布工具也会拒绝覆盖。
+修复涉及工作流或标签源码中的工具时，新的发布标签须指向修复提交；
+重试旧运行不会载入修复后的工作流。手动 dispatch 选择 main 只改变工作流版本，不会
+把旧 tag 的源码变成 main。正式 Release 由完整门禁成功后的工作流创建。
+若失败版本没有发布任何候选镜像或验收资产，且维护者已经撤销了其标签与
+Release，可以用同一版本号重新创建指向修复提交的标签并触发新运行。已成功
+发布的版本与标签保持不可变。

@@ -62,6 +62,8 @@ jobs:
         with:
           go-version-file: gorge/go/go.mod
           cache-dependency-path: gorge/go/go.sum
+      - name: Require portable locked base and fixture images
+        run: python3 gorge/deploy/release/base_images.py --lock phorge-fork/deploy/acceptance/build-lock.json
       - name: Verify the cross-repository contract before building
         working-directory: gorge/go
         env:
@@ -158,6 +160,11 @@ jobs:
         with:
           ref: ${{ needs.validate-pair.outputs.gorge_sha }}
           path: gorge
+
+      - name: Enable ARM64 build steps
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
