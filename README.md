@@ -3,8 +3,10 @@
 Phorge 的 Go 服务层单仓库。
 
 当前构建、配对验收与发布流程见 [构建与交付](docs/delivery.md)和
-[发布工具说明](deploy/release/README.md)。[2026.10.07-r2 发布正文](RELEASE_NOTES.md)与
-[版本准备记录](docs/releases/2026.10.07-r2.md)保留该版本的历史范围，不替代当前流程。
+[发布工具说明](deploy/release/README.md)。新版本准备：
+[2026.10.08-r1 双语发布正文](RELEASE_NOTES.md)与
+[范围、配对及发布步骤](docs/releases/2026.10.08-r1.md)。
+[2026.10.07-r2 记录](docs/releases/2026.10.07-r2.md)保留历史范围。
 
 Phorge 里若干原本靠子进程、PHP 内联实现或外部依赖完成的能力，在这里以 Go 服务重写，通过 HTTP 与 PHP 侧对接。仓库同时容纳 Go 代码、共享契约（OpenAPI + 契约固件）、容器编排，以及 PHP 接入的兼容约束。
 

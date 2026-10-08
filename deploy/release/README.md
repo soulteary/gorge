@@ -13,6 +13,10 @@ GitHub Release 是整套版本的发布入口。草稿在最终一步前不可�
 不会提升入口。已存在的版本禁止覆写。候选标签包含 run ID 与 attempt，最终部署使用清单
 中的镜像 digest 和两个 commit，不从候选标签或独立的历史 `*-latest` 推断一套版本。
 
+Release 正文从 tag 源码中的 [RELEASE_NOTES.md](../../RELEASE_NOTES.md)读取，并附加
+digest 清单部署提示。发布准备 PR 应更新双语正文，把待发布状态和待验收记录留在
+`docs/releases/`；本工作流负责创建 Gorge Release，不再另行手动创建同名版本。
+
 候选模式对十四个镜像做包装检查；只有 image/render 作为独立 runtime fixture 启动
 对应候选 digest，并逐服务记录实际 container/image ID。其他服务的业务验证执行配对
 源码的 Go/PHP 契约，不应描述为十四个候选容器都完成全量运行时验收。

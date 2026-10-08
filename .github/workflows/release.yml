@@ -286,6 +286,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           test -s release-evidence/release-manifest.json
-          printf '%s\n' 'Deploy the exact paired commits and service digests in release-manifest.json. Independent service latest tags are not promoted.' > "$RUNNER_TEMP/release-body.txt"
+          test -s RELEASE_NOTES.md
+          cat RELEASE_NOTES.md > "$RUNNER_TEMP/release-body.txt"
+          printf '\n%s\n' 'Deploy the exact paired commits and service digests in release-manifest.json. Independent service latest tags are not promoted.' >> "$RUNNER_TEMP/release-body.txt"
           python3 deploy/release/publish.py --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/release-body.txt" --manifest release-evidence/release-manifest.json
