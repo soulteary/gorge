@@ -106,6 +106,10 @@ image/render 还必须以对应候选 digest 启动实际容器，记录各自 c
 GitHub 回归见 [发布门禁说明](../deploy/release/README.md)。历史独立 package/tag
 保持已有状态，当前流程不更新任何 `*-latest` 服务标签。
 
+发布正文读取 tag 源码中的 [RELEASE_NOTES.md](../RELEASE_NOTES.md)，再附加清单部署
+提示。准备 PR 更新正文和版本范围；准备状态及待完成检查写入 `docs/releases/`，
+正文应可直接用于正式 Release。工作流已创建 Release 时，不要手动创建同名版本。
+
 ## 5. 加一个服务的登记
 
 1. `go/cmd/<name>/main.go`

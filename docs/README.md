@@ -8,8 +8,9 @@
 
 ## 目录
 
-历史版本准备记录：[2026.10.07-r2](releases/2026.10.07-r2.md)。该版本双语发布正文见
-[RELEASE_NOTES.md](../RELEASE_NOTES.md)；当前发布步骤与候选回执以
+新版本准备记录：[2026.10.08-r1](releases/2026.10.08-r1.md)，双语正文见
+[RELEASE_NOTES.md](../RELEASE_NOTES.md)。历史记录：
+[2026.10.07-r2](releases/2026.10.07-r2.md)。当前发布步骤与候选回执以
 [delivery](delivery.md)和[发布工具](../deploy/release/README.md)为准。
 
 ### 跨模块
