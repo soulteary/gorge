@@ -19,6 +19,9 @@ docker build -t gorge-conduit --build-arg SERVICE=gorge-conduit --build-arg PORT
 多阶段构建：
 
 - **构建阶段** `golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION}`。默认值与可用镜像标签直接看 [`go/Dockerfile`](../go/Dockerfile) 顶部的 `ARG`；builder 与 runtime 的 Alpine 版本刻意独立。先 `COPY go.mod go.sum` 再 `go mod download`，然后才 `COPY .`，让依赖层在源码变动时仍能命中缓存。编译参数 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`：静态链接、抹掉构建路径、去符号表。
+
+构建阶段显式设置 `GOTOOLCHAIN=go${GO_VERSION}`。发布流程传入较旧的锁定镜像时，它只提供 bootstrap 环境，实际编译仍使用 `GO_VERSION` 指定且由 Go 校验的工具链。
+
 - **运行阶段** `alpine:${ALPINE_VERSION}`。带二进制与 CA 证书；image 服务额外安装 ImageMagick 与 codec，以 uid 10001 的非 root 用户 `gorge` 运行。healthcheck 用的 wget 由 busybox 自带，不额外装包。
 
 两处针对 Docker 语义的处理，都在注释里写了原因：

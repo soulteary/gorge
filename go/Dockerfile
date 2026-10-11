@@ -18,6 +18,11 @@ ARG GO_BASE_IMAGE=golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION}
 ARG RUNTIME_BASE_IMAGE=alpine:${ALPINE_VERSION}
 FROM ${GO_BASE_IMAGE} AS builder
 
+# A paired release may lock an older bootstrap image. Select the exact
+# compiler independently; Go verifies downloaded toolchains with its checksum DB.
+ARG GO_VERSION
+ENV GOTOOLCHAIN=go${GO_VERSION}
+
 # Build-only settings; paths must exist inside the builder image.
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG GOROOT_BOOTSTRAP=${GOROOT}
