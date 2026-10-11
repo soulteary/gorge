@@ -1,5 +1,7 @@
 # Gorge
 
+[![Go Test Coverage](./.github/coverage.svg)](./.github/go-test-report.md) [![Go Report Card](./.github/goreportcard.svg)](./.github/goreportcard-report.md)
+
 Phorge 的 Go 服务层单仓库。
 
 当前构建、配对验收与发布流程见 [构建与交付](docs/delivery.md)和
