@@ -67,7 +67,7 @@ make compose-up
 - **`paths` 过滤**限定在 `Makefile`、`go/**`、`tests/**`、`.github/workflows/**`，纯 PHP 改动不触发 Go 流水线。将来 `php/` 下有代码时应当另开一条工作流，而不是放宽这里的过滤。
 - **Go 命令在 `go/` 执行**，因为 module 在子目录。镜像构建从仓库根显式传 `go/` 上下文。`golangci-lint-action` 自己解析 module，所以走 `with.working-directory: go` 输入而不是 shell 级目录。
 
-覆盖率报告不跟随普通 push / pull request 生成。`.github/workflows/test-report.yml` 只在手动触发或推送 `YYYY.MM.DD-rN` 标签时运行 `soulteary/go-test-report-action`，报告、徽章、JSON 与原始结果上传为 Actions 制品；`commit: false` 保证报告不会由机器人写回仓库并产生新的提交。
+普通分支 push 不生成回写报告；PR 在既有 Go 测试 job 内运行两个 Action，保持只读并复用覆盖率结果。`.github/workflows/go-quality-reports.yml` 在手动触发或推送发布标签时运行正式版本的 `soulteary/go-test-report-action` 与 `soulteary/goreportcard-action`，报告、徽章、JSON 与原始结果上传为 Actions 制品；两个 Action 都设置 `commit: false`；独立回写 job 仅在测试提交仍等于默认分支 HEAD 时，将稳定报告合并为一个 `[skip ci]` 提交。历史标签只保留 artifact，避免覆盖新代码的报告。
 
 本地对齐 CI：
 
