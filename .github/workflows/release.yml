@@ -300,3 +300,19 @@ jobs:
           printf '\n%s\n' 'Deploy the exact paired commits and service digests in release-manifest.json. Independent service latest tags are not promoted.' >> "$RUNNER_TEMP/release-body.txt"
           python3 deploy/release/publish.py --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/release-body.txt" --manifest release-evidence/release-manifest.json
+
+  report_release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch published tag reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh workflow run go-quality-reports.yml --repo "$REPOSITORY" --ref "$DEFAULT_BRANCH" \
+            -f "source_ref=refs/tags/$RELEASE_TAG" -f reuse_existing_tag_report=true
