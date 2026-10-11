@@ -61,3 +61,6 @@ Release。AMD64 runner 通过显式配置的 QEMU 执行 ARM64 builder 和 runti
 若失败版本没有发布任何候选镜像或验收资产，且维护者已经撤销了其标签与
 Release，可以用同一版本号重新创建指向修复提交的标签并触发新运行。已成功
 发布的版本与标签保持不可变。
+
+Gorge 的 Go/Alpine 构建镜像固定在 `build-bases.json`，随本仓库的工具链要求更新。
+配对 Phorge 锁继续提供其余验收依赖；两份锁合并后仍验证镜像摘要及目标架构。

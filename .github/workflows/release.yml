@@ -52,9 +52,11 @@ jobs:
           echo "sha=$(git -C gorge rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "phorge=$(git -C phorge-fork rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
+          import sys
           from pathlib import Path
-          images=json.loads(Path('phorge-fork/deploy/acceptance/build-lock.json').read_text())['images']
+          sys.path.insert(0, 'gorge/deploy/release')
+          from base_images import load_lock
+          images=load_lock(Path('phorge-fork/deploy/acceptance/build-lock.json'), Path('gorge/deploy/release/build-bases.json'))['images']
           print('go_image='+images['go'])
           print('alpine_image='+images['alpine'])
           PY
@@ -63,7 +65,7 @@ jobs:
           go-version-file: gorge/go/go.mod
           cache-dependency-path: gorge/go/go.sum
       - name: Require portable locked base and fixture images
-        run: python3 gorge/deploy/release/base_images.py --lock phorge-fork/deploy/acceptance/build-lock.json
+        run: python3 gorge/deploy/release/base_images.py --lock phorge-fork/deploy/acceptance/build-lock.json --build-bases gorge/deploy/release/build-bases.json
       - name: Verify the cross-repository contract before building
         working-directory: gorge/go
         env:
