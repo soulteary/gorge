@@ -72,13 +72,27 @@ def inspect_locked_images(lock, *, runner=subprocess.run):
     return verified
 
 
+def load_lock(lock_path, build_bases_path=None):
+    lock = json.loads(lock_path.read_text())
+    if build_bases_path is not None:
+        bases = json.loads(build_bases_path.read_text())
+        images = bases.get('images') if isinstance(bases, dict) else None
+        if not isinstance(images, dict) or set(images) != {'go', 'alpine'}:
+            raise BaseImageError('Build bases must contain exactly go and alpine images.')
+        if not isinstance(lock, dict) or not isinstance(lock.get('images'), dict):
+            raise BaseImageError('Paired lock must contain images.')
+        lock['images'].update(images)
+    return lock
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--lock', required=True, type=Path)
     parser.add_argument('--github-output', type=Path)
+    parser.add_argument('--build-bases', type=Path)
     args = parser.parse_args()
     try:
-        verified = inspect_locked_images(json.loads(args.lock.read_text()))
+        verified = inspect_locked_images(load_lock(args.lock, args.build_bases))
         if args.github_output:
             with args.github_output.open('a') as output:
                 output.write('go_image=' + verified['go']['image'] + '\n')

@@ -52,7 +52,7 @@ jobs:
         run: python3 -m unittest discover -s gorge/deploy/release -p '*_test.py'
       - name: Verify locked base and fixture platforms
         id: bases
-        run: python3 gorge/deploy/release/base_images.py --lock phorge-fork/deploy/acceptance/build-lock.json --github-output "$GITHUB_OUTPUT"
+        run: python3 gorge/deploy/release/base_images.py --lock phorge-fork/deploy/acceptance/build-lock.json --build-bases gorge/deploy/release/build-bases.json --github-output "$GITHUB_OUTPUT"
       - name: Build both architectures without publishing images
         uses: docker/build-push-action@v6
         with:

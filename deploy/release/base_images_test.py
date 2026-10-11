@@ -2,8 +2,10 @@ import copy
 import json
 import subprocess
 import unittest
+import tempfile
+from pathlib import Path
 
-from base_images import BaseImageError, BUILD_PLATFORMS, INDEX_TYPES, inspect_locked_images, validate_index
+from base_images import BaseImageError, BUILD_PLATFORMS, INDEX_TYPES, inspect_locked_images, validate_index, load_lock
 
 
 def index(platforms=('amd64', 'arm64'), media_type='application/vnd.oci.image.index.v1+json'):
@@ -14,6 +16,18 @@ def index(platforms=('amd64', 'arm64'), media_type='application/vnd.oci.image.in
 
 
 class LockedImagePlatforms(unittest.TestCase):
+    def test_build_bases_replace_only_compilers_and_preserve_paired_fixtures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paired, bases = Path(tmp) / 'paired.json', Path(tmp) / 'bases.json'
+            paired.write_text(json.dumps({'images': {'go': 'old', 'alpine': 'runtime', 'mysql': 'fixture'}}))
+            bases.write_text(json.dumps({'images': {'go': 'new', 'alpine': 'runtime'}}))
+            self.assertEqual(load_lock(paired, bases)['images'],
+                             {'go': 'new', 'alpine': 'runtime', 'mysql': 'fixture'})
+            for value in [{'images': {'go': 'new'}}, {'images': {'go': 'new', 'alpine': 'runtime', 'mysql': 'changed'}}]:
+                bases.write_text(json.dumps(value))
+                with self.assertRaises(BaseImageError):
+                    load_lock(paired, bases)
+
     def test_both_index_formats_accept_required_platforms_and_ignore_attestations(self):
         for media_type in INDEX_TYPES:
             value = index(media_type=media_type)
