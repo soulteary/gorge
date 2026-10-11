@@ -23,3 +23,5 @@ Raw profiles/test logs are artifacts, never committed.
 The module is `go/go.mod`. Service integration checks for MySQL, Redis,
 Elasticsearch and Meilisearch, and native image dependencies remain in their
 existing dedicated CI jobs. Unit reports do not imply those services were tested.
+
+Published releases with a CI skip annotation use the release-event fallback. Ordinary releases use the tag-push report run; the release gate skips duplicate tests. Stable artifacts containing only reports under `.github` are downloaded into that directory explicitly; mixed report/document artifacts retain the repository hierarchy.
