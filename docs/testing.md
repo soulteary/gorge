@@ -120,7 +120,7 @@ make cover
 
 `cmd/*` 的覆盖率不能表达完整启动与停机验收；真实 listener/信号可由包内测试验证，容器依赖与后台收尾还需 runtime 测试。默认覆盖只记各包自己的测试，需要跨包路径时使用 `-coverpkg`。内存 fake 验证请求与协议形状，不能证明 MySQL/Redis/ES/provider 的实际语义。
 
-[Go Test Report](../.github/workflows/test-report.yml) 在手动触发或发布标签触发时保存报告 artifact，设置 `commit: false`，不会将报告写回仓库。普通 CI 与文档检查是否通过、真实依赖是否运行、部署是否验收必须分别报告。
+[Go Test Report](../.github/workflows/go-quality-reports.yml) 在手动触发或发布标签触发时保存报告 artifact，两个 Action 设置 `commit: false`；独立 job 仅在测试提交与默认分支 HEAD 一致时合并回写稳定报告，历史标签仅保留 artifact。PR 复用原测试 job 的覆盖率并且不回写。普通 CI 与文档检查是否通过、真实依赖是否运行、部署是否验收必须分别报告。
 
 ## 6. 资源与恢复证据的限制
 

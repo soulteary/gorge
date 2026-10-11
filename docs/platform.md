@@ -147,7 +147,7 @@ ListenAddr: EnvStr(defaultListenAddr, "GORGE_LISTEN_ADDR"),
 
 ## 5. 覆盖率
 
-覆盖率是运行结果，不在模块说明里复制一份会随提交失效的数字。当前精确值用 `make cover` 生成；Release 或手动触发的 [Go Test Report workflow](../.github/workflows/test-report.yml) 也会保存报告 artifact。
+覆盖率是运行结果，不在模块说明里复制一份会随提交失效的数字。当前精确值用 `make cover` 生成；Release 或手动触发的 [Go Test Report workflow](../.github/workflows/go-quality-reports.yml) 也会保存报告 artifact。
 
 平台层的测试重点是行为边界：`RunAll` 用 `:0` 端口起真实 listener 并覆盖信号关闭；错误处理测试锁住信封、HEAD 与已应答分支；auth、health、config 分别覆盖鉴权、探针形状与配置回退。哪些边界无法由包内覆盖率准确表达，见 [`testing.md`](testing.md) 第 5 节。
 
