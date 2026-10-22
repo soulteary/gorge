@@ -7,9 +7,9 @@
     "skipped": 30
   },
   "coverage": {
-    "covered_statements": 6832,
+    "covered_statements": 6831,
     "total_statements": 11697,
-    "percentage": 58.41,
+    "percentage": 58.4,
     "threshold": 0
   },
   "packages": [
@@ -368,7 +368,7 @@
       "status": "pass",
       "tests": 26,
       "failed": 0,
-      "coverage": 75.05
+      "coverage": 74.84
     },
     {
       "name": "internal/worker/handlers",

@@ -8,7 +8,7 @@
 | Passed | 891 |
 | Failed | 0 |
 | Skipped | 30 |
-| Coverage | 58.41% |
+| Coverage | 58.40% |
 | Threshold | 0.00% |
 
 ### Packages
@@ -65,6 +65,6 @@
 | internal/search/projection | pass | 9 | 0 | 15.27% |
 | internal/taskqueue | pass | 43 | 0 | 25.41% |
 | internal/webhook | pass | 46 | 0 | 64.53% |
-| internal/worker | pass | 26 | 0 | 75.05% |
+| internal/worker | pass | 26 | 0 | 74.84% |
 | internal/worker/handlers | pass | 31 | 0 | 74.26% |
 | internal/worker/outbox | pass | 2 | 0 | 73.08% |
