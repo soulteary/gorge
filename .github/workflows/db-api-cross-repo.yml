@@ -30,6 +30,8 @@ on:
   pull_request:
     branches: [ main, develop ]
     paths:
+      - 'go/go.mod'
+      - 'go/go.sum'
       - 'go/internal/contracts/**'
       - 'go/internal/dbapi/**'
       - 'tests/contract/dbapi/**'
@@ -41,6 +43,8 @@ on:
   push:
     branches: [ main ]
     paths:
+      - 'go/go.mod'
+      - 'go/go.sum'
       - 'go/internal/contracts/**'
       - 'go/internal/dbapi/**'
       - 'tests/contract/dbapi/**'
@@ -97,7 +101,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
           cache-dependency-path: gorge/go/go.sum
 
       - name: Go canonical guard (types still match the fixtures)
@@ -197,7 +201,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
           cache-dependency-path: gorge/go/go.sum
 
       # Run the real PHP consumer tests against the paired bundled runtime.

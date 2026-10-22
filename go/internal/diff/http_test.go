@@ -86,7 +86,9 @@ func postLive(t *testing.T, deps *Deps, bodyLimit, path, body string) (int, stri
 	go func() { done <- srv.Run() }()
 	t.Cleanup(func() {
 		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("server stopped with error: %v", err)
+		}
 	})
 
 	var addr string

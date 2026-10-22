@@ -74,7 +74,9 @@ func sendLive(t *testing.T, cfg Config, method, path, body string, headers map[s
 	go func() { done <- RunAll(srv) }()
 	t.Cleanup(func() {
 		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("server stopped with error: %v", err)
+		}
 	})
 
 	var addr string

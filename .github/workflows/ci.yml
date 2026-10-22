@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
 
 env:
-  GO_VERSION: '1.27.2'
+  GO_VERSION: '1.27.3'
 
 jobs:
   cleanup-runtime:
@@ -176,7 +176,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.27']
+        go-version: ['1.27.3']
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -200,7 +200,7 @@ jobs:
         run: |
           set -euo pipefail
           test ! -L .github
-          rm -f -- .github/go-test-report.md .github/go-test-report.json .github/coverage.svg .github/goreportcard.svg .github/goreportcard-report.md
+          # Keep tracked report links available to documentation tests.
           rm -rf -- .github/test-results
       - name: Test, race and coverage (GTR v1.1.2)
         id: go_test_report
@@ -267,7 +267,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.15.0
           working-directory: go
           args: --timeout=5m
           only-new-issues: false
