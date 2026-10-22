@@ -127,7 +127,9 @@ func writeBlobLiveChunked(t *testing.T, engines ...StorageEngine) result {
 	go func() { done <- srv.Run() }()
 	t.Cleanup(func() {
 		_ = srv.App().ShutdownWithTimeout(2 * time.Second)
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("server stopped with error: %v", err)
+		}
 	})
 
 	var addr string

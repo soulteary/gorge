@@ -115,7 +115,7 @@ make cover
 `make check` 执行格式、vet 与 Go tests，不包含所有真实后端、lint 或 govulncheck。`make cover` 生成 `go/coverage.out` 和 `go/coverage.html`。当前数据以本次运行和日志中的 SKIP 为准，不在手写文档维护包百分比、测试数量或代码行数。
 
 仓库已有 `make lint`，它自动进入 `go/` 运行 golangci-lint。直接运行工具也须从该
-模块目录执行。记录 `golangci-lint --version`，因为 CI 当前使用 `latest`。errcheck
+模块目录执行。记录 `golangci-lint --version`，因为 CI 当前固定 `v2.15.0`。errcheck
 检查未处理错误，Staticcheck 提供额外规则；它们不由 `go vet` 或 race 替代。
 
 `cmd/*` 的覆盖率不能表达完整启动与停机验收；真实 listener/信号可由包内测试验证，容器依赖与后台收尾还需 runtime 测试。默认覆盖只记各包自己的测试，需要跨包路径时使用 `-coverpkg`。内存 fake 验证请求与协议形状，不能证明 MySQL/Redis/ES/provider 的实际语义。

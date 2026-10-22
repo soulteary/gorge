@@ -142,5 +142,7 @@ func TestWorkerSignalStopsIntakeBeforeHTTPDrain(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("worker did not finish concurrent shutdown")
 	}
-	<-requestDone
+	if err := <-requestDone; err != nil {
+		t.Errorf("readiness request failed during shutdown: %v", err)
+	}
 }
