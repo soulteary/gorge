@@ -1,3 +1,29 @@
+# Gorge 2026.10.22-r1
+
+## 中文
+
+本版本与 Phorge `2026.10.22-r1` 配套，基于 `2026.10.08-r1`。
+
+- **工具链与依赖。** 更新 Go 模块依赖、容器构建所用的锁定 Go/Alpine 基础镜像以及平台校验。
+- **持续集成与质量报告。** 调整 CI 和跨仓库检查，新增可重复运行的 Go 测试、覆盖率和 Go Report Card 报告产物与徽章。
+- **发布门禁。** 持续维护固定的 Phorge/Gorge 源码配对验证、发布基础镜像约束和交付文档。
+- **安全配对。** 必须与包含 PHP2Shell 修复（CVE-2026-109618 / CVE-2026-109619）的 Phorge `2026.10.22-r1` 一起部署。本次 Gorge 不声称直接修复 PHP Core。
+
+本版按 Release 工作流构建十四项多架构候选镜像，完成配对验收后发布 `release-manifest.json`；只有清单中的不可变提交与镜像 digest 是部署依据。不会提升独立服务的历史 latest 标签。完整浏览器业务、真实邮件投递及生产性能仍须另行验收。
+
+## English
+
+This release pairs with Phorge `2026.10.22-r1` and supersedes `2026.10.08-r1`.
+
+- Refresh Go module dependencies and locked Go/Alpine build images, including platform verification.
+- Improve CI and cross-repository checks; add reproducible Go test, coverage, Go Report Card outputs and badges.
+- Maintain immutable paired-source verification, release-image constraints and delivery documentation.
+- Require the matching Phorge release containing the PHP2Shell (CVE-2026-109618 / CVE-2026-109619) fix. Gorge itself does not patch PHP Core.
+
+The Release workflow must build fourteen multi-architecture candidate images and complete paired acceptance before it publishes `release-manifest.json`. Deploy exact commit pairs and image digests from that manifest, not historical latest tags. Authenticated browser journeys, real provider delivery and production performance remain separate operational checks.
+
+---
+
 # Gorge 2026.10.08-r1
 
 ## 中文
