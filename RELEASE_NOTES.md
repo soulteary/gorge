@@ -1,11 +1,16 @@
-# Gorge 2026.10.23-r1
+# Gorge 2026.10.23-r2
 
 ## 中文
 
-本版本与包含 PHP 8.3.36 和 session 加固的 Phorge `2026.10.23-r1` 配对。
+本版本与包含 PHP 8.3.36 和 session 加固的 Phorge `2026.10.23-r2` 配对。
 修正发布依赖陈旧仓库变量而配对旧 Phorge 的问题：从标签源码中的
 `deploy/release/source-pair.json` 读取唯一不可变 Phorge 提交，拒绝不一致的手动输入，
 并在候选构建前验证实际 PHP 镜像版本与生效的 session 设置。
+
+修正配对 Phorge 的 Debian snapshot 为 `20261023T000000Z`，使锁定 PHP 8.3.36
+基础镜像与 curl 开发包版本一致。新增安全 CI 已按正式参数完整构建 Phorge 应用镜像，
+并在镜像内验证 PHP 与安装后的 session 设置。`2026.10.23-r1` 因旧快照依赖冲突
+在验收基础镜像构建阶段失败，未公开发布；其 tag 保留不可变。
 
 保留 Go 1.27.3、十四项多架构候选镜像、完整真实后端配对验收和 manifest 门禁。
 `2026.10.22-r1/r2` 保持不可变，不构成本版 PHP 安全交付的证明。
@@ -14,10 +19,15 @@
 
 ## English
 
-Pair with Phorge `2026.10.23-r1`, containing PHP 8.3.36 and hardened sessions.
+Pair with Phorge `2026.10.23-r2`, containing PHP 8.3.36 and hardened sessions.
 Resolve the exact Phorge commit from the tag-owned source-pair lock, reject a conflicting
 manual override, and verify the effective PHP runtime baseline before building.
 This prevents a stale repository variable from silently selecting the old Phorge source.
+Align the paired Phorge Debian snapshot at `20261023T000000Z` with the patched PHP
+base image. Production-parameter image builds now verify the installed PHP/session
+settings in CI. The `2026.10.23-r1` attempt failed its base-image build because of the old
+snapshot and was not published; its tag remains immutable.
+
 Keep Go 1.27.3, all fourteen multi-platform candidates, mandatory paired real-backend
 acceptance and manifest publication gates. Published `2026.10.22-r1/r2` remain immutable.
 Deploy the source commits and service digests recorded in the attached manifest.
