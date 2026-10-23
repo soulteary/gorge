@@ -1,3 +1,30 @@
+# Gorge 2026.10.23-r1
+
+## 中文
+
+本版本与包含 PHP 8.3.36 和 session 加固的 Phorge `2026.10.23-r1` 配对。
+修正发布依赖陈旧仓库变量而配对旧 Phorge 的问题：从标签源码中的
+`deploy/release/source-pair.json` 读取唯一不可变 Phorge 提交，拒绝不一致的手动输入，
+并在候选构建前验证实际 PHP 镜像版本与生效的 session 设置。
+
+保留 Go 1.27.3、十四项多架构候选镜像、完整真实后端配对验收和 manifest 门禁。
+`2026.10.22-r1/r2` 保持不可变，不构成本版 PHP 安全交付的证明。
+按本 Release 的 `release-manifest.json` 固定两个源码提交与逐服务 digest。
+浏览器业务、真实邮件投递和生产性能仍须在目标环境另行验收。
+
+## English
+
+Pair with Phorge `2026.10.23-r1`, containing PHP 8.3.36 and hardened sessions.
+Resolve the exact Phorge commit from the tag-owned source-pair lock, reject a conflicting
+manual override, and verify the effective PHP runtime baseline before building.
+This prevents a stale repository variable from silently selecting the old Phorge source.
+Keep Go 1.27.3, all fourteen multi-platform candidates, mandatory paired real-backend
+acceptance and manifest publication gates. Published `2026.10.22-r1/r2` remain immutable.
+Deploy the source commits and service digests recorded in the attached manifest.
+Browser journeys, provider delivery and production performance require deployment checks.
+
+---
+
 # Gorge 2026.10.22-r1
 
 ## 中文
