@@ -47,7 +47,7 @@ def release_manifest(items, receipt, gorge_sha, phorge_sha, tag, receipt_sha):
         if not re.fullmatch(r'[0-9a-f]{64}', identity.get('sourceSHA256', '')):
             raise ValueError('Acceptance source inventory is missing')
     stages = receipt.get('stages', [])
-    required = {'go-unit-contracts', 'paired-acceptance', 'bundled-runtime-integrity',
+    required = {'php-core-security', 'go-unit-contracts', 'paired-acceptance', 'bundled-runtime-integrity',
                 'bundled-runtime-integrity-after-contracts', 'image/runtime.php'}
     if not required.issubset({s.get('name') for s in stages}):
         raise ValueError('Mandatory acceptance stages are missing')

@@ -1,7 +1,9 @@
 # 配对发布门禁
 
-发布必须提供已存在的 `YYYY.MM.DD-rN` tag，以及 `PHORGE_CONTRACT_REF`（或手动输入
-`phorge_ref`）中的完整 Phorge commit SHA。流程不再从 main 隐式取代码，也不更新各服务
+发布必须提供已存在的 `YYYY.MM.DD-rN` tag，以及该 tag 源码中
+`source-pair.json` 记录的同版本完整 Phorge SHA。手动输入 `phorge_ref` 必须与锁一致；
+Release 不再读取可能陈旧的 `PHORGE_CONTRACT_REF`。构建前验证实际 PHP 8.3.36+
+及关闭 session 上传进度、启用严格 session ID 的生效设置。流程不再从 main 隐式取代码，也不更新各服务
 的 `*-latest` 标签。
 
 顺序为：固定源码对 → 契约和静态检查 → 十四个多架构候选镜像 → 每个镜像的源码标签、
@@ -64,3 +66,7 @@ Release，可以用同一版本号重新创建指向修复提交的标签并触�
 
 Gorge 的 Go/Alpine 构建镜像固定在 `build-bases.json`，随本仓库的工具链要求更新。
 配对 Phorge 锁继续提供其余验收依赖；两份锁合并后仍验证镜像摘要及目标架构。
+
+发布前核对最终提交的 CI、文档检查及本 PR 对应的 Release Build。Release Build 是 PR
+检查；tag 的 Release validate-pair 会再次执行锁定基础镜像检查、契约/vet/门禁测试，
+随后完整构建十四项候选并验收。新 tag 只指向准备完成的提交，不预先公开 Release。

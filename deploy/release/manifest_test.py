@@ -18,7 +18,7 @@ class ReleaseGate(unittest.TestCase):
                    'phorge': {'commit': 'd'*40, 'dirty': False, 'sourceSHA256': 'e'*64},
                    'runtime': {'sourceSHA256': 'f'*64},
                    'stages': [{'name': n, 'result': 'passed', 'skippedTests': []} for n in
-                              ['go-unit-contracts','paired-acceptance','bundled-runtime-integrity',
+                              ['php-core-security','go-unit-contracts','paired-acceptance','bundled-runtime-integrity',
                                'bundled-runtime-integrity-after-contracts','image/runtime.php']],
                    'candidateImages': {n: item['image'] for n,item in items.items()},
                    'candidatePackaging': [{'name': n, 'result': 'passed'} for n in items],
@@ -50,6 +50,16 @@ class ReleaseGate(unittest.TestCase):
             changed = copy.deepcopy(receipt); mutate(changed)
             with self.subTest(mutation=mutate), self.assertRaises(ValueError):
                 self.build(items,changed)
+
+    def test_missing_or_failed_php_security_stage_is_rejected(self):
+        for remove in (True, False):
+            items, receipt = self.fixtures()
+            if remove:
+                receipt['stages'] = [stage for stage in receipt['stages'] if stage['name'] != 'php-core-security']
+            else:
+                next(stage for stage in receipt['stages'] if stage['name'] == 'php-core-security')['result'] = 'failed'
+            with self.subTest(missing=remove), self.assertRaises(ValueError):
+                self.build(items, receipt)
 
     def test_missing_duplicate_bad_digest_and_wrong_health_port_refused(self):
         items, _ = self.fixtures()
