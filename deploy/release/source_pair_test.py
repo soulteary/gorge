@@ -28,7 +28,8 @@ class SourcePairGate(unittest.TestCase):
     def test_old_or_unpinned_php_is_rejected_before_docker(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
-            for image in ["php:8.3.35-apache", "php:8.3-apache", "php:8.2.36-apache"]:
+            for image in ["php:8.3.36-apache", "php:8.4.27-apache", "php:8.5.11-apache",
+                          "php:8.5-apache", "php:8.6.0-apache", "php:8.5.12RC1-apache"]:
                 (path / "Dockerfile").write_text("ARG PHP_BASE_IMAGE=" + image + "\n")
                 with self.subTest(image=image), self.assertRaises(ValueError):
                     verify_php_runtime(path, runner=lambda *a, **kw: self.fail("must not execute old PHP"))
@@ -38,7 +39,8 @@ class SourcePairGate(unittest.TestCase):
             path = Path(tmp)
             (path / "docker/php").mkdir(parents=True)
             (path / "docker/php/uploads.ini").write_text("session.use_strict_mode=0\n")
-            (path / "Dockerfile").write_text("ARG PHP_BASE_IMAGE=php:8.3.36-apache\n")
+            (path / "docker/php/opcache.ini").write_text("opcache.jit=disable\nopcache.jit_buffer_size=0\n")
+            (path / "Dockerfile").write_text("ARG PHP_BASE_IMAGE=php:8.5.12-apache\n")
             (path / "deploy/acceptance").mkdir(parents=True)
             locked = "docker.io/library/php@sha256:" + "c" * 64
             (path / "deploy/acceptance/build-lock.json").write_text(json.dumps({"images": {"php": locked}}))
@@ -48,9 +50,11 @@ class SourcePairGate(unittest.TestCase):
                 self.assertEqual(command[:3], ["docker", "run", "--rm"])
                 self.assertIn("session.upload_progress.enabled", command[-1])
                 self.assertIn("session.use_strict_mode", command[-1])
+                self.assertIn("opcache.jit_buffer_size", command[-1])
+                self.assertIn("phorge-opcache.ini:ro", command[-5])
                 self.assertTrue(kwargs["check"])
                 if command[-4] == locked:
                     raise subprocess.CalledProcessError(1, command)
             with self.assertRaises(subprocess.CalledProcessError):
                 verify_php_runtime(path, runner=failed_runtime)
-            self.assertEqual(seen, ["php:8.3.36-apache", locked])
+            self.assertEqual(seen, ["php:8.5.12-apache", locked])
