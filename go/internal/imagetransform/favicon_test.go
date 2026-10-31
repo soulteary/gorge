@@ -70,7 +70,11 @@ func TestNativeFaviconHTTPDimensionsAndBounds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer res.Body.Close()
+			defer func() {
+				if err := res.Body.Close(); err != nil {
+					t.Errorf("close response body: %v", err)
+				}
+			}()
 			if res.StatusCode != tc.status {
 				t.Fatalf("got HTTP %d, want %d", res.StatusCode, tc.status)
 			}
