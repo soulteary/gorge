@@ -39,7 +39,9 @@ func (s *Service) Compose(ctx context.Context, r ComposeRequest) (Result, error)
 	case "icon":
 		w, h = 200, 200
 	case "favicon":
-		if w != h || (w != 16 && w != 32 && w != 64 && w != 128) {
+		// Keep this bounded set aligned with Phorge's native favicon assets,
+		// including its Apple touch icons. Existing small-icon sizes remain valid.
+		if w != h || (w != 16 && w != 32 && w != 64 && w != 76 && w != 120 && w != 128 && w != 152) {
 			return Result{}, fail(400, "ERR_BAD_REQUEST", "unsupported favicon dimensions")
 		}
 	default:
