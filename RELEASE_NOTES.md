@@ -1,3 +1,31 @@
+# Gorge 2026.11.01-r3
+
+## English
+
+Pair with Phorge commit `5298239e0fe364046b2a60d5f76ab733a284fcd0`.
+This release includes the Conpherence post-commit notification fix in Phorge #61
+and validated native room-message retry support in Gorge #37.
+
+- Publish room notifications after the message transaction commits, so an
+  already-open observer can read the new state immediately.
+- Preserve committed edit completion during notification outages and enqueue
+  retries with stable message identity and the deployment instance.
+- Accept room retries only with a valid room PHID, positive integer transaction
+  ID, and exactly one matching subscription; retain existing feed validation.
+- Retain PHP 8.5.12 with JIT explicitly disabled, Go 1.27.3, immutable source
+  pairing, all multi-architecture service images and mandatory real-backend
+  paired acceptance. No new public endpoint or storage migration is required.
+
+A simultaneous notification and retry-queue outage can still lose the live
+notification; this release does not introduce a transactional room outbox.
+Historical browser misses were not individually attributable. Authenticated
+browser acceptance is recorded separately from release backend acceptance.
+
+Deploy only the exact paired commits and service digests in this release's
+`release-manifest.json`. Existing releases and their image tags remain immutable.
+
+---
+
 # Gorge 2026.10.23-r2
 
 ## 中文
