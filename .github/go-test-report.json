@@ -207,7 +207,7 @@
       "status": "pass",
       "tests": 87,
       "failed": 0,
-      "coverage": 64.85
+      "coverage": 64.74
     },
     {
       "name": "internal/maintenance/cleanup",
@@ -368,7 +368,7 @@
       "status": "pass",
       "tests": 26,
       "failed": 0,
-      "coverage": 74.84
+      "coverage": 75.05
     },
     {
       "name": "internal/worker/handlers",

@@ -42,7 +42,7 @@
 | internal/gitea | pass | 13 | 0 | 84.62% |
 | internal/imagetransform | pass | 17 | 0 | 48.09% |
 | internal/integrations | pass | 22 | 0 | 48.48% |
-| internal/mailer | pass | 87 | 0 | 64.85% |
+| internal/mailer | pass | 87 | 0 | 64.74% |
 | internal/maintenance/cleanup | pass | 15 | 0 | 9.77% |
 | internal/notification | pass | 43 | 0 | 91.80% |
 | internal/notification/hub | pass | 24 | 0 | 92.20% |
@@ -65,6 +65,6 @@
 | internal/search/projection | pass | 9 | 0 | 15.27% |
 | internal/taskqueue | pass | 43 | 0 | 25.41% |
 | internal/webhook | pass | 46 | 0 | 64.53% |
-| internal/worker | pass | 26 | 0 | 74.84% |
+| internal/worker | pass | 26 | 0 | 75.05% |
 | internal/worker/handlers | pass | 33 | 0 | 74.58% |
 | internal/worker/outbox | pass | 2 | 0 | 73.08% |
