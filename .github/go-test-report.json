@@ -7,9 +7,9 @@
     "skipped": 30
   },
   "coverage": {
-    "covered_statements": 6845,
+    "covered_statements": 6846,
     "total_statements": 11697,
-    "percentage": 58.52,
+    "percentage": 58.53,
     "threshold": 0
   },
   "packages": [
@@ -116,7 +116,7 @@
       "status": "pass",
       "tests": 27,
       "failed": 0,
-      "coverage": 82.81
+      "coverage": 82.03
     },
     {
       "name": "internal/contracts",
@@ -235,7 +235,7 @@
       "status": "pass",
       "tests": 12,
       "failed": 0,
-      "coverage": 90.57
+      "coverage": 91.51
     },
     {
       "name": "internal/notification/publisher",
@@ -368,7 +368,7 @@
       "status": "pass",
       "tests": 26,
       "failed": 0,
-      "coverage": 74.84
+      "coverage": 75.05
     },
     {
       "name": "internal/worker/handlers",

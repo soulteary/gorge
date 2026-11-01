@@ -8,7 +8,7 @@
 | Passed | 893 |
 | Failed | 0 |
 | Skipped | 30 |
-| Coverage | 58.52% |
+| Coverage | 58.53% |
 | Threshold | 0.00% |
 
 ### Packages
@@ -29,7 +29,7 @@
 | cmd/gorge-taskqueue | no\_tests | 0 | 0 | 0.00% |
 | cmd/gorge-webhook | no\_tests | 0 | 0 | 0.00% |
 | cmd/gorge-worker | pass | 1 | 0 | 38.40% |
-| internal/conduit | pass | 27 | 0 | 82.81% |
+| internal/conduit | pass | 27 | 0 | 82.03% |
 | internal/contracts | no\_tests | 0 | 0 | 0.00% |
 | internal/contracttest | pass | 2 | 0 | 14.20% |
 | internal/dbapi | pass | 111 | 0 | 86.36% |
@@ -46,7 +46,7 @@
 | internal/maintenance/cleanup | pass | 15 | 0 | 9.77% |
 | internal/notification | pass | 43 | 0 | 91.80% |
 | internal/notification/hub | pass | 24 | 0 | 92.20% |
-| internal/notification/peer | pass | 12 | 0 | 90.57% |
+| internal/notification/peer | pass | 12 | 0 | 91.51% |
 | internal/notification/publisher | pass | 1 | 0 | 52.00% |
 | internal/platform | pass | 1 | 0 | N/A |
 | internal/platform/auth | pass | 8 | 0 | 100.00% |
@@ -65,6 +65,6 @@
 | internal/search/projection | pass | 9 | 0 | 15.27% |
 | internal/taskqueue | pass | 43 | 0 | 25.41% |
 | internal/webhook | pass | 46 | 0 | 64.53% |
-| internal/worker | pass | 26 | 0 | 74.84% |
+| internal/worker | pass | 26 | 0 | 75.05% |
 | internal/worker/handlers | pass | 31 | 0 | 74.26% |
 | internal/worker/outbox | pass | 2 | 0 | 73.08% |
