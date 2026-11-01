@@ -29,7 +29,9 @@ def record(published, cosign_raw, attestation_raw):
         raise ValueError('Both external verifiers must return nonempty results.')
     for signature in signatures:
         critical=signature.get('critical',{})
-        if critical.get('image',{}).get('docker-manifest-digest')!=expected or critical.get('identity',{}).get('docker-reference')!=reference:
+        # Cosign v3's bundle verifier reports ref.Name(), including @digest.
+        # Accept only that exact subject or the legacy bare repository form.
+        if critical.get('image',{}).get('docker-manifest-digest')!=expected or critical.get('identity',{}).get('docker-reference') not in (reference,reference+'@'+expected):
             raise ValueError('Verified signature subject disagrees with accepted image.')
     if not any(any(s.get('name')==reference and s.get('digest',{}).get('sha256')==expected[7:]
                    for s in a.get('verificationResult',{}).get('statement',{}).get('subject',[])) for a in attestations):

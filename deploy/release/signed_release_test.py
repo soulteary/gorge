@@ -13,7 +13,7 @@ def evidence(manifest,service):
         'phorgeRevision':manifest['phorgeCommit'],'digest':expected,
         'aliases':[service+'-'+TAG,service+'-sha-'+SHA],'platforms':['amd64','arm64'],
         'exists':True,'overwritePermitted':False}
-    cosign=json.dumps([{'critical':{'identity':{'docker-reference':'ghcr.io/'+REPO},'image':{'docker-manifest-digest':expected}}}]).encode()
+    cosign=json.dumps([{'critical':{'identity':{'docker-reference':'ghcr.io/'+REPO+'@'+expected},'image':{'docker-manifest-digest':expected}}}]).encode()
     attestation=json.dumps([{'verificationResult':{'statement':{'subject':[{'name':'ghcr.io/'+REPO,'digest':{'sha256':expected[7:]}}]}}}]).encode()
     return published,cosign,attestation
 
@@ -40,6 +40,16 @@ class SignedPublication(unittest.TestCase):
             wrong=original.replace(p['digest'][7:].encode(),b'c'*64)
             with self.assertRaises(ValueError):record(p,wrong if original is c else c,wrong if original is a else a)
         with self.assertRaises(ValueError):record(p,c.replace(REPO.encode(),b'other/gorge'),a)
+
+    def test_legacy_bare_reference_remains_accepted(self):
+        manifest,*_=fixture();p,c,a=evidence(manifest,'image')
+        self.assertTrue(record(p,c.replace(('@'+p['digest']).encode(),b''),a)['signatureVerified'])
+
+    def test_v3_reference_must_bind_the_exact_digest_not_a_tag(self):
+        manifest,*_=fixture();p,c,a=evidence(manifest,'image')
+        for reference in ('ghcr.io/'+REPO+'@sha256:'+'f'*64,'ghcr.io/'+REPO+':latest','ghcr.io/'+REPO+'-other@'+p['digest']):
+            value=json.loads(c);value[0]['critical']['identity']['docker-reference']=reference
+            with self.assertRaises(ValueError):record(p,json.dumps(value).encode(),a)
 
     def test_assembly_rejects_missing_duplicate_or_unknown_components(self):
         manifest,*_=fixture();reports=[record(*evidence(manifest,s)) for s in SERVICES]
