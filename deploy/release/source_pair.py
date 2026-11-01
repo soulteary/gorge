@@ -8,13 +8,16 @@ import re
 import subprocess
 
 PHP_CHECK = r"""
-if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3
-    || version_compare(PHP_VERSION, "8.3.36", "<")) {
+if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 5
+    || version_compare(PHP_VERSION, "8.5.12", "<")) {
   fwrite(STDERR, "PHP runtime is below the security baseline\n"); exit(1);
 }
 if (filter_var(ini_get("session.upload_progress.enabled"), FILTER_VALIDATE_BOOLEAN)
     || ini_get("session.use_strict_mode") !== "1") {
   fwrite(STDERR, "PHP session security baseline is not active\n"); exit(1);
+}
+if (ini_get("opcache.jit") !== "disable" || (int)ini_get("opcache.jit_buffer_size") !== 0) {
+  fwrite(STDERR, "PHP JIT must be explicitly disabled\n"); exit(1);
 }
 echo "Verified PHP ".PHP_VERSION." with hardened session settings\n";
 """
@@ -44,12 +47,15 @@ def verify_php_runtime(phorge, runner=subprocess.run):
     images = re.findall(r"^ARG PHP_BASE_IMAGE=(\S+)$", dockerfile, re.M)
     if len(images) != 1:
         raise ValueError("Expected exactly one pinned PHP base image")
-    version = re.fullmatch(r"php:8\.3\.([0-9]+)-apache", images[0])
-    if not version or int(version.group(1)) < 36:
+    version = re.fullmatch(r"php:8\.5\.([0-9]+)-apache", images[0])
+    if not version or int(version.group(1)) < 12:
         raise ValueError("Paired Phorge PHP image is below the security baseline")
     config = phorge / "docker/php/uploads.ini"
     if not config.is_file():
         raise ValueError("Paired Phorge session configuration is missing")
+    opcache = phorge / "docker/php/opcache.ini"
+    if not opcache.is_file():
+        raise ValueError("Paired Phorge OPcache configuration is missing")
     lock = json.loads((phorge / "deploy/acceptance/build-lock.json").read_text())
     locked_php = lock.get("images", {}).get("php", "")
     if not re.fullmatch(r"docker.io/library/php@sha256:[0-9a-f]{64}", locked_php):
@@ -57,6 +63,7 @@ def verify_php_runtime(phorge, runner=subprocess.run):
     for image in (images[0], locked_php):
         runner(["docker", "run", "--rm", "-v",
             str(config) + ":/usr/local/etc/php/conf.d/phorge-uploads.ini:ro",
+            "-v", str(opcache) + ":/usr/local/etc/php/conf.d/phorge-opcache.ini:ro",
             image, "php", "-r", PHP_CHECK], check=True, timeout=300)
 
 
