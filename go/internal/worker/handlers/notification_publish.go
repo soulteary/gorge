@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	"github.com/soulteary/gorge/go/internal/contracts"
@@ -141,15 +142,30 @@ func newNotificationPublishHandler(path string, shadow bool) worker.TaskHandler 
 		if d.DeliveryVersion == 1 && (d.EventID == "" || d.Instance == "") {
 			return bad("incomplete notification envelope")
 		}
-		var kind, key string
+		var kind string
 		var subscribers []string
-		if json.Unmarshal(d.Message["type"], &kind) != nil || kind != "notification" || json.Unmarshal(d.Message["key"], &key) != nil || key == "" || json.Unmarshal(d.Message["subscribers"], &subscribers) != nil || len(subscribers) == 0 {
+		if json.Unmarshal(d.Message["type"], &kind) != nil || json.Unmarshal(d.Message["subscribers"], &subscribers) != nil || len(subscribers) == 0 {
 			return bad("invalid private notification recipients or identity")
 		}
 		for _, subscriber := range subscribers {
 			if subscriber == "" {
 				return bad("empty notification recipient")
 			}
+		}
+		switch kind {
+		case "notification":
+			var key string
+			if json.Unmarshal(d.Message["key"], &key) != nil || key == "" {
+				return bad("invalid notification identity")
+			}
+		case "message":
+			var thread string
+			var messageID int64
+			if json.Unmarshal(d.Message["threadPHID"], &thread) != nil || !strings.HasPrefix(thread, "PHID-CONP-") || len(thread) <= len("PHID-CONP-") || json.Unmarshal(d.Message["messageID"], &messageID) != nil || messageID <= 0 || len(subscribers) != 1 || subscribers[0] != thread {
+				return bad("invalid room message identity or subscription")
+			}
+		default:
+			return bad("unsupported notification type")
 		}
 		if d.Instance == "" {
 			d.Instance = p.Instance
