@@ -1,15 +1,15 @@
 {
   "schema_version": "1.0",
   "tests": {
-    "total": 921,
-    "passed": 891,
+    "total": 923,
+    "passed": 893,
     "failed": 0,
     "skipped": 30
   },
   "coverage": {
-    "covered_statements": 6832,
+    "covered_statements": 6845,
     "total_statements": 11697,
-    "percentage": 58.41,
+    "percentage": 58.52,
     "threshold": 0
   },
   "packages": [
@@ -116,7 +116,7 @@
       "status": "pass",
       "tests": 27,
       "failed": 0,
-      "coverage": 82.03
+      "coverage": 82.81
     },
     {
       "name": "internal/contracts",
@@ -191,9 +191,9 @@
     {
       "name": "internal/imagetransform",
       "status": "pass",
-      "tests": 15,
+      "tests": 17,
       "failed": 0,
-      "coverage": 45.66
+      "coverage": 48.09
     },
     {
       "name": "internal/integrations",
@@ -235,7 +235,7 @@
       "status": "pass",
       "tests": 12,
       "failed": 0,
-      "coverage": 91.51
+      "coverage": 90.57
     },
     {
       "name": "internal/notification/publisher",
@@ -368,7 +368,7 @@
       "status": "pass",
       "tests": 26,
       "failed": 0,
-      "coverage": 75.05
+      "coverage": 74.84
     },
     {
       "name": "internal/worker/handlers",
