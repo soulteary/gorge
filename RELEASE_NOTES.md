@@ -1,3 +1,43 @@
+# Gorge 2026.11.02-r1
+
+## English
+
+Pair with Phorge commit `f5f6151109788099a14ee9dc25390f4f55f17929`.
+
+- Deliver native bulk/export recovery, export alignment/type handling,
+  milestone/token synchronization and malformed-request HTTP 400 fixes in the
+  paired Phorge source. Preserve native permission, in-flight revocation and
+  completed-export snapshot boundaries.
+- Add exact source/version/component OCI verification, immutable component
+  version/source aliases, keyless Cosign signatures and verified GitHub
+  attestations before the complete release manifest is published.
+- Retain PHP 8.5.12 with JIT disabled, Go 1.27.3, locked multiarchitecture bases
+  and mandatory exact-pair real-backend acceptance. Gorge runtime source is
+  unchanged from the previous formal pair; release verification is strengthened.
+- Include bounded native warning/legacy-slug tests and independent Go parsing of
+  isolated XLSX exports. Spreadsheet dependencies remain test-only; optional
+  production features and candidate models remain disabled.
+
+No permission migration or new public endpoint is required. Browser and mail
+acceptance, backup restoration and rollout verification are separate deployment
+requirements; backend acceptance alone does not certify them. Use only the exact
+paired commits and `image@sha256` digests in `release-manifest.json`.
+
+## 中文
+
+本版本固定配对上述 Phorge 提交，交付原生批量任务/导出恢复、导出字段对齐与类型处理、
+里程碑/词索引同步和异常请求 HTTP 400 修复。权限四轴、在途撤权边界和已完成导出快照
+保持原生；不执行权限迁移，不开启候选模型或可选功能。
+
+十四项组件镜像必须通过源码、版本、组件名、双架构、不可变别名、Cosign 签名及 GitHub
+证明核验，完整配对验收成功后才发布清单。保留 PHP 8.5.12、关闭 JIT、Go 1.27.3 与固定
+基础镜像。Gorge 运行时代码与上一正式配对版本相同，本次强化发布核验。
+
+Go XLSX 读取仅用于隔离验收，不给生产安装电子表格依赖。浏览器、邮件、备份恢复和切流
+复验仍须单独完成；请按本版本清单中的源码对和镜像 digest 部署，不复用可变 latest 标签。
+
+---
+
 # Gorge 2026.11.01-r3
 
 ## English
