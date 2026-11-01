@@ -8,7 +8,7 @@ Release 不再读取可能陈旧的 `PHORGE_CONTRACT_REF`。构建前验证实�
 
 顺序为：固定源码对 → 契约和静态检查 → 十四个多架构候选镜像 → 每个镜像的源码标签、
 非 root 用户、可执行文件和健康端口验证 → 候选 image/render 的真实运行与完整配对验收
-→ `release-manifest.json` → 发布 GitHub Release。MySQL、Redis、S3、Elasticsearch、
+→ `release-manifest.json` → 十四项不可变别名与签名/证明核验 → 发布 GitHub Release。MySQL、Redis、S3、Elasticsearch、
 Meilisearch 和图片服务的必测用例被跳过时，验收失败。
 
 GitHub Release 是整套版本的发布入口。草稿在最终一步前不可见；任何构建或验收失败都
@@ -58,11 +58,9 @@ Release。AMD64 runner 通过显式配置的 QEMU 执行 ARM64 builder 和 runti
 
 若已在 GitHub 页面手工创建同名 Release，即使没有资产，发布工具也会拒绝覆盖。
 修复涉及工作流或标签源码中的工具时，新的发布标签须指向修复提交；
-重试旧运行不会载入修复后的工作流。手动 dispatch 选择 main 只改变工作流版本，不会
-把旧 tag 的源码变成 main。正式 Release 由完整门禁成功后的工作流创建。
-若失败版本没有发布任何候选镜像或验收资产，且维护者已经撤销了其标签与
-Release，可以用同一版本号重新创建指向修复提交的标签并触发新运行。已成功
-发布的版本与标签保持不可变。
+重试旧运行不会载入修复后的工作流。手动 dispatch 必须选择同一 release tag；
+事件 revision、tag 和 checkout 必须一致，选择 main 会失败。正式 Release 由完整
+门禁成功后的工作流创建。修正标签源码时使用新的版本号，保留既有 tag，不重新定向。
 
 Gorge 的 Go/Alpine 构建镜像固定在 `build-bases.json`，随本仓库的工具链要求更新。
 配对 Phorge 锁继续提供其余验收依赖；两份锁合并后仍验证镜像摘要及目标架构。
@@ -70,3 +68,35 @@ Gorge 的 Go/Alpine 构建镜像固定在 `build-bases.json`，随本仓库的�
 发布前核对最终提交的 CI、文档检查及本 PR 对应的 Release Build。Release Build 是 PR
 检查；tag 的 Release validate-pair 会再次执行锁定基础镜像检查、契约/vet/门禁测试，
 随后完整构建十四项候选并验收。新 tag 只指向准备完成的提交，不预先公开 Release。
+
+## Verified component publication
+
+Every candidate records its source, version and component title in both runtime
+architecture configurations. After paired acceptance, a per-component publication
+lock protects creation of `<component>-<release>` and `<component>-sha-<commit>`
+aliases. The gate checks the accepted OCI index, child/config digests, exact
+repository, source/version/title labels and both AMD64/ARM64 platforms. Only an
+explicit registry 404 establishes absence. Existing matching complete aliases
+are reused; conflicting or partial aliases stop publication. There is no
+automatic overwrite or speculative repair. These are workflow-enforced guards;
+registry administrators must also avoid changing published aliases.
+
+Cosign signs the accepted digest, followed by GitHub artifact attestation. Both
+are verified before recording success: the keyless certificate must identify
+this tag's release workflow, and the attestation must bind the exact source SHA
+and tag on a hosted runner. Verification JSON is retained per component as a CI
+artifact; its SHA256 and the immutable aliases are embedded in the release
+manifest. Publication requires all fourteen verified components. Receipt parsing
+does not replace the external cryptographic verifiers. No `latest` image aliases
+are created, and downstream deployments continue to use `image@sha256`.
+
+The registry helper is derived from the reviewed Phorge release gate at commit
+`393842254c0c909d23e36f54b85719bfc8c73f83`; component title and complete-set binding
+are enforced here. Credentials are confined to the fixed GHCR token/registry
+origins and never forwarded to redirected blob storage.
+
+The final tag-owned source pair and paired acceptance identify the exact release
+combination. Ordinary cross-repository CI may retain a separately documented
+regression baseline; it must not be described as testing a newer pair unless it
+actually ran that pair. Reciprocal source-SHA locks cannot identify each other
+in the same commit; do not invent hashes or bypass the exact acceptance gate.
