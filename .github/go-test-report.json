@@ -1,15 +1,15 @@
 {
   "schema_version": "1.0",
   "tests": {
-    "total": 923,
-    "passed": 893,
+    "total": 925,
+    "passed": 895,
     "failed": 0,
     "skipped": 30
   },
   "coverage": {
-    "covered_statements": 6846,
-    "total_statements": 11697,
-    "percentage": 58.53,
+    "covered_statements": 6853,
+    "total_statements": 11706,
+    "percentage": 58.54,
     "threshold": 0
   },
   "packages": [
@@ -368,14 +368,14 @@
       "status": "pass",
       "tests": 26,
       "failed": 0,
-      "coverage": 75.05
+      "coverage": 74.84
     },
     {
       "name": "internal/worker/handlers",
       "status": "pass",
-      "tests": 31,
+      "tests": 33,
       "failed": 0,
-      "coverage": 74.26
+      "coverage": 74.58
     },
     {
       "name": "internal/worker/outbox",

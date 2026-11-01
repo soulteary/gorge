@@ -4,11 +4,11 @@
 
 | Metric | Value |
 | --- | --- |
-| Total | 923 |
-| Passed | 893 |
+| Total | 925 |
+| Passed | 895 |
 | Failed | 0 |
 | Skipped | 30 |
-| Coverage | 58.53% |
+| Coverage | 58.54% |
 | Threshold | 0.00% |
 
 ### Packages
@@ -65,6 +65,6 @@
 | internal/search/projection | pass | 9 | 0 | 15.27% |
 | internal/taskqueue | pass | 43 | 0 | 25.41% |
 | internal/webhook | pass | 46 | 0 | 64.53% |
-| internal/worker | pass | 26 | 0 | 75.05% |
-| internal/worker/handlers | pass | 31 | 0 | 74.26% |
+| internal/worker | pass | 26 | 0 | 74.84% |
+| internal/worker/handlers | pass | 33 | 0 | 74.58% |
 | internal/worker/outbox | pass | 2 | 0 | 73.08% |
