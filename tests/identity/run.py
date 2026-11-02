@@ -45,9 +45,14 @@ def fixture(root,lock):
  out['services']['webhook'].update(command=['-hooks','/fixture/hooks.json','-port','9000'],volumes=[mount('hooks.json','/fixture/hooks.json')])
  return out,secret,user
 
+def certificate(root,log):
+ subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(root/'key.pem'),'-out',str(root/'cert.pem'),'-days','1','-subj','/CN=owlmail','-addext','subjectAltName=DNS:owlmail','-addext','basicConstraints=critical,CA:TRUE'],check=True,stdout=log,stderr=log)
+ # Bind mounts preserve host modes; consumers have different container UIDs.
+ for name in ('cert.pem','key.pem'):(root/name).chmod(0o644)
+
 class Suite:
  def __init__(self,root,lock,report):
-  self.root=root;self.lock=lock;self.report=report;self.project='gorge-interop-'+uuid.uuid4().hex[:12];self.cmd=['docker','compose','-p',self.project,'-f',str(root/'compose.json')];self.log=(root/'private.log').open('a');self.checks=[];self.op=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+  self.root=root;self.lock=lock;self.report=report;self.project='gorge-interop-'+uuid.uuid4().hex[:12];self.cmd=['docker','compose','-p',self.project,'-f',str(root/'compose.json')];self.log=(root/'private.log').open('a');self.checks=[];self.phase='initial';self.op=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
  def call(self,*args):return subprocess.check_output(list(args),stderr=self.log)
  def dc(self,*args):return self.call(*self.cmd,*args)
  def check(self,id,ok):
@@ -78,14 +83,15 @@ class Suite:
  def exercise(self):
   cfg,self.secret,user=fixture(self.root,self.lock)
   # Fresh per-run certificate only. The key is never returned or uploaded.
-  subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(self.root/'key.pem'),'-out',str(self.root/'cert.pem'),'-days','1','-subj','/CN=owlmail','-addext','subjectAltName=DNS:owlmail','-addext','basicConstraints=critical,CA:TRUE'],check=True,stdout=self.log,stderr=self.log)
-  (self.root/'key.pem').chmod(0o644);(self.root/'compose.json').write_text(json.dumps(cfg));(self.root/'compose.json').chmod(0o600)
-  self.dc('pull')
+  certificate(self.root,self.log)
+  (self.root/'compose.json').write_text(json.dumps(cfg));(self.root/'compose.json').chmod(0o600)
+  self.phase='pull';self.dc('pull')
   # Initialize only this fresh project's audit volume for Herald's runtime UID.
-  self.dc('create')
+  self.phase='create';self.dc('create')
   audit_volume=self.project+'_audit'
-  self.call('docker','run','--rm','--network','none','--read-only','--cap-drop','ALL','--cap-add','CHOWN','--security-opt','no-new-privileges:true','--entrypoint','sh','-v',audit_volume+':/audit',self.lock['services']['redis']['image'],'-c','chmod 700 /audit && chown 10001:10001 /audit')
-  self.dc('up','-d','--pull','never');xs=self.ready()
+  self.phase='audit-volume-init'
+  self.call('docker','run','--rm','--network','none','--read-only','--cap-drop','ALL','--cap-add','FOWNER','--cap-add','CHOWN','--security-opt','no-new-privileges:true','--entrypoint','sh','-v',audit_volume+':/audit',self.lock['services']['redis']['image'],'-c','chmod 700 /audit && chown 10001:10001 /audit')
+  self.phase='start';self.dc('up','-d','--pull','never');self.phase='readiness';xs=self.ready()
   self.check('six-services-running',len(xs)==6)
   self.check('no-published-ports',all(not x['HostConfig'].get('PortBindings') for x in xs.values()))
   self.check('gateway-disabled',all(x['Config']['Labels'].get('traefik.enable')=='false' for x in xs.values()))
@@ -130,17 +136,22 @@ class Suite:
   status,b=self.req('owlmail','/api/v1/emails/'+urllib.parse.quote(eid,safe='')+'/source',auth=True);self.check('raw-message-hash-preserved',status==200 and hashlib.sha256(before).digest()==hashlib.sha256(b).digest())
   status,b=self.req('owlmail','/api/v1/webhook-deliveries?email_id='+urllib.parse.quote(eid,safe=''),auth=True);self.check('webhook-receipts-preserved',status==200 and json.loads(b)['deliveries']==receipts)
  def run(self):
-  ok=False;error=None;clean=False
+  ok=False;error=None;clean=False;diagnostics=[];categories=[]
   try:
    self.exercise()
    if len(self.checks)!=25 or len({x['id'] for x in self.checks})!=25 or not all(x['passed'] for x in self.checks):raise Failure('incomplete-check-set')
    ok=True
-  except Exception as e:error=str(e) if isinstance(e,Failure) else type(e).__name__
+  except Exception as e:
+   error=str(e) if isinstance(e,Failure) else type(e).__name__+':'+self.phase
+   self.log.flush();raw=(self.root/'private.log').read_text(errors='replace').lower()
+   categories=[label for label in ['permission denied','operation not permitted','manifest unknown','unauthorized','invalid mount config','no matching manifest','no such file or directory'] if label in raw]
+   try:diagnostics=[{'service':n,'state':x['State']['Status'],'exitCode':x['State']['ExitCode'],'health':x['State'].get('Health',{}).get('Status')} for n,x in self.inspect().items()]
+   except Exception:pass
   finally:
    try:
     self.dc('down','--volumes','--remove-orphans','--timeout','10');clean=not self.call('docker','ps','-aq','--filter','label=com.docker.compose.project='+self.project).strip() and not self.call('docker','volume','ls','-q','--filter','label=com.docker.compose.project='+self.project).strip()
    except Exception:clean=False
-   report={'schemaVersion':1,'passed':ok and clean,'checks':self.checks,'failure':error,'cleanupPassed':clean,'sourceRevision':subprocess.check_output(['git','-C',str(HERE),'rev-parse','HEAD'],text=True).strip(),'sourceTree':subprocess.check_output(['git','-C',str(HERE),'rev-parse','HEAD^{tree}'],text=True).strip(),'runnerSHA256':hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),'images':self.lock['services'],'scope':'Fresh six-service internal Docker project; synthetic allowlist, per-run credentials/TLS, no published ports or copied deployment data. No live/browser/permission-model or external relay activation.','rawMessagesExported':False}
+   report={'schemaVersion':1,'passed':ok and clean,'checks':self.checks,'failure':error,'diagnosticCategories':categories,'serviceStates':diagnostics,'cleanupPassed':clean,'sourceRevision':subprocess.check_output(['git','-C',str(HERE),'rev-parse','HEAD'],text=True).strip(),'sourceTree':subprocess.check_output(['git','-C',str(HERE),'rev-parse','HEAD^{tree}'],text=True).strip(),'runnerSHA256':hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),'images':self.lock['services'],'scope':'Fresh six-service internal Docker project; synthetic allowlist, per-run credentials/TLS, no published ports or copied deployment data. No live/browser/permission-model or external relay activation.','rawMessagesExported':False}
    self.report.parent.mkdir(parents=True,exist_ok=True);self.report.write_text(json.dumps(report,indent=2)+'\n');self.log.close()
   return ok and clean
 

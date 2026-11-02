@@ -1,4 +1,4 @@
-import copy,importlib.util,json,pathlib,tempfile,unittest
+import copy,importlib.util,json,pathlib,tempfile,unittest,os
 HERE=pathlib.Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('suite',HERE/'run.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class FixtureTests(unittest.TestCase):
@@ -31,4 +31,11 @@ class FixtureTests(unittest.TestCase):
   with self.assertRaises(ValueError):m.validate_docker_target({},'unix:///var/run/docker.sock','remote-context')
   for env,target in [({'DOCKER_HOST':'tcp://remote.invalid'},'unix:///var/run/docker.sock'),({'DOCKER_CONTEXT':'other'},'unix:///var/run/docker.sock'),({},'tcp://remote.invalid')]:
    with self.subTest(env=env,target=target),self.assertRaises(ValueError):m.validate_docker_target(env,target)
+ def test_tls_files_are_readable_by_container_users_under_private_umask(self):
+  with tempfile.TemporaryDirectory() as tmp,open(os.devnull,'w') as log:
+   previous=os.umask(0o077)
+   try:m.certificate(pathlib.Path(tmp),log)
+   finally:os.umask(previous)
+   self.assertEqual((pathlib.Path(tmp)/'cert.pem').stat().st_mode&0o777,0o644)
+   self.assertEqual((pathlib.Path(tmp)/'key.pem').stat().st_mode&0o777,0o644)
 if __name__=='__main__':unittest.main()
