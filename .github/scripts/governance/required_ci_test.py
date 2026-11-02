@@ -55,4 +55,12 @@ class RequiredCITests(unittest.TestCase):
    changed=copy.deepcopy(actual);changed[key]['enabled']=value
    with self.subTest(key=key):self.assertFalse(m.effective(changed,policy))
   actual['required_pull_request_reviews']['dismiss_stale_reviews']=False;self.assertFalse(m.effective(actual,policy))
+ def test_last_push_and_restricted_review_actors_are_preserved(self):
+  spec=importlib.util.spec_from_file_location('protection',HERE/'protect_main.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+  policy={'check':'Gorge required CI','app_id':15368,'required_approving_review_count':0}
+  old={'required_pull_request_reviews':{'require_last_push_approval':True,'dismissal_restrictions':{'users':[{'login':'existing-reviewer'}],'teams':[]}},'restrictions':{'users':[],'teams':[{'slug':'maintainers'}],'apps':[]}}
+  new=m.desired(old,policy)
+  self.assertTrue(new['required_pull_request_reviews']['require_last_push_approval'])
+  self.assertEqual(new['required_pull_request_reviews']['dismissal_restrictions']['users'],['existing-reviewer'])
+  self.assertEqual(new['restrictions']['teams'],['maintainers'])
 if __name__=='__main__':unittest.main()
