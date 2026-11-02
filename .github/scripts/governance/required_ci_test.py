@@ -38,7 +38,7 @@ class RequiredCITests(unittest.TestCase):
  def test_actual_git_rename_from_runtime_to_documentation_runs_full_ci(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp)
-   def git(*args):return subprocess.check_output(['git',*args],cwd=root,stderr=subprocess.DEVNULL).decode().strip()
+   def git(*args):return subprocess.check_output(['git','-c','commit.gpgsign=false','-c','core.hooksPath=/dev/null',*args],cwd=root,stderr=subprocess.DEVNULL).decode().strip()
    git('init');(root/'go/cmd/service').mkdir(parents=True);(root/'go/cmd/service/main.go').write_text('package main\nfunc main() {}\n')
    git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m','runtime fixture');base=git('rev-parse','HEAD')
    (root/'docs').mkdir();git('mv','go/cmd/service/main.go','docs/archived-main.md');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-am','move fixture');head=git('rev-parse','HEAD')
