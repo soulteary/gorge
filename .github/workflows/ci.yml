@@ -416,10 +416,33 @@ jobs:
             root:integrations-contract-only@tcp(127.0.0.1:3306)/gorge_integrations_test?parseTime=true
         run: go test -race -count=1 ./internal/integrations ./cmd/gorge-integrations
 
+  identity-regression:
+    name: Isolated identity and mail regression
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify immutable fixtures and isolation rejection paths
+        run: python3 -m unittest discover -s tests/identity -p '*_test.py'
+      - name: Run fresh six-service contracts and restart recovery
+        run: python3 tests/identity/run.py --output "$RUNNER_TEMP/identity-regression.json"
+      - name: Upload only the sanitized source-bound receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: identity-regression-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/identity-regression.json
+          if-no-files-found: warn
+          retention-days: 14
+
   required:
     name: Gorge required CI
     if: always()
-    needs: [changes, policy, cleanup-runtime, search-projection-runtime, image-runtime, fmt, vet, build, test, lint, security-scan, queue-execution, worker-lifecycle, integrations-runtime]
+    needs: [changes, policy, identity-regression, cleanup-runtime, search-projection-runtime, image-runtime, fmt, vet, build, test, lint, security-scan, queue-execution, worker-lifecycle, integrations-runtime]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

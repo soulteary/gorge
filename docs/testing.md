@@ -138,3 +138,10 @@ Phorge `tests/operations` 的隔离恢复测试与 ES 原生快照回归证明�
 路径。生产备份 bundle 的 SQL/卷回执保留 `businessIntegrity=not_verified`；含外部
 搜索快照时还保留 `externalSearchRestore=not_verified`。具体备份的业务引用、unknown
 核对、原生搜索恢复和切流必须另行验收，见 [operations](operations.md)。
+
+## Isolated identity and mail regression
+
+The [fresh six-service suite](../tests/identity/README.md) locks source/image
+identity and checks OTP, TLS mail capture, signed Webhook delivery and Owlmail
+restart persistence without copying deployment configuration. Its result feeds
+the required main check; only sanitized JSON is uploaded.
