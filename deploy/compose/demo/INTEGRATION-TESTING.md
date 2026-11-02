@@ -103,7 +103,7 @@ BASE_URL=http://127.0.0.1:8110 bash tests/e2e/mailer.sh
 
 ```bash
 open http://127.0.0.1:1080                 # OwlMail Web UI
-curl -s http://127.0.0.1:1080/email        # API，可用于脚本断言
+curl -s http://127.0.0.1:1080/api/v1/emails        # API，可用于脚本断言
 ```
 
 应能看到主题 `gorge e2e attachment`、带 `note.txt` 附件的那封。
@@ -271,6 +271,6 @@ $COMPOSE down -v       # 连命名卷一起删（meili_data / es_data / mysql_da
 | gorge-webhook | 8160 | `gorge-webhook:8160` | `/readyz` `/healthz` `/api/webhook/{stats,hooks}` |
 | Meilisearch | 7700 | `meili:7700` | 主密钥 `demo-master-key` |
 | Elasticsearch | 9200 | `es:9200` | 单节点，正常停在 yellow |
-| OwlMail | 1080(Web)/1025(SMTP) | `owlmail:1080` / `owlmail:1025` | 收件箱 API：`/email` |
+| OwlMail | 1080(Web)/1025(SMTP) | `owlmail:1080` / `owlmail:1025` | 收件箱 API：`/api/v1/emails` |
 | webhook 接收端 | 9000 | `webhook-receiver:9000` | hook: `/hooks/gorge-demo` |
 | MySQL | 3306 | `mysql:3306` | 库 `phabricator_herald`，账号 `phorge/phorge` |

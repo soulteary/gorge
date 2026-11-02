@@ -17,6 +17,12 @@
 > `failed` 等问题怎么排查，见 [`INTEGRATION-TESTING.md`](INTEGRATION-TESTING.md)。
 > 本 README 偏「怎么启动」，那份手册偏「怎么系统性联调 + 排障」。
 
+## 固定后端版本与升级
+
+本 demo 固定 OwlMail `0.13.0` 和 WebHook `extended-7.3.4`，避免 `latest` 随后续版本移动。Webhook 保留带 shell、wget 的 extended 运行时，不能改用无前缀/core 镜像。UID/GID 65532 必须能读取挂载的 hooks 文件。
+
+升级先停止旧栈，保留原密钥、端口和命名卷；如果为 OwlMail 额外挂载邮件目录，先备份完整目录及外部存储，再参考 [0.13.0 的持久 Relay 升级/回退说明](https://github.com/soulteary/owlmail/blob/v0.13.0/docs/zh-CN/Release-0.13.0.md)。恢复可能继续待发送任务，投递为至少一次；回退使用升级前完整备份，不能让两版本共享可写数据。默认 demo 的 OwlMail 没有邮件持久卷，替换容器会丢弃捕获邮件。更新后重新检查两后端健康与邮件捕获、hook 执行，再跑下列 gorge 联调。
+
 ## 目录
 
 ```
@@ -76,7 +82,7 @@ BASE_URL=http://127.0.0.1:8110 bash tests/e2e/mailer.sh   # 仓库根目录下
 open http://127.0.0.1:1080                                # OwlMail Web UI
 ```
 
-OwlMail 也提供 API：`curl -s http://127.0.0.1:1080/email` 可拉取收到的邮件做断言。
+OwlMail 也提供 API：`curl -s http://127.0.0.1:1080/api/v1/emails` 可拉取收到的邮件做断言。
 
 ### 3. Webhook（MySQL 队列 → soulteary/webhook 接收端）
 

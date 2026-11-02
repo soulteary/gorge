@@ -87,7 +87,7 @@ services:
   #   SMTP 1025（应用投递到这里）/ Web UI + API 1080（人看、脚本断言）
   # ---------------------------------------------------------------------------
   owlmail:
-    image: ghcr.io/soulteary/owlmail:latest
+    image: ghcr.io/soulteary/owlmail:0.13.0
     restart: unless-stopped
     environment:
       # 绑定到 0.0.0.0，否则默认只听 localhost，同网络的 gorge-mailer 连不上。
@@ -106,7 +106,7 @@ services:
   # 后端四：soulteary/webhook —— webhook 接收端，gorge-webhook 的投递目标
   #   收到 POST 后执行一条 hook（这里只打印 payload），/health 用作探针。
   #
-  # 标签必须是 extend 变体，不能用 latest。latest 是 scratch 镜像，里面只有
+  # 标签固定 extended 变体，不能用 latest。latest 是 scratch 镜像，里面只有
   # /usr/bin/webhook 一个文件，而本服务需要另外两样东西，两样都不在里面：
   #   - 下面 healthcheck 的 wget（缺了它探针必然 exit 1，容器永远 unhealthy，
   #     而 gorge-webhook 用 service_healthy 等它，于是整个 up 卡在依赖上——
@@ -115,10 +115,10 @@ services:
   #   - hooks/hooks.json 里 execute-command 的 /bin/sh（缺了它投递会真的到达、
   #     hook 也会 matched，但 exec 失败让接收端答 500，gorge-webhook 因此把
   #     一次成功的投递记成失败）。
-  # extend 变体是同一个版本、同一个 entrypoint，只是多了 shell 与 curl/wget。
+  # extended 变体是同一个版本、同一个 entrypoint，只是多了 shell 与 curl/wget。
   # ---------------------------------------------------------------------------
   webhook-receiver:
-    image: ghcr.io/soulteary/webhook:${WEBHOOK_RECEIVER_TAG:-extend-7.3.0}
+    image: ghcr.io/soulteary/webhook:${WEBHOOK_RECEIVER_TAG:-extended-7.3.4}
     restart: unless-stopped
     command: ["-verbose", "-hooks", "/etc/webhook/hooks.json", "-hotreload"]
     volumes:
