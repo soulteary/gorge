@@ -13,7 +13,9 @@ Owlmail, Webhook and Redis. It never reads an existing deployment, account list,
 credential, Docker context override or supplied endpoint. It generates one
 synthetic allowlisted account, independent random service credentials, and a
 short-lived SMTP certificate trusted only by the test Herald container. SMTP
-AUTH requires TLS; no certificate verification is disabled.
+AUTH requires TLS; no certificate verification is disabled. Redis starts directly
+as its image-provided non-root user, so its entrypoint does not need to switch
+UIDs after all runtime capabilities have been dropped.
 
 Twenty checks cover health/isolation, private audit spool, authenticated mail
 capture, cross-origin rejection, allowlist denial, challenge delivery, captured

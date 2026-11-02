@@ -18,6 +18,8 @@ class FixtureTests(unittest.TestCase):
    self.assertEqual(set(cfg['services']),m.SERVICES);self.assertTrue(cfg['networks']['default']['internal'])
    for service in cfg['services'].values():
     self.assertNotIn('ports',service);self.assertEqual(service['labels']['traefik.enable'],'false');self.assertEqual(service['restart'],'no')
+   self.assertEqual(cfg['services']['redis']['user'],'redis')
+   self.assertEqual(cfg['services']['redis']['cap_drop'],['ALL'])
    self.assertEqual(user,'fixture@example.invalid');self.assertEqual(len(set(keys.values())),7)
    self.assertEqual(cfg['services']['owlmail']['environment']['OWLMAIL_SMTP_AUTH_REQUIRE_TLS'],'true')
    self.assertEqual(cfg['services']['herald']['environment']['SSL_CERT_FILE'],'/fixture/cert.pem')

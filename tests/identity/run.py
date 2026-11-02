@@ -37,7 +37,7 @@ def fixture(root,lock):
  'webhook':{}}
  for name in SERVICES:
   out['services'][name]={**common,'image':lock['services'][name]['image'],'environment':env[name],'tmpfs':['/tmp:rw,nosuid,size=32m']}
- out['services']['redis'].update(command=['redis-server','--requirepass',secret['redis'],'--save',''],read_only=False,healthcheck={'test':['CMD','redis-cli','-a',secret['redis'],'ping'],'interval':'2s','timeout':'2s','retries':30})
+ out['services']['redis'].update(user='redis',command=['redis-server','--requirepass',secret['redis'],'--save',''],read_only=False,healthcheck={'test':['CMD','redis-cli','-a',secret['redis'],'ping'],'interval':'2s','timeout':'2s','retries':30})
  out['services']['warden']['volumes']=[mount('users.json','/fixture/users.json')]
  out['services']['herald']['volumes']=[mount('cert.pem','/fixture/cert.pem'),{'type':'volume','source':'audit','target':'/var/lib/herald/audit'}]
  # The named audit volume initializes from the image-owned directory if available.
