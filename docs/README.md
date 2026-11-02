@@ -23,6 +23,7 @@
 | [`architecture.md`](architecture.md) | 项目定位、仓库结构、三层划分与被测试守住的分层约束、契约层、加一个模块的成本 |
 | [`platform.md`](platform.md) | `internal/platform`：HTTP 引导、鉴权、探针、配置、Conduit client 与只读观测 |
 | [`testing.md`](testing.md) | 四层测试体系、契约固件格式、为什么断言 contains 而非 golden、覆盖率现状 |
+| [`main-ci-governance.md`](main-ci-governance.md) | main required CI, fail-closed aggregation and protected report updates |
 | [`delivery.md`](delivery.md) | Dockerfile、Compose 编排、CI 与 Release 流水线 |
 | [`operations.md`](operations.md) | 接管报告、持久状态、容量、备份与配对验收 |
 | [`findings.md`](findings.md) | 当前限制、已落实的兼容决策与后续验证边界，按模块分节 |

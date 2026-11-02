@@ -1,29 +1,62 @@
 name: CI
 
 # The Go module lives under go/, so every job runs with working-directory: go
-# and the paths filter keeps PHP-only changes from spending CI minutes here.
+# and job-level selection avoids expensive runtime jobs for documentation only.
+# The final required check always runs, including documentation and report pushes.
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'Makefile'
-      - 'go/**'
-      - 'tests/**'
-      - '.github/workflows/**'
   pull_request:
     branches: [main, develop]
-    paths:
-      - 'Makefile'
-      - 'go/**'
-      - 'tests/**'
-      - '.github/workflows/**'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: required-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GO_VERSION: '1.27.3'
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      runtime: ${{ steps.paths.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/scripts/governance/required_ci.py select
+
+  policy:
+    name: CI and release policy contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test required-check fail-closed paths
+        run: python3 -m unittest discover -s .github/scripts/governance -p '*_test.py'
+      - name: Test immutable source-pair and release rejection paths
+        run: python3 -m unittest discover -s deploy/release -p '*_test.py'
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Verify documentation contracts even on documentation-only changes
+        working-directory: go
+        run: go test ./internal/doccheck
+
   cleanup-runtime:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -46,6 +79,8 @@ jobs:
         run: go test -race -count=1 ./internal/maintenance/cleanup
 
   search-projection-runtime:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -88,6 +123,8 @@ jobs:
           GORGE_TEST_MEILI_KEY: search-contract-only
         run: go test -race -count=1 ./internal/search/...
   image-runtime:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -113,6 +150,8 @@ jobs:
         run: docker rm -f image-contract || true
   # Code formatting check
   fmt:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Code Formatting Check
     runs-on: ubuntu-latest
     steps:
@@ -136,6 +175,8 @@ jobs:
 
   # Code static analysis
   vet:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Code Static Analysis
     runs-on: ubuntu-latest
     steps:
@@ -154,6 +195,8 @@ jobs:
 
   # Compilation check
   build:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Build
     runs-on: ubuntu-latest
     steps:
@@ -172,6 +215,8 @@ jobs:
 
   # Code testing
   test:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Code Testing
     runs-on: ubuntu-latest
     strategy:
@@ -250,6 +295,8 @@ jobs:
     permissions:
       contents: read
   lint:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Code Quality Check
     runs-on: ubuntu-latest
     steps:
@@ -274,6 +321,8 @@ jobs:
 
   # Dependency security scan
   security-scan:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Dependency Security Scan
     runs-on: ubuntu-latest
     steps:
@@ -294,6 +343,8 @@ jobs:
         run: govulncheck ./...
 
   queue-execution:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Queue execution against real backends
     runs-on: ubuntu-latest
     services:
@@ -324,6 +375,8 @@ jobs:
           go test -race ./internal/mailer -run 'Test(MailDelivery|DeliveryInspection)MySQLIntegration' -v
 
   worker-lifecycle:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Worker heartbeat and relay races
     runs-on: ubuntu-latest
     steps:
@@ -337,6 +390,8 @@ jobs:
         run: go test -race ./internal/worker/...
 
   integrations-runtime:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -360,3 +415,18 @@ jobs:
           GORGE_TEST_INTEGRATIONS_DSN:
             root:integrations-contract-only@tcp(127.0.0.1:3306)/gorge_integrations_test?parseTime=true
         run: go test -race -count=1 ./internal/integrations ./cmd/gorge-integrations
+
+  required:
+    name: Gorge required CI
+    if: always()
+    needs: [changes, policy, cleanup-runtime, search-projection-runtime, image-runtime, fmt, vet, build, test, lint, security-scan, queue-execution, worker-lifecycle, integrations-runtime]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Require every applicable job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          RUNTIME_REQUIRED: ${{ needs.changes.outputs.runtime }}
+        run: python3 .github/scripts/governance/required_ci.py verify
