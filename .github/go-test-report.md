@@ -8,7 +8,7 @@
 | Passed | 895 |
 | Failed | 0 |
 | Skipped | 30 |
-| Coverage | 58.54% |
+| Coverage | 58.55% |
 | Threshold | 0.00% |
 
 ### Packages
@@ -42,7 +42,7 @@
 | internal/gitea | pass | 13 | 0 | 84.62% |
 | internal/imagetransform | pass | 17 | 0 | 48.09% |
 | internal/integrations | pass | 22 | 0 | 48.48% |
-| internal/mailer | pass | 87 | 0 | 64.74% |
+| internal/mailer | pass | 87 | 0 | 64.85% |
 | internal/maintenance/cleanup | pass | 15 | 0 | 9.77% |
 | internal/notification | pass | 43 | 0 | 91.80% |
 | internal/notification/hub | pass | 24 | 0 | 92.20% |

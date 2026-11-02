@@ -7,9 +7,9 @@
     "skipped": 30
   },
   "coverage": {
-    "covered_statements": 6853,
+    "covered_statements": 6854,
     "total_statements": 11706,
-    "percentage": 58.54,
+    "percentage": 58.55,
     "threshold": 0
   },
   "packages": [
@@ -207,7 +207,7 @@
       "status": "pass",
       "tests": 87,
       "failed": 0,
-      "coverage": 64.74
+      "coverage": 64.85
     },
     {
       "name": "internal/maintenance/cleanup",
