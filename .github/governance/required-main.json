@@ -1,0 +1,11 @@
+{
+  "repository": "soulteary/gorge",
+  "branch": "main",
+  "check": "Gorge required CI",
+  "app_id": 15368,
+  "strict": true,
+  "enforce_admins": true,
+  "required_conversation_resolution": true,
+  "required_approving_review_count": 0,
+  "review_policy": "Before merging, independently verify the completed review of the exact final PR head and resolve all findings. The current automated review is a comment receipt, not a GitHub approving review."
+}
