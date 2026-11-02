@@ -21,7 +21,7 @@ def select():
         result=True
     else:
         if not re.fullmatch('[0-9a-f]{40}',head):raise ValueError('Invalid source revision')
-        paths=subprocess.check_output(['git','diff','--name-only','-z',base,head]).decode().split('\0')
+        paths=subprocess.check_output(['git','diff','--no-renames','--name-only','-z',base,head]).decode().split('\0')
         result=needs_runtime([p for p in paths if p])
     with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('runtime='+str(result).lower()+'\n')
 

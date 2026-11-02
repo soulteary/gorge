@@ -1,4 +1,4 @@
-import importlib.util,json,os,re,unittest
+import importlib.util,json,os,re,unittest,subprocess,tempfile
 from pathlib import Path
 HERE=Path(__file__).parent
 spec=importlib.util.spec_from_file_location('gate',HERE/'required_ci.py');gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
@@ -35,4 +35,24 @@ class RequiredCITests(unittest.TestCase):
   self.assertEqual(result['required_pull_request_reviews']['required_approving_review_count'],2)
   self.assertTrue(result['required_pull_request_reviews']['require_code_owner_reviews'])
   self.assertTrue(result['enforce_admins']);self.assertFalse(result['allow_force_pushes'])
+ def test_actual_git_rename_from_runtime_to_documentation_runs_full_ci(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp)
+   def git(*args):return subprocess.check_output(['git',*args],cwd=root,stderr=subprocess.DEVNULL).decode().strip()
+   git('init');(root/'go/cmd/service').mkdir(parents=True);(root/'go/cmd/service/main.go').write_text('package main\nfunc main() {}\n')
+   git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m','runtime fixture');base=git('rev-parse','HEAD')
+   (root/'docs').mkdir();git('mv','go/cmd/service/main.go','docs/archived-main.md');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-am','move fixture');head=git('rev-parse','HEAD')
+   output=root/'output';env={**os.environ,'GITHUB_EVENT_NAME':'pull_request','BASE_SHA':base,'GITHUB_SHA':head,'GITHUB_OUTPUT':str(output)}
+   subprocess.run(['python3',str((HERE/'required_ci.py').resolve()),'select'],cwd=root,env=env,check=True)
+   self.assertEqual(output.read_text(),'runtime=true\n')
+ def test_effective_policy_refuses_each_protection_drift(self):
+  import copy
+  spec=importlib.util.spec_from_file_location('protection',HERE/'protect_main.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+  policy={'check':'Gorge required CI','app_id':15368,'required_approving_review_count':0}
+  actual={'required_status_checks':{'strict':True,'checks':[{'context':policy['check'],'app_id':15368}]},'enforce_admins':{'enabled':True},'required_conversation_resolution':{'enabled':True},'required_pull_request_reviews':{'required_approving_review_count':0,'dismiss_stale_reviews':True},'required_linear_history':{'enabled':True},'allow_force_pushes':{'enabled':False},'allow_deletions':{'enabled':False}}
+  self.assertTrue(m.effective(actual,policy))
+  for key,value in [('required_linear_history',False),('allow_force_pushes',True),('allow_deletions',True)]:
+   changed=copy.deepcopy(actual);changed[key]['enabled']=value
+   with self.subTest(key=key):self.assertFalse(m.effective(changed,policy))
+  actual['required_pull_request_reviews']['dismiss_stale_reviews']=False;self.assertFalse(m.effective(actual,policy))
 if __name__=='__main__':unittest.main()

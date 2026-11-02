@@ -14,6 +14,9 @@ def desired(previous,policy):
  checks=[c for c in checks if c['context']!=policy['check']]+[{'context':policy['check'],'app_id':policy['app_id']}]
  reviews=(previous or {}).get('required_pull_request_reviews') or {}
  return {'required_status_checks':{'strict':True,'checks':[{k:v for k,v in c.items() if k in ('context','app_id')} for c in checks]},'enforce_admins':True,'required_pull_request_reviews':{'dismiss_stale_reviews':True,'require_code_owner_reviews':reviews.get('require_code_owner_reviews',False),'required_approving_review_count':max(reviews.get('required_approving_review_count',0),policy['required_approving_review_count'])},'restrictions':(previous or {}).get('restrictions'),'required_linear_history':True,'allow_force_pushes':False,'allow_deletions':False,'required_conversation_resolution':True}
+def effective(actual,policy):
+ return bool(actual and actual['required_status_checks']['strict'] and any(c['context']==policy['check'] and c['app_id']==policy['app_id'] for c in actual['required_status_checks']['checks']) and actual['enforce_admins']['enabled'] and actual['required_conversation_resolution']['enabled'] and actual['required_pull_request_reviews']['required_approving_review_count']>=policy['required_approving_review_count'] and actual['required_pull_request_reviews'].get('dismiss_stale_reviews') is True and actual.get('required_linear_history',{}).get('enabled') is True and actual.get('allow_force_pushes',{}).get('enabled') is False and actual.get('allow_deletions',{}).get('enabled') is False)
+
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--apply',action='store_true');parser.add_argument('--verified-ref');args=parser.parse_args()
  policy=json.loads((Path(__file__).parents[2]/'governance/required-main.json').read_text())
@@ -25,7 +28,7 @@ def main():
   if not matching or matching[0]['conclusion']!='success' or matching[0]['status']!='completed':raise SystemExit('Exact required-check identity has not succeeded')
   api('/branches/main/protection','PUT',desired(previous,policy))
  actual=api('/branches/main/protection') if args.apply or previous else None
- ok=bool(actual and actual['required_status_checks']['strict'] and any(c['context']==policy['check'] and c['app_id']==policy['app_id'] for c in actual['required_status_checks']['checks']) and actual['enforce_admins']['enabled'] and actual['required_conversation_resolution']['enabled'] and actual['required_pull_request_reviews']['required_approving_review_count']>=policy['required_approving_review_count'])
+ ok=effective(actual,policy)
  print(json.dumps({'repository':'soulteary/gorge','branch':'main','applied':args.apply,'effective':ok,'requiredCheck':policy['check'],'checkApplication':policy['app_id'],'manualFinalHeadReviewStillRequired':True}))
  if not ok:raise SystemExit(1)
 if __name__=='__main__':main()
