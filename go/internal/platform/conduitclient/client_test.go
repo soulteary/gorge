@@ -3,6 +3,8 @@ package conduitclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,5 +92,38 @@ func TestBoundedTransportDoesNotExposeResponseInErrors(t *testing.T) {
 			t.Fatalf("legacy diagnostics changed: %v", legacyErr)
 		}
 		srv.Close()
+	}
+}
+
+func TestExactEncodedRequestBudgetIncludesConduitMetadata(t *testing.T) {
+	calls, actualBytes := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		calls++
+		actualBytes = len(raw)
+		_, _ = w.Write([]byte(`{"result":{},"error_code":null,"error_info":null}`))
+	}))
+	defer srv.Close()
+	token := strings.Repeat("+&", 30)
+	params := map[string]any{"message": `{"text":"+&\\\""}`, "deliveryID": "synthetic"}
+	if _, err := NewBounded(srv.URL, token, 4096).Call(context.Background(), "mail.delivery", params); err != nil {
+		t.Fatal(err)
+	}
+	exact := actualBytes
+	if _, err := NewBoundedRequest(srv.URL, token, 4096, exact).Call(context.Background(), "mail.delivery", params); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || actualBytes != exact {
+		t.Fatal("exact wire boundary changed")
+	}
+	if _, err := NewBoundedRequest(srv.URL, token, 4096, exact-1).Call(context.Background(), "mail.delivery", params); !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("wrong budget classification: %v", err)
+	}
+	if calls != 2 {
+		t.Fatal("oversized complete form reached network")
 	}
 }

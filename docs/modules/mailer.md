@@ -274,3 +274,20 @@ manual resend. This API does not turn an ambiguous result into a safe retry.
 For accepted results with `projectionPending=true`, troubleshoot the PHP Conduit
 connection and projection retry metadata; resubmitting the email does not repair
 result projection. Timestamps are Unix seconds, and zero means no scheduled time.
+
+### Private attempt authorization transport budget
+
+The fixed native authorization callback accepts a serialized message up to
+10 MiB and independently caps the **complete form-encoded HTTP request** at
+10 MiB. That second limit is measured by the actual Conduit encoder after JSON
+string escaping, URL encoding, delivery metadata and the configured service
+token have all been included. Tokens are limited to 4096 bytes and delivery IDs
+to 128 bytes. The response remains independently bounded to 4096 bytes.
+
+These are transport bounds, not a promise that every raw message near 10 MiB
+can be represented inside the callback envelope. A message exceeding either
+bound is refused before the callback or provider is contacted, with an explicit
+permanent transport-budget outcome; it never authorizes fallback. Ordinary
+attachment-bearing messages and text beyond 64 KiB retain source authorization.
+The matching Phorge callback must use the same 10 MiB serialized-message bound
+while retaining canonical message equality and current native policy checks.
