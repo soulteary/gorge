@@ -160,7 +160,7 @@ func (d *Dispatcher) sendAuthorized(ctx context.Context, msg *contracts.EmailMes
 		// A permanent failure is a property of the message, not of the backend,
 		// so trying the next one would only produce the same rejection more
 		// slowly.
-		if IsPermanent(err) || !CanRetry(err) {
+		if isSourceGateError(err) || IsPermanent(err) || !CanRetry(err) {
 			return nil, err
 		}
 		lastErr = err
@@ -191,7 +191,7 @@ func (d *Dispatcher) sendThroughAuthorized(ctx context.Context, na namedAdapter,
 		}
 		if gate != nil {
 			if err := gate(ctx); err != nil {
-				return "", err
+				return "", &SourceGateError{Err: err}
 			}
 		}
 		messageID, err := na.adapter.Send(ctx, msg)
