@@ -71,7 +71,7 @@ func RegisterRoutes(app fiber.Router, deps *Deps) {
 			if err := deps.Delivery.Dispatcher.Ready(); err != nil {
 				return httpx.Fail(c, 503, CodeSendFailed, "no native delivery backend")
 			}
-			return httpx.OK(c, map[string]any{"schemaVersion": 1, "recovery": true})
+			return httpx.OK(c, map[string]any{"schemaVersion": 1, "recovery": true, "perPhysicalAttemptAuthorization": deps.Delivery.AuthorizeAttempt != nil})
 		})
 	}
 	g.Get("/mailers", listMailers(deps))

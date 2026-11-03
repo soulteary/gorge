@@ -3,6 +3,7 @@ package conduitclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,12 +11,17 @@ import (
 	"strings"
 )
 
+// ErrRequestTooLarge means no HTTP request was sent: the actual encoded form
+// exceeded the explicitly configured request budget.
+var ErrRequestTooLarge = errors.New("bounded conduit request exceeds transport budget")
+
 // Client implements the shared authenticated, form-encoded Conduit transport.
 type Client struct {
 	baseURL       string
 	token         string
 	httpClient    *http.Client
 	responseLimit int64
+	requestLimit  int
 }
 
 func New(baseURL, token string) *Client {
@@ -78,8 +84,13 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any)
 	form.Set("output", "json")
 
 	callURL := fmt.Sprintf("%s/api/%s", c.baseURL, method)
+	body := form.Encode()
+	if c.requestLimit > 0 && len(body) > c.requestLimit {
+		return nil, ErrRequestTooLarge
+	}
+
 	req, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, callURL, strings.NewReader(form.Encode()))
+		ctx, http.MethodPost, callURL, strings.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -155,5 +166,16 @@ func NewBounded(baseURL, token string, limit int64) *Client {
 	}
 	c.responseLimit = limit
 	c.httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}
+
+// NewBoundedRequest additionally bounds the exact form body after all Conduit
+// metadata and both encoding layers. Legacy New/NewBounded callers are unchanged.
+func NewBoundedRequest(baseURL, token string, responseLimit int64, requestLimit int) *Client {
+	c := NewBounded(baseURL, token, responseLimit)
+	if requestLimit <= 0 {
+		requestLimit = 4 * 1024 * 1024
+	}
+	c.requestLimit = requestLimit
 	return c
 }

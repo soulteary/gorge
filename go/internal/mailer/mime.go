@@ -55,7 +55,7 @@ func buildMIME(msg *contracts.EmailMessage) []byte {
 			b.WriteString("\r\n")
 			// Attachment data arrives base64-encoded, which is also how it goes
 			// out, so it is copied through rather than decoded and re-encoded.
-			b.WriteString(att.Data + "\r\n")
+			writeBase64Lines(&b, att.Data)
 		}
 		b.WriteString("--" + boundary + "--\r\n")
 
@@ -94,7 +94,7 @@ func writeAlternative(b *strings.Builder, msg *contracts.EmailMessage, boundary 
 	b.WriteString("--" + boundary + "\r\n")
 	b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
-	b.WriteString(base64.StdEncoding.EncodeToString([]byte(msg.HTMLBody)) + "\r\n")
+	writeBase64Lines(b, base64.StdEncoding.EncodeToString([]byte(msg.HTMLBody)))
 	b.WriteString("--" + boundary + "--\r\n")
 }
 
@@ -104,7 +104,23 @@ func writeAlternative(b *strings.Builder, msg *contracts.EmailMessage, boundary 
 func writePlainBody(b *strings.Builder, text string) {
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
-	b.WriteString(base64.StdEncoding.EncodeToString([]byte(text)) + "\r\n")
+	writeBase64Lines(b, base64.StdEncoding.EncodeToString([]byte(text)))
+}
+
+// writeBase64Lines folds all encoded MIME leaves without changing decoded bytes.
+// RFC 2045 section 6.8 requires at most 76 encoded characters per line:
+// https://www.rfc-editor.org/rfc/rfc2045#section-6.8
+// This also stays below RFC 5321 section 4.5.3.1.6's 1000-octet SMTP line bound:
+// https://www.rfc-editor.org/rfc/rfc5321#section-4.5.3.1.6
+func writeBase64Lines(b *strings.Builder, encoded string) {
+	encoded = strings.NewReplacer("\r", "", "\n", "").Replace(encoded)
+	for len(encoded) > 76 {
+		b.WriteString(encoded[:76])
+		b.WriteString("\r\n")
+		encoded = encoded[76:]
+	}
+	b.WriteString(encoded)
+	b.WriteString("\r\n")
 }
 
 // formatAddr renders an address for a header, Q-encoding the display name so a
