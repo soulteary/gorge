@@ -172,16 +172,13 @@ func (d *Dispatcher) sendAuthorized(ctx context.Context, msg *contracts.EmailMes
 	return nil, fmt.Errorf("all mailers failed, last error: %w", lastErr)
 }
 
-// sendThrough retries one adapter before the caller moves on to the next.
+// sendThroughAuthorized retries one adapter before the caller moves on to the next.
 //
 // The retries absorb second-scale flakiness only, and the whole loop is bound
 // by ctx: Phorge's client waits 30 seconds and its worker queue is the
 // authoritative retry loop, so there is nothing to gain by outliving the caller
 // that asked for the send. See docs/modules/mailer.md section 4 for why the
 // defaults are as small as they are.
-func (d *Dispatcher) sendThrough(ctx context.Context, na namedAdapter, msg *contracts.EmailMessage) (string, error) {
-	return d.sendThroughAuthorized(ctx, na, msg, nil)
-}
 func (d *Dispatcher) sendThroughAuthorized(ctx context.Context, na namedAdapter, msg *contracts.EmailMessage, gate func(context.Context) error) (string, error) {
 	var lastErr error
 
