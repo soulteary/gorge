@@ -2,16 +2,23 @@ package contracts
 
 // MailDeliveryRequest is an immutable prepared email; generation belongs to
 // the PHP producer. Reusing an identity with different content is a conflict.
+type MailAuthorization struct {
+	Version     int    `json:"version"`
+	MailID      int64  `json:"mailID"`
+	DeliveryID  string `json:"deliveryID"`
+	MessageHash string `json:"messageHash"`
+}
 type MailDeliveryRequest struct {
-	AllowSend     *bool        `json:"allowSend,omitempty"`
-	SchemaVersion int          `json:"schemaVersion"`
-	DeliveryID    string       `json:"deliveryID"`
-	MailID        int64        `json:"mailID"`
-	Deadline      int64        `json:"deadline"`
-	Message       EmailMessage `json:"message"`
-	MailerURI     string       `json:"mailerURI,omitempty"`
-	AdapterKey    string       `json:"adapterKey,omitempty"`
-	MailerKeys    []string     `json:"mailerKeys,omitempty"`
+	Authorization *MailAuthorization `json:"authorization,omitempty"`
+	AllowSend     *bool              `json:"allowSend,omitempty"`
+	SchemaVersion int                `json:"schemaVersion"`
+	DeliveryID    string             `json:"deliveryID"`
+	MailID        int64              `json:"mailID"`
+	Deadline      int64              `json:"deadline"`
+	Message       EmailMessage       `json:"message"`
+	MailerURI     string             `json:"mailerURI,omitempty"`
+	AdapterKey    string             `json:"adapterKey,omitempty"`
+	MailerKeys    []string           `json:"mailerKeys,omitempty"`
 }
 type MailDeliveryResult struct {
 	DeliveryID  string `json:"deliveryID"`

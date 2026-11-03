@@ -21,9 +21,10 @@ var ErrDeliveryConflict = errors.New("delivery identity has different content")
 // DeliveryService owns submission identity across HTTP retries and worker
 // crashes. The queue is a wakeup mechanism, never evidence of acceptance.
 type DeliveryService struct {
-	DB         *sql.DB
-	Dispatcher *Dispatcher
-	Slots      chan struct{}
+	AuthorizeAttempt func(context.Context, contracts.MailDeliveryRequest) error
+	DB               *sql.DB
+	Dispatcher       *Dispatcher
+	Slots            chan struct{}
 }
 
 func (s *DeliveryService) Ready(ctx context.Context) error {
@@ -140,7 +141,18 @@ func (s *DeliveryService) Deliver(ctx context.Context, req contracts.MailDeliver
 	// The timeout is shorter than the submitting recovery threshold. Cancelling
 	// the caller cannot prove a provider did not accept; classify conservatively.
 	sendCtx, cancel := context.WithTimeout(ctx, 75*time.Second)
-	receipt, sendErr := s.Dispatcher.SendWith(sendCtx, &req.Message, req.MailerKeys)
+	var receipt *contracts.SendResult
+	var sendErr error
+	if req.Authorization != nil {
+		receipt, sendErr = s.Dispatcher.SendAuthorized(sendCtx, &req.Message, req.MailerKeys, func(attemptCtx context.Context) error {
+			if s.AuthorizeAttempt == nil {
+				return permanentf("mail authorization source missing")
+			}
+			return s.AuthorizeAttempt(attemptCtx, req)
+		})
+	} else {
+		receipt, sendErr = s.Dispatcher.SendWith(sendCtx, &req.Message, req.MailerKeys)
+	}
 	cancel()
 	out.NextAttempt = 0
 	out.Revision++

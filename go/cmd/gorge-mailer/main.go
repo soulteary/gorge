@@ -65,6 +65,16 @@ func main() {
 			limit = n
 		}
 		delivery = &mailer.DeliveryService{DB: db, Dispatcher: nativeDispatcher, Slots: make(chan struct{}, limit)}
+		authorizationURI := os.Getenv("GORGE_MAILER_AUTHORIZATION_CONDUIT_URI")
+		authorizationToken := os.Getenv("GORGE_MAILER_AUTHORIZATION_CONDUIT_TOKEN")
+		if authorizationURI != "" || authorizationToken != "" {
+			authorizer, err := mailer.NewAttemptAuthorizer(authorizationURI, authorizationToken)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "mail authorization configuration refused")
+				os.Exit(1)
+			}
+			delivery.AuthorizeAttempt = authorizer
+		}
 	}
 	srv := httpx.New(httpx.Config{
 		ListenAddr: cfg.ListenAddr,

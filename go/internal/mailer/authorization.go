@@ -1,0 +1,48 @@
+package mailer
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"github.com/soulteary/gorge/go/internal/contracts"
+	"github.com/soulteary/gorge/go/internal/platform/conduitclient"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// Fixed deployment-owned callback, never a URL from an immutable mail payload.
+func NewAttemptAuthorizer(uri, token string) (func(context.Context, contracts.MailDeliveryRequest) error, error) {
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || token == "" {
+		return nil, fmt.Errorf("mail authorization configuration refused")
+	}
+	client := conduitclient.NewBounded(strings.TrimRight(uri, "/"), token, 4096)
+	return func(ctx context.Context, request contracts.MailDeliveryRequest) error {
+		binding := request.Authorization
+		if binding == nil || binding.Version != 1 || binding.MailID != request.MailID || binding.DeliveryID != request.DeliveryID || !regexp.MustCompile(`\A[a-f0-9]{64}\z`).MatchString(binding.MessageHash) {
+			return permanentf("mail authorization binding refused")
+		}
+		raw, err := json.Marshal(request.Message)
+		if err != nil || len(raw) > 65536 {
+			return permanentf("mail authorization message refused")
+		}
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		response, err := client.Call(ctx, "mail.delivery", map[string]any{"phase": "authorize-attempt", "mailID": request.MailID, "deliveryID": request.DeliveryID, "messageHash": binding.MessageHash, "message": string(raw)})
+		if err != nil {
+			return &SafeRetryError{Err: fmt.Errorf("mail authorization unavailable"), Backend: true}
+		}
+		var gate struct {
+			Allowed *bool `json:"allowed"`
+		}
+		if json.Unmarshal(response.Result, &gate) != nil || gate.Allowed == nil {
+			return &SafeRetryError{Err: fmt.Errorf("mail authorization invalid"), Backend: true}
+		}
+		if !*gate.Allowed {
+			return permanentf("mail authorization refused")
+		}
+		return nil
+	}, nil
+}

@@ -119,6 +119,17 @@ func (d *Dispatcher) Send(ctx context.Context, msg *contracts.EmailMessage) (*co
 // tried in priority order, not in the order the keys were given: the caller is
 // narrowing the set, not reordering it. An empty key list means "any".
 func (d *Dispatcher) SendWith(ctx context.Context, msg *contracts.EmailMessage, mailerKeys []string) (*contracts.SendResult, error) {
+	return d.sendAuthorized(ctx, msg, mailerKeys, nil)
+}
+
+// SendAuthorized invokes the gate immediately before every physical adapter attempt.
+func (d *Dispatcher) SendAuthorized(ctx context.Context, msg *contracts.EmailMessage, keys []string, gate func(context.Context) error) (*contracts.SendResult, error) {
+	if gate == nil {
+		return nil, permanentf("mail authorization source missing")
+	}
+	return d.sendAuthorized(ctx, msg, keys, gate)
+}
+func (d *Dispatcher) sendAuthorized(ctx context.Context, msg *contracts.EmailMessage, mailerKeys []string, gate func(context.Context) error) (*contracts.SendResult, error) {
 	if err := d.Ready(); err != nil {
 		return nil, &SafeRetryError{Err: err, Backend: true}
 	}
@@ -142,7 +153,7 @@ func (d *Dispatcher) SendWith(ctx context.Context, msg *contracts.EmailMessage, 
 			return nil, &SafeRetryError{Err: err}
 		}
 
-		messageID, err := d.sendThrough(ctx, na, msg)
+		messageID, err := d.sendThroughAuthorized(ctx, na, msg, gate)
 		if err == nil {
 			return &contracts.SendResult{MailerKey: na.key, MessageID: messageID}, nil
 		}
@@ -169,11 +180,19 @@ func (d *Dispatcher) SendWith(ctx context.Context, msg *contracts.EmailMessage, 
 // that asked for the send. See docs/modules/mailer.md section 4 for why the
 // defaults are as small as they are.
 func (d *Dispatcher) sendThrough(ctx context.Context, na namedAdapter, msg *contracts.EmailMessage) (string, error) {
+	return d.sendThroughAuthorized(ctx, na, msg, nil)
+}
+func (d *Dispatcher) sendThroughAuthorized(ctx context.Context, na namedAdapter, msg *contracts.EmailMessage, gate func(context.Context) error) (string, error) {
 	var lastErr error
 
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return "", &SafeRetryError{Err: err}
+		}
+		if gate != nil {
+			if err := gate(ctx); err != nil {
+				return "", err
+			}
 		}
 		messageID, err := na.adapter.Send(ctx, msg)
 		if err == nil {
