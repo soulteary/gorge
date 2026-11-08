@@ -1,3 +1,53 @@
+# Gorge 2026.11.08-r1
+
+Gorge release preparation only; no Gorge publication or deployment is asserted.
+The exact Phorge image is published and its digest, signature and attestation
+have been independently verified. Gorge candidate acceptance remains pending.
+
+## English
+
+Prepare the native-core pilot with Phorge commit
+`149f315b4c29cdc5a9f3b2d10a92c6eab0403e1f`. The pilot accepts only non-sensitive
+trial data while private-media acceptance remains incomplete.
+
+- Retain the native permission model on all four axes, existing product cuts and
+  the Phorge/Gorge division of responsibilities. New optional governance,
+  restoration and media features remain disabled; no permission migration or
+  new public endpoint is included.
+- Package the current reviewed Gorge runtime, including bounded native mail
+  authorization and MIME transport. This release preparation changes release
+  metadata and documentation only; it does not add Go runtime behavior.
+- Keep PHP 8.5.12 with JIT disabled, the locked toolchain/base images, and exact
+  source/digest pairing. Publish only after the full fourteen-component release
+  workflow, real-backend paired acceptance and independent signature checks.
+- Preserve the limits of existing evidence: selected Calendar scenarios are not
+  proof for every notification producer; partial recovery sources do not grant
+  restoration permission; isolated media tests do not certify private-media
+  rollout. These optional workstreams do not block the native-core pilot.
+
+Deploy only the final paired commits and `image@sha256` digests in the verified
+release manifest. Native login, core workflows and mail smoke tests remain
+separate deployment acceptance. Do not enlarge the trial to sensitive data until
+private-media acceptance is complete.
+
+## 中文
+
+本节仅为 Gorge 发布准备，不代表 Gorge 已发布或部署已验收。上述 Phorge 正式镜像已
+发布，摘要、签名及证明均已独立核验；本配对锁据此填写，Gorge 候选验收仍待执行。
+
+本轮仅交付非敏感试用数据的原生核心版，四轴权限保持原生，保留现有裁剪与 Phorge/Gorge
+分工。新增治理、恢复和媒体可选功能继续关闭；不迁移线上权限，不新增公开入口。
+
+发布准备只修改配对元数据与文档，不新增 Go 运行时行为。保留 PHP 8.5.12、关闭 JIT 与
+固定工具链/基础镜像。十四项组件必须完成正式配对后端验收、不可变摘要及签名/证明核验。
+选定 Calendar 场景不代表所有通知生产者已验收，部分恢复来源不能授予恢复权限，隔离媒体
+测试不代表私有媒体上线已通过。后续可选工作不应被误记为已完成，也不阻塞本轮核心试用。
+
+按最终已核验清单的源码与镜像 digest 部署，并另行完成登录、核心功能与邮件复验。
+私有媒体验收完成前，不扩大为敏感数据或正式团队资料。
+
+---
+
 # Gorge 2026.11.02-r2
 
 Preparation only until the signed release workflow completes.
