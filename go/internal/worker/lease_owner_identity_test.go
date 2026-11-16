@@ -49,7 +49,7 @@ func TestUnicodeAndInvalidHeaderBytesBecomeBoundedASCII(t *testing.T) {
 			t.Fatalf("unexpected fallback length %d", len(got))
 		}
 		for _, c := range []byte(got) {
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 				t.Fatal("non-ASCII digest")
 			}
 		}
@@ -74,7 +74,9 @@ func TestProcessDistinguishingInputsRemainDistinguishable(t *testing.T) {
 }
 func TestLeaseOwnerDeterministicForSameProcessTuple(t *testing.T) {
 	host := strings.Repeat("long", 30)
-	if boundedLeaseOwner(host, 1, 1700000000) != boundedLeaseOwner(host, 1, 1700000000) {
+	first := boundedLeaseOwner(host, 1, 1700000000)
+	second := boundedLeaseOwner(strings.Clone(host), 1, 1700000000)
+	if first != second {
 		t.Fatal("candidate unexpectedly changed deterministic legacy tuple behavior")
 	}
 }
