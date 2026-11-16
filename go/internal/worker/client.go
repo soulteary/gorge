@@ -29,11 +29,12 @@ type Client struct {
 // NewClient builds the client and derives a stable lease owner for this
 // process. The owner is written into worker_activetask.leaseOwner, which is
 // Phorge's column read back by its daemon console, so it is shaped to identify
-// this worker among many: host, pid, start time and the binary name.
+// this worker among many: host, pid, start time and the binary name. Long or
+// non-ASCII identities are hashed to fit Phorge's native text64 column.
 func NewClient(baseURL, token string) *Client {
 	hostname, _ := os.Hostname()
 	pid := os.Getpid()
-	leaseOwner := fmt.Sprintf("%s:%d:%d:gorge-worker", hostname, pid, time.Now().Unix())
+	leaseOwner := boundedLeaseOwner(hostname, pid, time.Now().Unix())
 
 	return &Client{
 		baseURL:    baseURL,
