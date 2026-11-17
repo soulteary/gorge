@@ -1,3 +1,35 @@
+# Gorge 2026.11.17-r1
+
+Release preparation only. No image publication, signature verification or
+deployment is claimed by this commit. Publication remains blocked until the
+final source checks, release build and exact paired acceptance pass.
+
+Pair this release with Phorge commit
+`bad38a30ab8968a8f3e565eb7ae3908e35e1d432`. The tag workflow records the
+actual Gorge release commit and accepted immutable image digests; the reviewed
+runtime baseline is `16318f87a017f82c28f3011b362364cf24b73ef8`.
+
+- Include the bounded native queue lease identity fix and Go 1.27.4 security
+  toolchain already merged into the reviewed runtime. This preparation changes
+  release metadata and documentation only.
+- Keep all four permission axes native and optional features disabled. No
+  permission migration, deployment or new public endpoint is included.
+- Preserve the complete release gates: fourteen multi-architecture candidates,
+  required backend contracts, candidate runtime checks, immutable alias checks,
+  Cosign signatures and GitHub attestations. Deployments must use the accepted
+  manifest's digests and exact source pair.
+- Current-source mail and browser evidence does not establish private-media
+  acceptance, enterprise IM delivery, 200-user capacity or final-image rollout.
+  These remain separate acceptance work.
+
+The final tag-owned source pair is the publication authority. A historical
+source regression baseline with identical Go bytes must not be relabeled as
+the actual metadata commit used to build published images.
+
+---
+
+## Historical release notes
+
 # Gorge 2026.11.08-r1
 
 Gorge release preparation only; no Gorge publication or deployment is asserted.
