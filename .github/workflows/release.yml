@@ -91,6 +91,12 @@ jobs:
         run: |
           go test -count=1 ./internal/doccheck ./cmd/...
           go vet ./...
+      - name: Set up PHP for release predicate tests
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5.13'
+          extensions: opcache
+          coverage: none
       - name: Test release gate rejection paths
         working-directory: gorge
         run: python3 -m unittest discover -s deploy/release -p '*_test.py'

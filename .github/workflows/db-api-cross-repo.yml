@@ -194,7 +194,7 @@ jobs:
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.5.12'
+          php-version: '8.5.13'
           ini-values: opcache.jit=disable, opcache.jit_buffer_size=0
           extensions: mysqli, mbstring, curl, iconv
           coverage: none
