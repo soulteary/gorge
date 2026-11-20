@@ -44,6 +44,12 @@ jobs:
           persist-credentials: false
       - name: Test required-check fail-closed paths
         run: python3 -m unittest discover -s .github/scripts/governance -p '*_test.py'
+      - name: Set up PHP for release predicate tests
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5.13'
+          extensions: opcache
+          coverage: none
       - name: Test immutable source-pair and release rejection paths
         run: python3 -m unittest discover -s deploy/release -p '*_test.py'
       - uses: actions/setup-go@v6

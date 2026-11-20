@@ -8,8 +8,9 @@ import re
 import subprocess
 
 PHP_CHECK = r"""
-if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 5
-    || version_compare(PHP_VERSION, "8.5.12", "<")) {
+if (!preg_match("/\\A8\\.5\\.[0-9]+\\z/", PHP_VERSION)
+    || PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 5
+    || version_compare(PHP_VERSION, "8.5.13", "<")) {
   fwrite(STDERR, "PHP runtime is below the security baseline\n"); exit(1);
 }
 if (filter_var(ini_get("session.upload_progress.enabled"), FILTER_VALIDATE_BOOLEAN)
@@ -48,7 +49,7 @@ def verify_php_runtime(phorge, runner=subprocess.run):
     if len(images) != 1:
         raise ValueError("Expected exactly one pinned PHP base image")
     version = re.fullmatch(r"php:8\.5\.([0-9]+)-apache", images[0])
-    if not version or int(version.group(1)) < 12:
+    if not version or int(version.group(1)) < 13:
         raise ValueError("Paired Phorge PHP image is below the security baseline")
     config = phorge / "docker/php/uploads.ini"
     if not config.is_file():
