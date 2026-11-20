@@ -2,7 +2,7 @@
 
 发布必须提供已存在的 `YYYY.MM.DD-rN` tag，以及该 tag 源码中
 `source-pair.json` 记录的同版本完整 Phorge SHA。手动输入 `phorge_ref` 必须与锁一致；
-Release 不再读取可能陈旧的 `PHORGE_CONTRACT_REF`。构建前验证实际 PHP 8.3.36+
+Release 不再读取可能陈旧的 `PHORGE_CONTRACT_REF`。构建前验证实际稳定 PHP 8.5.x（最低 8.5.13）
 及关闭 session 上传进度、启用严格 session ID 的生效设置。流程不再从 main 隐式取代码，也不更新各服务
 的 `*-latest` 标签。
 

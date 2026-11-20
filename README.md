@@ -200,3 +200,11 @@ Go module 在 `go/` 下；直接运行 Go 或 golangci-lint 时先进入该目�
 ## 许可证
 
 Apache License 2.0，见 [LICENSE](LICENSE)。
+
+## 配对 PHP 安全基线
+
+当前正式发布要求配对 Phorge 使用稳定 PHP 8.5.x，最低版本为 8.5.13。
+发布门禁同时核验 Dockerfile 标签和官方不可变镜像的实际运行时，
+拒绝旧补丁版本、预发布版本及其他 minor，并检查会话安全配置和显式禁用 JIT。
+运行 `python3 -B -m unittest discover -s deploy/release -p '*_test.py'` 需要 PHP CLI；
+版本边界测试直接执行发布门禁中的 PHP 程序。历史发布记录不构成当前资格。
