@@ -34,7 +34,7 @@ jobs:
           - service: gorge-image
             port: 8190
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: gorge
       - name: Resolve the locked security pair
@@ -43,19 +43,19 @@ jobs:
           release_tag="$(python3 -c 'import json; print(json.load(open("gorge/deploy/release/source-pair.json"))["release"])')"
           phorge_sha="$(python3 gorge/deploy/release/source_pair.py --lock gorge/deploy/release/source-pair.json --tag "$release_tag" --requested "$REQUESTED_PHORGE_REF")"
           echo "phorge=$phorge_sha" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: soulteary/phorge
           ref: ${{ steps.pair.outputs.phorge }}
           path: phorge-fork
       - name: Verify effective paired PHP security baseline
         run: python3 gorge/deploy/release/source_pair.py --verify-php phorge-fork
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           platforms: arm64
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Set up PHP for release predicate tests
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.5.13'
           extensions: opcache
@@ -66,7 +66,7 @@ jobs:
         id: bases
         run: python3 gorge/deploy/release/base_images.py --lock phorge-fork/deploy/acceptance/build-lock.json --build-bases gorge/deploy/release/build-bases.json --github-output "$GITHUB_OUTPUT"
       - name: Build both architectures without publishing images
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: gorge/go
           platforms: linux/amd64,linux/arm64
