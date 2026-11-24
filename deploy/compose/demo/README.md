@@ -19,9 +19,11 @@
 
 ## 固定后端版本与升级
 
-本 demo 固定 OwlMail `0.13.0` 和 WebHook `extended-7.3.4`，避免 `latest` 随后续版本移动。Webhook 保留带 shell、wget 的 extended 运行时，不能改用无前缀/core 镜像。UID/GID 65532 必须能读取挂载的 hooks 文件。
+本 demo 固定 OwlMail `0.15.0` 和 WebHook `extended-7.4.0`，避免 `latest` 随后续版本移动。Webhook 保留带 shell、wget 的 extended 运行时，不能改用无前缀/core 镜像。UID/GID 65532 必须能读取挂载的 hooks 文件。
 
 升级先停止旧栈，保留原密钥、端口和命名卷；如果为 OwlMail 额外挂载邮件目录，先备份完整目录及外部存储，再参考 [0.13.0 的持久 Relay 升级/回退说明](https://github.com/soulteary/owlmail/blob/v0.13.0/docs/zh-CN/Release-0.13.0.md)。恢复可能继续待发送任务，投递为至少一次；回退使用升级前完整备份，不能让两版本共享可写数据。默认 demo 的 OwlMail 没有邮件持久卷，替换容器会丢弃捕获邮件。更新后重新检查两后端健康与邮件捕获、hook 执行，再跑下列 gorge 联调。
+
+搜索后端使用 Meilisearch `v1.58.0` 和 Elasticsearch `7.17.29`；CI 另覆盖 Elasticsearch `8.19.26`。已有 Meilisearch 数据卷应先在旧版本导出 dump，再用新版本导入；不要直接复用旧索引文件。本 demo 的数据可重建时，也可保留备份后按下文重新初始化独立测试卷。
 
 ## 目录
 

@@ -12,7 +12,7 @@ ARG GO_VERSION=1.27.4
 # (currently 3.24 — golang:1.27.4 has no -alpine3.22 tag). The final runtime image
 # below still pins ALPINE_VERSION independently.
 ARG BUILDER_ALPINE_VERSION=3.24
-ARG ALPINE_VERSION=3.22
+ARG ALPINE_VERSION=3.22.8
 
 ARG GO_BASE_IMAGE=golang:${GO_VERSION}-alpine${BUILDER_ALPINE_VERSION}
 ARG RUNTIME_BASE_IMAGE=alpine:${ALPINE_VERSION}

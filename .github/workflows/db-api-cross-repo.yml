@@ -76,13 +76,13 @@ jobs:
             exit 1
           fi
       - name: Checkout gorge
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.GORGE_REF }}
           path: gorge
 
       - name: Checkout phorge-fork
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.PHORGE_REPO }}
           ref: ${{ env.PHORGE_REF }}
@@ -99,7 +99,7 @@ jobs:
             gorge phorge-fork
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.4'
           cache-dependency-path: gorge/go/go.sum
@@ -171,13 +171,13 @@ jobs:
           test "$mode" = STRICT_ALL_TABLES
 
       - name: Checkout gorge
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.GORGE_REF }}
           path: gorge
 
       - name: Checkout phorge-fork
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.PHORGE_REPO }}
           ref: ${{ env.PHORGE_REF }}
@@ -192,7 +192,7 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.5.13'
           ini-values: opcache.jit=disable, opcache.jit_buffer_size=0
@@ -200,7 +200,7 @@ jobs:
           coverage: none
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.4'
           cache-dependency-path: gorge/go/go.sum

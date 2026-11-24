@@ -31,7 +31,7 @@ services:
   # 后端一：Meilisearch —— gorge-search 的搜索后端之一
   # ---------------------------------------------------------------------------
   meili:
-    image: getmeili/meilisearch:v1.10
+    image: getmeili/meilisearch:v1.58.0@sha256:cee0d2e31191594ff8e1651eb144aabd95b389a0bc3532327ecfb9ed91dffe7e
     restart: unless-stopped
     environment:
       # demo 用主密钥；gorge-search 侧的 apiKey 必须与它一致。
@@ -55,7 +55,7 @@ services:
   # 后端二：Elasticsearch —— gorge-search 的另一个搜索后端
   # ---------------------------------------------------------------------------
   es:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.24
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.29
     restart: unless-stopped
     environment:
       discovery.type: single-node
@@ -87,7 +87,7 @@ services:
   #   SMTP 1025（应用投递到这里）/ Web UI + API 1080（人看、脚本断言）
   # ---------------------------------------------------------------------------
   owlmail:
-    image: ghcr.io/soulteary/owlmail:0.13.0
+    image: ghcr.io/soulteary/owlmail:0.15.0@sha256:991c52bc090d88e79863d5912a1464215804f272614fd1f8d793117b21f41d53
     restart: unless-stopped
     environment:
       # 绑定到 0.0.0.0，否则默认只听 localhost，同网络的 gorge-mailer 连不上。
@@ -118,7 +118,7 @@ services:
   # extended 变体是同一个版本、同一个 entrypoint，只是多了 shell 与 curl/wget。
   # ---------------------------------------------------------------------------
   webhook-receiver:
-    image: ghcr.io/soulteary/webhook:${WEBHOOK_RECEIVER_TAG:-extended-7.3.4}
+    image: ghcr.io/soulteary/webhook:${WEBHOOK_RECEIVER_TAG:-extended-7.4.0}
     restart: unless-stopped
     command: ["-verbose", "-hooks", "/etc/webhook/hooks.json", "-hotreload"]
     volumes:
